@@ -1,0 +1,96 @@
+name: ✨ AI Feature Builder
+
+# Triggers:
+#   1. When the "ai-feature" label is added to an issue
+#   2. Manual trigger via GitHub UI
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number containing the feature requirement"
+        required: true
+        type: number
+
+concurrency:
+  group: ai-feature-issue-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  build-feature:
+    name: Run AI Software House Pipeline
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' &&
+       github.event.action == 'labeled' &&
+       github.event.label.name == 'ai-feature')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine requirement from issue
+        id: issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            NUMBER="${{ inputs.issue_number }}"
+          else
+            NUMBER="${{ github.event.issue.number }}"
+          fi
+          echo "number=$NUMBER" >> $GITHUB_OUTPUT
+
+          # Fetch issue title+body as the requirement
+          TITLE=$(gh issue view "$NUMBER" --json title --jq '.title')
+          BODY=$(gh issue view "$NUMBER" --json body --jq '.body // ""')
+          REQUIREMENT="$TITLE. $BODY"
+          # Write to file to avoid shell escaping issues
+          echo "$REQUIREMENT" > /tmp/requirement.txt
+          echo "title=$TITLE" >> $GITHUB_OUTPUT
+
+      - name: Post acknowledgement comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment "${{ steps.issue.outputs.number }}" \
+            --body "🤖 **AI Software House** — Feature pipeline started for: **${{ steps.issue.outputs.title }}**
+
+          Agents working: PM → Architect → Engineers → Reviewer → QA. A PR will be opened shortly."
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "AI Software House Bot"
+          git config --global user.email "ai-software-house[bot]@users.noreply.github.com"
+
+      - name: Run full pipeline
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REQUIREMENT=$(cat /tmp/requirement.txt)
+          python main.py "$REQUIREMENT" \
+            --repo ${{ github.repository }} \
+            --no-github false
+
+      - name: Post failure comment
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment "${{ steps.issue.outputs.number }}" \
+            --body "❌ **AI Feature Pipeline failed.** Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
