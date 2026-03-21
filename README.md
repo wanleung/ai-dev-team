@@ -63,15 +63,37 @@ python main.py
 # With requirement inline
 python main.py "Build a REST API for a task management app with user authentication"
 
-# With GitHub integration
-python main.py "Build a blog platform with markdown support" --repo myuser/myrepo
+# Load requirement from a text file
+python main.py --file requirements.txt
 
-# Local only (no GitHub)
-python main.py "Build a weather CLI app" --no-github
+# With GitHub integration (creates Issues + PR)
+python main.py "Build a blog platform with markdown support" --repo myuser/myrepo
+python main.py --file requirements.txt --repo myuser/myrepo
+
+# Local only (no GitHub) — files saved to ./workspace/
+python main.py --file requirements.txt --no-github
 
 # Use a faster/cheaper model
 python main.py "Build a calculator" --model gpt-4.1-mini --engineers 1
 ```
+
+**Example `requirements.txt`:**
+```
+Build a task management REST API.
+
+## Features
+- User registration and JWT authentication
+- CRUD for tasks (title, description, due date, status)
+- Filter tasks by status: todo / in-progress / done
+- PostgreSQL with SQLAlchemy ORM
+- Pytest test suite
+
+## Constraints
+- Python 3.11+, FastAPI framework
+- Return JSON errors with meaningful messages
+```
+
+> **Tip:** The requirements file can be plain text or Markdown — headings, bullet points, and acceptance criteria all help the agents produce better output.
 
 ---
 
