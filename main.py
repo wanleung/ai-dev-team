@@ -145,7 +145,6 @@ def main() -> int:
     # ── Build Orchestrator ────────────────────────────────────────────────────
     try:
         from orchestrator import Orchestrator
-        import os.path
 
         if os.path.exists(args.config):
             orch = Orchestrator.from_config(args.config, github_token=github_token)

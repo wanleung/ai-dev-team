@@ -73,7 +73,6 @@ def main() -> int:
 
     try:
         from bug_fix_orchestrator import BugFixOrchestrator
-        import os.path
 
         if os.path.exists(args.config):
             orch = BugFixOrchestrator.from_config(args.config, github_token=github_token)
