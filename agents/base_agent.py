@@ -1,0 +1,84 @@
+"""
+BaseAgent: calls GitHub Models API (OpenAI-compatible) using GITHUB_TOKEN.
+This is the same AI backbone that powers GitHub Copilot CLI.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Optional
+
+from openai import OpenAI
+
+
+class BaseAgent:
+    """Base class for all software house agents.
+
+    Each agent subclass defines its role by providing a role_name that maps to
+    a markdown instruction file in the roles/ directory.
+    """
+
+    # Role name used to load the system prompt from roles/<role_name>.md
+    role_name: str = ""
+
+    def __init__(
+        self,
+        model: str = "gpt-4.1",
+        github_token: Optional[str] = None,
+        roles_dir: Optional[Path] = None,
+    ) -> None:
+        token = github_token or os.environ.get("GITHUB_TOKEN")
+        if not token:
+            raise EnvironmentError(
+                "GITHUB_TOKEN environment variable is required. "
+                "Create a token at https://github.com/settings/personal-access-tokens/new "
+                "with 'Copilot Requests', 'Contents', 'Issues', and 'Pull requests' permissions."
+            )
+
+        # GitHub Models API is OpenAI-compatible — same backend as Copilot CLI
+        self.client = OpenAI(
+            base_url="https://models.inference.ai.azure.com",
+            api_key=token,
+        )
+        self.model = model
+        self.system_prompt = self._load_system_prompt(roles_dir)
+
+    def _load_system_prompt(self, roles_dir: Optional[Path]) -> str:
+        """Load the role instruction file as the system prompt."""
+        if not self.role_name:
+            return ""
+
+        base = roles_dir or (Path(__file__).parent.parent / "roles")
+        prompt_file = base / f"{self.role_name}.md"
+
+        if not prompt_file.exists():
+            raise FileNotFoundError(f"Role instruction file not found: {prompt_file}")
+
+        return prompt_file.read_text(encoding="utf-8")
+
+    def call(self, user_message: str, context: Optional[str] = None) -> str:
+        """Send a message to the LLM and return the response.
+
+        Args:
+            user_message: The main task/prompt for the agent.
+            context: Optional additional context prepended to the message.
+
+        Returns:
+            The LLM's text response.
+        """
+        full_message = f"{context}\n\n{user_message}" if context else user_message
+
+        messages = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.append({"role": "user", "content": full_message})
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=0.3,
+        )
+        return response.choices[0].message.content or ""
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(model={self.model!r})"
