@@ -22,7 +22,7 @@ from agents import (
     ProductManagerAgent,
     QAEngineerAgent,
 )
-from github_client import GitHubClient
+from github_client import GitHubClient, parse_target_repo
 
 console = Console()
 
@@ -69,6 +69,7 @@ class Orchestrator:
         stop_on_review_issues: bool = False,
         model_overrides: Optional[dict] = None,
         use_github: bool = False,
+        target_repo: Optional[str] = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -77,6 +78,7 @@ class Orchestrator:
         self.stop_on_review_issues = stop_on_review_issues
         self.model_overrides = model_overrides or {}
         self.use_github = use_github and bool(github_repo)
+        self._github_token = github_token
 
         # Shared kwargs for all agents
         agent_kwargs = {"github_token": github_token}
@@ -89,10 +91,19 @@ class Orchestrator:
         self.reviewer = CodeReviewerAgent(model=model, **agent_kwargs)
         self.qa = QAEngineerAgent(model=model, **agent_kwargs)
 
+        # Tracker GitHub (ai-software-house): PM issues, progress comments
         self.github: Optional[GitHubClient] = None
         if self.use_github and github_repo:
             self.github = GitHubClient(repo=github_repo, github_token=github_token)
             self._ensure_github_labels()
+
+        # Target GitHub: where code branches / commits / PRs go.
+        # Defaults to tracker github; overridden at run-time when issue body has "Target repo:".
+        self.target_github: Optional[GitHubClient] = None
+        if target_repo and target_repo != github_repo:
+            self.target_github = GitHubClient(repo=target_repo, github_token=github_token)
+        else:
+            self.target_github = self.github
 
     @classmethod
     def from_config(cls, config_path: str = "config.yaml", github_token: Optional[str] = None) -> "Orchestrator":
@@ -120,17 +131,28 @@ class Orchestrator:
             use_github=use_github,
         )
 
-    def run(self, requirement: str) -> PipelineResult:
+    def run(self, requirement: str, trigger_issue_body: Optional[str] = None) -> PipelineResult:
         """Execute the full pipeline for a given requirement.
 
         Args:
             requirement: The user's software requirement in plain English.
+            trigger_issue_body: Optional raw body of the GitHub Issue that triggered this run.
+                If it contains a "Target repo:" directive, code goes to that repo instead of
+                the tracker repo.
 
         Returns:
             A PipelineResult with all artifacts.
         """
         result = PipelineResult(requirement=requirement)
         start_time = time.time()
+
+        # ── Detect target project repo (multi-repo support) ───────────────────
+        target_repo_override = parse_target_repo(trigger_issue_body or "")
+        if target_repo_override and self.github and target_repo_override != self.github.repo:
+            self.target_github = GitHubClient(repo=target_repo_override, github_token=self._github_token)
+            console.print(f"  🎯 Targeting project repo: [bold]{target_repo_override}[/bold]")
+        elif not self.target_github:
+            self.target_github = self.github
 
         console.print(Panel.fit(
             f"[bold cyan]🏢 AI Software House Pipeline[/bold cyan]\n"
@@ -194,12 +216,12 @@ class Orchestrator:
     def _stage_engineer(self, result: PipelineResult) -> None:
         # Limit to num_engineers modules for parallel dispatch
         modules = result.modules[: max(self.num_engineers, len(result.modules))]
-        if self.github:
+        if self.target_github:
             eng_result = self.engineer.run_with_github(
                 result.design,
                 modules,
                 result.project_name,
-                self.github,
+                self.target_github,
                 branch_prefix=self.branch_prefix,
                 issue_number=result.issue_number,
                 max_workers=self.num_engineers,
@@ -215,9 +237,9 @@ class Orchestrator:
         self._save_files_locally(result.all_files, result.project_name)
 
     def _stage_reviewer(self, result: PipelineResult) -> None:
-        if self.github and result.pr_number:
+        if self.target_github and result.pr_number:
             rev_result = self.reviewer.run_with_github(
-                result.all_files, result.prd, result.project_name, self.github, result.pr_number
+                result.all_files, result.prd, result.project_name, self.target_github, result.pr_number
             )
         else:
             rev_result = self.reviewer.run(result.all_files, result.prd, result.project_name)
@@ -225,15 +247,17 @@ class Orchestrator:
         result.verdict = rev_result["verdict"]
 
     def _stage_qa(self, result: PipelineResult) -> None:
-        if self.github and result.branch and result.pr_number and result.issue_number:
+        cross_repo = self.target_github is not self.github and self.target_github is not None
+        if self.target_github and result.branch and result.pr_number and result.issue_number:
             qa_result = self.qa.run_with_github(
                 result.all_files,
                 result.prd,
                 result.project_name,
-                self.github,
+                self.target_github,
                 branch=result.branch,
                 pr_number=result.pr_number,
-                issue_number=result.issue_number,
+                issue_number=None if cross_repo else result.issue_number,
+                tracker_github_client=self.github if cross_repo else None,
             )
         else:
             qa_result = self.qa.run(result.all_files, result.prd, result.project_name)

@@ -142,6 +142,56 @@ After adding label `ai-fix`:
 
 ---
 
+### 🏢 Central agency — targeting any project repo
+
+`ai-software-house` can work as a **central AI team hub** that builds code in a *separate* project repo. Just add a `Target repo:` line to any issue body:
+
+```markdown
+Title: Add dark mode toggle to the settings page
+
+**Target repo:** myusername/my-webapp
+
+## Description
+Add a dark mode toggle in the Settings page. It should persist in localStorage
+and apply a `dark` CSS class to the document root.
+
+## Acceptance Criteria
+- Toggle appears in Settings
+- State persists across page reloads
+- Works with existing Tailwind CSS setup
+```
+
+When this issue is labeled `ai-fix` or `ai-feature`:
+
+```
+ai-software-house repo           my-webapp repo
+       │                                │
+       ├── Issue #12 filed here         │
+       │   └── label: ai-feature        │
+       │                                │
+       ├── Pipeline runs (Actions)      │
+       │   PM creates tracker issue ─── │
+       │                                ├── feature/agent/... branch
+       │   Engineers commit code ──────▶│
+       │   PR opened ─────────────────▶│
+       │   PR review posted ──────────▶│
+       │   QA tests committed ────────▶│
+       │                                │
+       └── Issue #12 closed with link ──┘
+```
+
+**Multiple projects, one AI team:**
+```
+ai-software-house
+├── Issue #5  [ai-feature]  Target repo: me/react-dashboard   → PR in react-dashboard
+├── Issue #6  [ai-fix]      Target repo: me/node-api          → fix PR in node-api
+└── Issue #7  [ai-feature]  (no Target repo)                  → PR in ai-software-house itself
+```
+
+> **Token permissions**: The `GITHUB_TOKEN` in GitHub Actions only has access to the `ai-software-house` repo. To commit code to a *different* project repo, you must create a **Personal Access Token (PAT)** with `Contents` write access to that repo, and add it as a repository secret named `TARGET_GITHUB_TOKEN`. Then pass it via `--token ${{ secrets.TARGET_GITHUB_TOKEN }}` in the workflow.
+
+---
+
 ### Workflows overview
 
 | Workflow | Trigger | Pipeline |
@@ -160,6 +210,7 @@ ai-software-house/
 ├── orchestrator.py              # Full feature pipeline
 ├── bug_fix_orchestrator.py      # Bug-fix pipeline (triggered by GitHub Issues)
 ├── fix_issue.py                 # Entry point for GitHub Actions bug-fix workflow
+├── build_feature.py             # Entry point for GitHub Actions feature workflow
 ├── github_client.py             # GitHub REST API wrapper
 ├── config.yaml                  # Configuration
 ├── requirements.txt
