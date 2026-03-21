@@ -81,7 +81,6 @@ def main() -> int:
     try:
         from github_client import GitHubClient
         from orchestrator import Orchestrator
-        import os.path
 
         # ── Build orchestrator from config ────────────────────────────────────
         if os.path.exists(args.config):
