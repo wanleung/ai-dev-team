@@ -93,6 +93,11 @@ Setup:
         help="GitHub token (overrides GITHUB_TOKEN env var).",
     )
     parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore any saved checkpoint and start the pipeline from scratch.",
+    )
+    parser.add_argument(
         "--file",
         metavar="PATH",
         help="Read the requirement from a text file instead of the command line "
@@ -180,7 +185,7 @@ def main() -> int:
 
     # ── Run the pipeline ──────────────────────────────────────────────────────
     try:
-        result = orch.run(requirement)
+        result = orch.run(requirement, resume=not args.no_resume)
     except KeyboardInterrupt:
         console.print("\n[yellow]Pipeline interrupted.[/yellow]")
         return 130

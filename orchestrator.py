@@ -4,6 +4,7 @@ Manages artifact passing, logging, and optional GitHub integration.
 """
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +49,36 @@ class PipelineResult:
     branch: Optional[str] = None
     duration_seconds: float = 0.0
     errors: list[str] = field(default_factory=list)
+    completed_stages: list[str] = field(default_factory=list)  # stages that finished OK
+
+    def to_dict(self) -> dict:
+        return {
+            "requirement": self.requirement,
+            "project_name": self.project_name,
+            "prd": self.prd,
+            "design": self.design,
+            "modules": self.modules,
+            "all_files": self.all_files,
+            "test_files": self.test_files,
+            "review": self.review,
+            "verdict": self.verdict,
+            "test_plan": self.test_plan,
+            "issue_number": self.issue_number,
+            "issue_url": self.issue_url,
+            "pr_number": self.pr_number,
+            "pr_url": self.pr_url,
+            "branch": self.branch,
+            "completed_stages": self.completed_stages,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PipelineResult":
+        r = cls(requirement=data["requirement"])
+        for key in ["project_name", "prd", "design", "modules", "all_files", "test_files",
+                    "review", "verdict", "test_plan", "issue_number", "issue_url",
+                    "pr_number", "pr_url", "branch", "completed_stages"]:
+            setattr(r, key, data.get(key, getattr(r, key)))
+        return r
 
 
 class Orchestrator:
@@ -131,7 +162,7 @@ class Orchestrator:
             use_github=use_github,
         )
 
-    def run(self, requirement: str, trigger_issue_body: Optional[str] = None) -> PipelineResult:
+    def run(self, requirement: str, trigger_issue_body: Optional[str] = None, resume: bool = True) -> PipelineResult:
         """Execute the full pipeline for a given requirement.
 
         Args:
@@ -139,11 +170,11 @@ class Orchestrator:
             trigger_issue_body: Optional raw body of the GitHub Issue that triggered this run.
                 If it contains a "Target repo:" directive, code goes to that repo instead of
                 the tracker repo.
+            resume: If True (default), load a saved checkpoint and skip already-completed stages.
 
         Returns:
             A PipelineResult with all artifacts.
         """
-        result = PipelineResult(requirement=requirement)
         start_time = time.time()
 
         # ── Detect target project repo (multi-repo support) ───────────────────
@@ -154,6 +185,16 @@ class Orchestrator:
         elif not self.target_github:
             self.target_github = self.github
 
+        # ── Load checkpoint if resuming ───────────────────────────────────────
+        result = self._load_checkpoint(requirement) if resume else None
+        if result:
+            console.print(
+                f"[bold yellow]⏭️  Resuming from checkpoint[/bold yellow] "
+                f"(completed: {', '.join(result.completed_stages)})"
+            )
+        else:
+            result = PipelineResult(requirement=requirement)
+
         console.print(Panel.fit(
             f"[bold cyan]🏢 AI Software House Pipeline[/bold cyan]\n"
             f"[dim]{requirement[:120]}{'...' if len(requirement) > 120 else ''}[/dim]",
@@ -161,34 +202,65 @@ class Orchestrator:
         ))
 
         # ── Stage 1: Product Manager ─────────────────────────────────────────
-        self._run_stage("📋 Product Manager", "Analyzing requirements & writing PRD...", result, lambda: self._stage_pm(result, requirement))
-        if result.errors:
-            return self._finish(result, start_time)
+        if "pm" not in result.completed_stages:
+            self._run_stage("📋 Product Manager", "Analyzing requirements & writing PRD...", result, lambda: self._stage_pm(result, requirement))
+            if result.errors:
+                self._save_checkpoint(result)
+                return self._finish(result, start_time)
+            result.completed_stages.append("pm")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]📋 Product Manager — skipped (checkpoint)[/dim]")
 
         # ── Stage 2: Architect ────────────────────────────────────────────────
-        self._run_stage("🏗️  Architect", "Designing system architecture...", result, lambda: self._stage_architect(result))
-        if result.errors:
-            return self._finish(result, start_time)
+        if "architect" not in result.completed_stages:
+            self._run_stage("🏗️  Architect", "Designing system architecture...", result, lambda: self._stage_architect(result))
+            if result.errors:
+                self._save_checkpoint(result)
+                return self._finish(result, start_time)
+            result.completed_stages.append("architect")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]🏗️  Architect — skipped (checkpoint)[/dim]")
 
         # ── Stage 3: Engineers ────────────────────────────────────────────────
-        self._run_stage(
-            f"💻 Engineers (×{self.num_engineers})",
-            f"Implementing {len(result.modules)} module(s) in parallel...",
-            result,
-            lambda: self._stage_engineer(result),
-        )
-        if result.errors:
-            return self._finish(result, start_time)
+        if "engineer" not in result.completed_stages:
+            self._run_stage(
+                f"💻 Engineers (×{self.num_engineers})",
+                f"Implementing {len(result.modules)} module(s) in parallel...",
+                result,
+                lambda: self._stage_engineer(result),
+            )
+            if result.errors:
+                self._save_checkpoint(result)
+                return self._finish(result, start_time)
+            result.completed_stages.append("engineer")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]💻 Engineers — skipped (checkpoint)[/dim]")
 
         # ── Stage 4: Code Reviewer ────────────────────────────────────────────
-        self._run_stage("🔍 Code Reviewer", "Reviewing generated code...", result, lambda: self._stage_reviewer(result))
-        if self.stop_on_review_issues and result.verdict == "CHANGES REQUESTED":
-            console.print("[bold red]⛔ Pipeline stopped: code reviewer requested changes.[/bold red]")
-            return self._finish(result, start_time)
+        if "reviewer" not in result.completed_stages:
+            self._run_stage("🔍 Code Reviewer", "Reviewing generated code...", result, lambda: self._stage_reviewer(result))
+            if self.stop_on_review_issues and result.verdict == "CHANGES REQUESTED":
+                console.print("[bold red]⛔ Pipeline stopped: code reviewer requested changes.[/bold red]")
+                self._save_checkpoint(result)
+                return self._finish(result, start_time)
+            result.completed_stages.append("reviewer")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]🔍 Code Reviewer — skipped (checkpoint)[/dim]")
 
         # ── Stage 5: QA Engineer ──────────────────────────────────────────────
-        self._run_stage("🧪 QA Engineer", "Writing tests & producing test plan...", result, lambda: self._stage_qa(result))
+        if "qa" not in result.completed_stages:
+            self._run_stage("🧪 QA Engineer", "Writing tests & producing test plan...", result, lambda: self._stage_qa(result))
+            result.completed_stages.append("qa")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]🧪 QA Engineer — skipped (checkpoint)[/dim]")
 
+        # Pipeline complete — remove checkpoint
+        self._clear_checkpoint(result)
         return self._finish(result, start_time)
 
     # ── Stage implementations ────────────────────────────────────────────────
@@ -293,6 +365,39 @@ class Orchestrator:
             full_path = project_dir / filepath
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(content, encoding="utf-8")
+
+    def _checkpoint_path(self, result: PipelineResult) -> Path:
+        """Return the checkpoint file path for a given pipeline result."""
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (result.project_name or result.requirement[:40]).lower())
+        return self.workspace_dir / safe / "checkpoint.json"
+
+    def _save_checkpoint(self, result: PipelineResult) -> None:
+        """Persist the current pipeline state to disk."""
+        path = self._checkpoint_path(result)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(result.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def _load_checkpoint(self, requirement: str) -> Optional[PipelineResult]:
+        """Load a checkpoint matching this requirement, if one exists."""
+        # Search all subdirs of workspace for a checkpoint with matching requirement
+        if not self.workspace_dir.exists():
+            return None
+        for checkpoint_file in self.workspace_dir.glob("*/checkpoint.json"):
+            try:
+                data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+                if data.get("requirement") == requirement and data.get("completed_stages"):
+                    return PipelineResult.from_dict(data)
+            except Exception:
+                continue
+        return None
+
+    def _clear_checkpoint(self, result: PipelineResult) -> None:
+        """Delete the checkpoint file after a successful pipeline run."""
+        path = self._checkpoint_path(result)
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def _ensure_github_labels(self) -> None:
         """Create standard labels in the repo if they don't exist."""
