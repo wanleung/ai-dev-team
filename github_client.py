@@ -110,15 +110,58 @@ class GitHubClient:
         repo_data = self._request("GET", f"/repos/{self.repo}")
         return repo_data["default_branch"]
 
+    def is_empty(self) -> bool:
+        """Return True if the repo has no commits yet."""
+        try:
+            repo_data = self._request("GET", f"/repos/{self.repo}")
+            # GitHub sets size=0 and the ref lookup fails for empty repos
+            if repo_data.get("size", 1) == 0:
+                return True
+            self.get_branch_sha(repo_data["default_branch"])
+            return False
+        except RuntimeError as e:
+            if "409" in str(e) or "Git Repository is empty" in str(e):
+                return True
+            raise
+
+    def initialize_repo(self, default_branch: str = "main") -> str:
+        """Create an initial commit so the repo is no longer empty.
+
+        Returns the SHA of the initial commit.
+        """
+        import base64 as _b64
+        readme = "# Project\n\nInitialized by AI Software House.\n"
+        encoded = _b64.b64encode(readme.encode()).decode("ascii")
+        result = self._request(
+            "PUT",
+            f"/repos/{self.repo}/contents/README.md",
+            json={
+                "message": "chore: initial commit",
+                "content": encoded,
+                "branch": default_branch,
+            },
+        )
+        return result["commit"]["sha"]
+
     def get_branch_sha(self, branch: str) -> str:
         """Return the latest commit SHA for a branch."""
         ref = self._request("GET", f"/repos/{self.repo}/git/ref/heads/{branch}")
         return ref["object"]["sha"]
 
     def create_branch(self, branch_name: str, from_branch: Optional[str] = None) -> str:
-        """Create a new branch. Returns the branch name."""
+        """Create a new branch. Auto-initializes the repo if it is empty.
+
+        Returns the branch name.
+        """
         base = from_branch or self.get_default_branch()
-        sha = self.get_branch_sha(base)
+        # If repo is empty, create an initial commit first
+        try:
+            sha = self.get_branch_sha(base)
+        except RuntimeError as e:
+            if "409" in str(e) or "Git Repository is empty" in str(e) or "422" in str(e):
+                sha = self.initialize_repo(default_branch=base)
+            else:
+                raise
         self._request(
             "POST",
             f"/repos/{self.repo}/git/refs",
