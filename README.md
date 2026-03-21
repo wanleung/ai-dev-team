@@ -13,7 +13,7 @@ Requirement → PM → Architect → Engineers ×N → Code Reviewer → QA → 
 - **Auto-trigger on Issues**: label any issue `ai-fix` → pipeline runs automatically via GitHub Actions
 - **Two pipelines**: full feature build **and** focused bug-fix (diagnosis → fix → review → regression tests)
 - **Parallel engineering**: N engineer agents implement modules simultaneously
-- **Same AI as Copilot CLI**: uses `GITHUB_TOKEN` and GitHub Models API — no extra API keys
+- **Same AI as Copilot CLI**: uses your PAT (`GH_TOKEN` secret) and GitHub Models API — no extra API keys
 - **Local workspace**: all generated files saved to `./workspace/` for inspection
 - **Configurable**: YAML config for model selection, team size, and GitHub settings
 
@@ -45,7 +45,7 @@ python3 -m pip install -r requirements.txt
 ### 3. Configure
 
 ```bash
-export GITHUB_TOKEN=ghp_your_token_here
+export GITHUB_TOKEN=ghp_your_token_here  # your PAT (used locally and as GH_TOKEN secret in Actions)
 ```
 
 Edit `config.yaml` to set your target GitHub repo:
@@ -109,11 +109,12 @@ git remote add origin https://github.com/YOUR_USERNAME/ai-software-house
 git push -u origin master
 ```
 
-**2. Add `GITHUB_TOKEN` as a repository secret:**  
+**2. Add your PAT as a repository secret:**  
 Go to: **Settings → Secrets and variables → Actions → New repository secret**
-- Name: `GITHUB_TOKEN` ← GitHub provides this *automatically* in Actions (no manual secret needed!)
-  
-> `GITHUB_TOKEN` is auto-injected by GitHub Actions. You only need to ensure the workflow has the right **permissions** (already set in the workflow files).
+- Name: `GH_TOKEN`
+- Value: your Personal Access Token from step 1
+
+> **Why not `GITHUB_TOKEN`?** GitHub blocks secret names starting with `GITHUB_`. Also, the auto-injected `GITHUB_TOKEN` represents the `github-actions[bot]` which has no Copilot subscription and can't call the AI API. Your PAT (stored as `GH_TOKEN`) is tied to your account which has Copilot access.
 
 **3. Create the required labels:**  
 Go to: **Actions → 🏷️ Setup AI Labels → Run workflow**
@@ -210,7 +211,7 @@ ai-software-house
 └── Issue #7  [ai-feature]  (no Target repo)                  → PR in ai-software-house itself
 ```
 
-> **Token permissions**: The `GITHUB_TOKEN` in GitHub Actions only has access to the `ai-software-house` repo. To commit code to a *different* project repo, you must create a **Personal Access Token (PAT)** with `Contents` write access to that repo, and add it as a repository secret named `TARGET_GITHUB_TOKEN`. Then pass it via `--token ${{ secrets.TARGET_GITHUB_TOKEN }}` in the workflow.
+> **Token permissions**: The auto-injected `GITHUB_TOKEN` in Actions can't call the GitHub Models API (no Copilot access). To commit code to a *different* project repo, create a PAT with `Contents` write access to that repo and add it as a secret named `GH_TOKEN` (same secret, just ensure it also has access to the target repo).
 
 ---
 
@@ -303,7 +304,7 @@ This project uses the **same AI backend** as GitHub Copilot CLI:
 | | GitHub Copilot CLI | AI Software House |
 |---|---|---|
 | AI Model | GitHub Models API | GitHub Models API |
-| Authentication | `GITHUB_TOKEN` | `GITHUB_TOKEN` |
+| Authentication | `GITHUB_TOKEN` (PAT) | `GH_TOKEN` secret |
 | API Endpoint | `models.inference.ai.azure.com` | `models.inference.ai.azure.com` |
 | Usage | Interactive terminal | Python orchestration |
 

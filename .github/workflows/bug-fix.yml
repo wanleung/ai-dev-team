@@ -64,7 +64,7 @@ jobs:
 
       - name: Run AI bug-fix pipeline
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           python fix_issue.py \
             --issue-number ${{ steps.issue.outputs.number }} \
