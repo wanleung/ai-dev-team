@@ -1,0 +1,84 @@
+name: 🐛 AI Bug Fixer
+
+# Triggers:
+#   1. When a new issue is opened with the "ai-fix" label
+#   2. When the "ai-fix" label is added to any existing issue
+#   3. Manual trigger via GitHub UI (Actions → Run workflow)
+on:
+  issues:
+    types: [opened, labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to fix"
+        required: true
+        type: number
+
+# Only run one bug-fix pipeline per issue at a time
+concurrency:
+  group: bug-fix-issue-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  bug-fix:
+    name: Run AI Bug Fix Pipeline
+    # Condition: run only when the triggering label is "ai-fix" (not on every label event)
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && (
+        (github.event.action == 'labeled' && github.event.label.name == 'ai-fix') ||
+        (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'ai-fix'))
+      ))
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write         # Post comments, close issues
+      contents: write       # Create branches, commit files
+      pull-requests: write  # Open PRs, add reviews
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine issue number
+        id: issue
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=${{ inputs.issue_number }}" >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "AI Software House Bot"
+          git config --global user.email "ai-software-house[bot]@users.noreply.github.com"
+
+      - name: Run AI bug-fix pipeline
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python fix_issue.py \
+            --issue-number ${{ steps.issue.outputs.number }} \
+            --repo ${{ github.repository }}
+
+      - name: Post failure comment on issue
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" \
+            --body "❌ **AI Bug Fix Pipeline failed.**
+
+          The automated pipeline encountered an error. Please check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+
+          You can retry by removing and re-adding the \`ai-fix\` label, or [trigger manually](${{ github.server_url }}/${{ github.repository }}/actions/workflows/bug-fix.yml)."

@@ -10,6 +10,8 @@ Requirement → PM → Architect → Engineers ×N → Code Reviewer → QA → 
 
 - **6 specialized agents**: Product Manager, Architect, N Engineers, Code Reviewer, QA
 - **GitHub-native**: creates Issues (PRD), feature branches, Pull Requests, and review comments
+- **Auto-trigger on Issues**: label any issue `ai-fix` → pipeline runs automatically via GitHub Actions
+- **Two pipelines**: full feature build **and** focused bug-fix (diagnosis → fix → review → regression tests)
 - **Parallel engineering**: N engineer agents implement modules simultaneously
 - **Same AI as Copilot CLI**: uses `GITHUB_TOKEN` and GitHub Models API — no extra API keys
 - **Local workspace**: all generated files saved to `./workspace/` for inspection
@@ -73,26 +75,110 @@ python main.py "Build a calculator" --model gpt-4.1-mini --engineers 1
 
 ---
 
+## 🤖 GitHub Actions — Auto-Trigger
+
+The pipelines run **automatically** when you label a GitHub Issue. No manual command needed.
+
+### Setup (one time)
+
+**1. Push this repo to GitHub:**
+```bash
+git remote add origin https://github.com/YOUR_USERNAME/ai-software-house
+git push -u origin master
+```
+
+**2. Add `GITHUB_TOKEN` as a repository secret:**  
+Go to: **Settings → Secrets and variables → Actions → New repository secret**
+- Name: `GITHUB_TOKEN` ← GitHub provides this *automatically* in Actions (no manual secret needed!)
+  
+> `GITHUB_TOKEN` is auto-injected by GitHub Actions. You only need to ensure the workflow has the right **permissions** (already set in the workflow files).
+
+**3. Create the required labels:**  
+Go to: **Actions → 🏷️ Setup AI Labels → Run workflow**
+
+This creates: `ai-fix`, `ai-feature`, `prd`, `ai-generated`
+
+---
+
+### Triggering a bug fix automatically
+
+```
+1. Someone opens a GitHub Issue reporting a bug
+2. You (or a maintainer) add the label:  ai-fix
+3. GitHub Actions triggers automatically
+4. The AI pipeline runs:
+   Issue → Diagnosis → Fix → Code Review → Regression Tests → PR
+5. A PR is opened with the fix within ~2 minutes
+6. The issue gets comments at each stage
+```
+
+**Example issue that would trigger it:**
+```
+Title: Login button does nothing when clicking with email that has capital letters
+Body:  Steps to reproduce:
+       1. Enter email with uppercase letters (e.g. User@Example.com)
+       2. Click login
+       Expected: should log in
+       Actual: nothing happens, no error shown
+```
+
+After adding label `ai-fix`:
+- 🔬 Architect diagnoses root cause (case sensitivity bug in email comparison)
+- 🔧 Engineer patches the affected files
+- 🔍 Code Reviewer reviews the fix
+- 🧪 QA adds a regression test case
+- A PR is opened: `fix/agent/issue-42-login-button-does-nothing...`
+
+---
+
+### Triggering a new feature build
+
+```
+1. Open a GitHub Issue describing a feature
+2. Add the label:  ai-feature
+3. The full pipeline runs:
+   Issue → PM (PRD) → Architect → Engineers ×N → Reviewer → QA → PR
+```
+
+---
+
+### Workflows overview
+
+| Workflow | Trigger | Pipeline |
+|---|---|---|
+| `bug-fix.yml` | Issue labeled `ai-fix` | Diagnosis → Fix → Review → Tests |
+| `feature-build.yml` | Issue labeled `ai-feature` | PM → Architect → Engineers → Review → QA |
+| `setup-labels.yml` | Manual (run once) | Creates required labels |
+
+---
+
 ## 📁 Project Structure
 
 ```
 ai-software-house/
-├── main.py                  # CLI entry point
-├── orchestrator.py          # Pipeline manager
-├── github_client.py         # GitHub REST API wrapper
-├── config.yaml              # Configuration
+├── main.py                      # CLI: python main.py "Build a todo app"
+├── orchestrator.py              # Full feature pipeline
+├── bug_fix_orchestrator.py      # Bug-fix pipeline (triggered by GitHub Issues)
+├── fix_issue.py                 # Entry point for GitHub Actions bug-fix workflow
+├── github_client.py             # GitHub REST API wrapper
+├── config.yaml                  # Configuration
 ├── requirements.txt
 │
-├── agents/
-│   ├── __init__.py
-│   ├── base_agent.py        # BaseAgent (calls GitHub Models API)
-│   ├── product_manager.py   # PM: requirement → PRD
-│   ├── architect.py         # Architect: PRD → system design
-│   ├── engineer.py          # Engineer: design → code (parallel)
-│   ├── code_reviewer.py     # Reviewer: code → review feedback
-│   └── qa_engineer.py       # QA: code → tests + test plan
+├── .github/
+│   └── workflows/
+│       ├── bug-fix.yml          # Auto-runs on "ai-fix" label
+│       ├── feature-build.yml    # Auto-runs on "ai-feature" label
+│       └── setup-labels.yml    # One-time label setup
 │
-└── roles/                   # Agent role instructions (system prompts)
+├── agents/
+│   ├── base_agent.py            # BaseAgent (calls GitHub Models API)
+│   ├── product_manager.py
+│   ├── architect.py
+│   ├── engineer.py              # Parallel N-worker engineer
+│   ├── code_reviewer.py
+│   └── qa_engineer.py
+│
+└── roles/                       # Agent role instructions (system prompts)
     ├── product_manager.md
     ├── architect.md
     ├── engineer.md
