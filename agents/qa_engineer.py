@@ -3,6 +3,8 @@ QAEngineerAgent: writes tests for generated code and produces a validation repor
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from .base_agent import BaseAgent
 
 
@@ -59,7 +61,8 @@ class QAEngineerAgent(BaseAgent):
         github_client,
         branch: str,
         pr_number: int,
-        issue_number: int,
+        issue_number: Optional[int] = None,
+        tracker_github_client=None,
     ) -> dict:
         """Run QA, commit test files to the feature branch, and post a report on the PR.
 
@@ -67,17 +70,22 @@ class QAEngineerAgent(BaseAgent):
             files: Generated code files.
             prd: PRD markdown.
             project_name: Project name.
-            github_client: GitHubClient instance.
+            github_client: GitHubClient for the target project (commits, PR comments).
             branch: Feature branch to commit tests to.
-            pr_number: PR number to comment on.
-            issue_number: PRD issue number to close with final report.
+            pr_number: PR number to comment on (in target project).
+            issue_number: Tracker issue number to close when done. Optional — if omitted,
+                the orchestrator is responsible for closing the tracker issue.
+            tracker_github_client: GitHubClient for the tracker repo (e.g. ai-software-house).
+                If provided and different from github_client, issue_number is closed here.
+                Falls back to github_client when not provided.
 
         Returns:
             Same as run() result.
         """
+        tracker = tracker_github_client or github_client
         result = self.run(files, prd, project_name)
 
-        # Commit test files to the feature branch
+        # Commit test files to the feature branch in the target project
         for filepath, content in result["test_files"].items():
             github_client.commit_file(
                 path=filepath,
@@ -86,26 +94,27 @@ class QAEngineerAgent(BaseAgent):
                 branch=branch,
             )
 
-        # Post test plan as PR comment
+        # Post test plan as PR comment in the target project
         github_client.add_pr_comment(
             pr_number,
             f"## 🧪 QA Test Plan (QAEngineerAgent)\n\n{result['test_plan']}",
         )
 
-        # Close the PRD issue with a completion summary
-        github_client.close_issue(
-            issue_number,
-            comment=(
-                f"## ✅ Implementation Complete\n\n"
-                f"All pipeline stages finished for **{project_name}**:\n"
-                f"- 📋 PRD created\n"
-                f"- 🏗️ System design complete\n"
-                f"- 💻 Code implemented ({len(files)} files)\n"
-                f"- 🔍 Code review complete\n"
-                f"- 🧪 Tests written ({len(result['test_files'])} test files)\n\n"
-                f"See PR for full implementation."
-            ),
-        )
+        # Close the tracker issue with a completion summary (if an issue number is provided)
+        if issue_number is not None:
+            tracker.close_issue(
+                issue_number,
+                comment=(
+                    f"## ✅ Implementation Complete\n\n"
+                    f"All pipeline stages finished for **{project_name}**:\n"
+                    f"- 📋 PRD created\n"
+                    f"- 🏗️ System design complete\n"
+                    f"- 💻 Code implemented ({len(files)} files)\n"
+                    f"- 🔍 Code review complete\n"
+                    f"- 🧪 Tests written ({len(result['test_files'])} test files)\n\n"
+                    f"See PR for full implementation."
+                ),
+            )
         return result
 
     @staticmethod

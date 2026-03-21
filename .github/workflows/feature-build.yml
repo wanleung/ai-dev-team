@@ -44,34 +44,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Determine requirement from issue
+      - name: Determine issue number
         id: issue
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            NUMBER="${{ inputs.issue_number }}"
+            echo "number=${{ inputs.issue_number }}" >> $GITHUB_OUTPUT
           else
-            NUMBER="${{ github.event.issue.number }}"
+            echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
           fi
-          echo "number=$NUMBER" >> $GITHUB_OUTPUT
-
-          # Fetch issue title+body as the requirement
-          TITLE=$(gh issue view "$NUMBER" --json title --jq '.title')
-          BODY=$(gh issue view "$NUMBER" --json body --jq '.body // ""')
-          REQUIREMENT="$TITLE. $BODY"
-          # Write to file to avoid shell escaping issues
-          echo "$REQUIREMENT" > /tmp/requirement.txt
-          echo "title=$TITLE" >> $GITHUB_OUTPUT
-
-      - name: Post acknowledgement comment
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh issue comment "${{ steps.issue.outputs.number }}" \
-            --body "🤖 **AI Software House** — Feature pipeline started for: **${{ steps.issue.outputs.title }}**
-
-          Agents working: PM → Architect → Engineers → Reviewer → QA. A PR will be opened shortly."
 
       - name: Configure git identity
         run: |
@@ -82,10 +62,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          REQUIREMENT=$(cat /tmp/requirement.txt)
-          python main.py "$REQUIREMENT" \
-            --repo ${{ github.repository }} \
-            --no-github false
+          python build_feature.py \
+            --issue-number ${{ steps.issue.outputs.number }} \
+            --tracker-repo ${{ github.repository }}
 
       - name: Post failure comment
         if: failure()

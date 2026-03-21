@@ -7,9 +7,35 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from typing import Optional
 
 import requests
+
+
+def parse_target_repo(text: str) -> Optional[str]:
+    """Extract a 'owner/repo' target directive from an issue body.
+
+    Recognises:
+        **Target repo:** owner/project   (Markdown bold with colon inside)
+        Target repo: owner/project
+        target-repo: owner/project
+
+    Returns the first match, or None if not found.
+    """
+    if not text:
+        return None
+    patterns = [
+        # Markdown bold with colon inside: **Target repo:** owner/repo
+        r"[*][*][Tt]arget[- ][Rr]epo:[*][*]\s*([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)",
+        # Plain text: Target repo: owner/repo  (colon after word, outside any markup)
+        r"[Tt]arget[- ][Rr]epo\s*:\s*([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return None
 
 
 class GitHubClient:

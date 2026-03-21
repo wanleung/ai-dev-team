@@ -22,7 +22,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from agents import ArchitectAgent, CodeReviewerAgent, EngineerAgent, QAEngineerAgent
-from github_client import GitHubClient
+from github_client import GitHubClient, parse_target_repo
 
 console = Console()
 
@@ -99,6 +99,7 @@ class BugFixOrchestrator:
         self.model = model
         self.branch_prefix = branch_prefix
         self.workspace_dir = Path(workspace_dir)
+        self._github_token = github_token  # stored for creating target GitHubClient at runtime
         overrides = model_overrides or {}
 
         agent_kwargs = {"github_token": github_token}
@@ -164,6 +165,16 @@ class BugFixOrchestrator:
         )
         start_time = time.time()
 
+        # ── Detect target project repo (multi-repo support) ───────────────────
+        # If the issue body contains "Target repo: owner/project", code ops go there
+        # while tracker comments/issue-close stay in self.github (the ai-software-house repo).
+        target_repo_override = parse_target_repo(result.issue_body)
+        if target_repo_override and target_repo_override != self.github.repo:
+            self._target_gh = GitHubClient(repo=target_repo_override, github_token=self._github_token)
+            console.print(f"  🎯 Targeting project repo: [bold]{target_repo_override}[/bold]")
+        else:
+            self._target_gh = self.github  # same repo for tracking and code
+
         console.print(Panel.fit(
             f"[bold red]🐛 Bug Fix Pipeline[/bold red]\n"
             f"[dim]Issue #{issue_number}: {result.issue_title[:100]}[/dim]",
@@ -223,7 +234,7 @@ class BugFixOrchestrator:
         )
 
     def _stage_fix(self, result: BugFixResult) -> None:
-        """Engineer implements the fix and opens a PR."""
+        """Engineer implements the fix and opens a PR in the target project repo."""
         import re
         safe_title = re.sub(r"[^a-z0-9-]", "-", result.issue_title.lower())[:50]
         branch_name = f"{self.branch_prefix}/issue-{result.issue_number}-{safe_title}"
@@ -232,7 +243,7 @@ class BugFixOrchestrator:
             design=result.diagnosis,
             modules=result.modules,
             project_name=f"Bug Fix: {result.issue_title}",
-            github_client=self.github,
+            github_client=self._target_gh,
             branch_prefix=self.branch_prefix,
             issue_number=result.issue_number,
         )
@@ -245,13 +256,13 @@ class BugFixOrchestrator:
         self._save_files_locally(result.fixed_files, f"fix-issue-{result.issue_number}")
 
     def _stage_review(self, result: BugFixResult) -> None:
-        """Code Reviewer reviews the fix."""
+        """Code Reviewer reviews the fix in the target project repo."""
         if result.pr_number:
             rev_result = self.reviewer.run_with_github(
                 files=result.fixed_files,
                 prd=f"Bug Report: {result.issue_title}\n\n{result.issue_body}",
                 project_name=f"Bug Fix #{result.issue_number}",
-                github_client=self.github,
+                github_client=self._target_gh,
                 pr_number=result.pr_number,
             )
         else:
@@ -264,16 +275,20 @@ class BugFixOrchestrator:
         result.verdict = rev_result["verdict"]
 
     def _stage_qa(self, result: BugFixResult) -> None:
-        """QA writes regression tests and posts results."""
+        """QA writes regression tests. Code goes to target project; summary goes to tracker issue."""
+        cross_repo = self._target_gh is not self.github
         if result.branch and result.pr_number:
             qa_result = self.qa.run_with_github(
                 files=result.fixed_files,
                 prd=f"Regression tests for bug: {result.issue_title}\n\n{result.issue_body}",
                 project_name=f"Bug Fix #{result.issue_number}",
-                github_client=self.github,
+                github_client=self._target_gh,
                 branch=result.branch,
                 pr_number=result.pr_number,
-                issue_number=result.issue_number,
+                # Don't close the tracker issue from inside the agent when cross-repo;
+                # _finish() will post the final comment on the tracker issue instead.
+                issue_number=None if cross_repo else result.issue_number,
+                tracker_github_client=self.github if cross_repo else None,
             )
         else:
             qa_result = self.qa.run(
@@ -312,11 +327,34 @@ class BugFixOrchestrator:
     def _finish(self, result: BugFixResult, start_time: float) -> BugFixResult:
         result.duration_seconds = time.time() - start_time
 
+        # When code went to a different repo, close the tracker issue with a summary link
+        cross_repo = hasattr(self, "_target_gh") and self._target_gh is not self.github
+        if cross_repo and not result.errors:
+            target_repo = self._target_gh.repo
+            body = (
+                f"## ✅ Bug Fix Complete\n\n"
+                f"Fix implemented in **[{target_repo}]"
+                f"(https://github.com/{target_repo})**.\n\n"
+            )
+            if result.pr_url:
+                body += f"- 🔧 PR: {result.pr_url}\n"
+            body += (
+                f"- 📁 Fixed files: {len(result.fixed_files)}\n"
+                f"- 🧪 Test files: {len(result.test_files)}\n"
+                f"- 🔍 Review verdict: {result.verdict or '—'}"
+            )
+            try:
+                self.github.close_issue(result.issue_number, comment=body)
+            except Exception:
+                pass  # Non-critical
+
         table = Table(title="Bug Fix Summary", show_header=True, header_style="bold red")
         table.add_column("Stage", style="cyan")
         table.add_column("Output")
 
         table.add_row("Issue", f"#{result.issue_number}: {result.issue_title[:60]}")
+        if cross_repo:
+            table.add_row("Target repo", self._target_gh.repo)
         table.add_row("Fixed files", str(len(result.fixed_files)))
         table.add_row("Test files", str(len(result.test_files)))
         table.add_row("Review verdict", result.verdict or "—")
