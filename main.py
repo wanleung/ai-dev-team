@@ -29,6 +29,10 @@ Examples:
   # Run locally (no GitHub integration)
   python main.py "Build a REST API for a bookmark manager"
 
+  # Load requirement from a text file
+  python main.py --file requirements.txt
+  python main.py --file requirements.txt --repo myuser/myrepo
+
   # Run with GitHub integration (creates Issues + PR)
   python main.py "Build a blog platform" --repo myuser/myrepo
 
@@ -88,6 +92,12 @@ Setup:
         metavar="TOKEN",
         help="GitHub token (overrides GITHUB_TOKEN env var).",
     )
+    parser.add_argument(
+        "--file",
+        metavar="PATH",
+        help="Read the requirement from a text file instead of the command line "
+             "(e.g. --file requirements.txt). Overrides the positional argument.",
+    )
 
     return parser.parse_args()
 
@@ -97,6 +107,19 @@ def main() -> int:
 
     # ── Prompt for requirement if not provided ────────────────────────────────
     requirement = args.requirement
+
+    # --file takes priority over the positional argument
+    if args.file:
+        try:
+            requirement = open(args.file, encoding="utf-8").read().strip()
+            if not requirement:
+                console.print(f"[red]File '{args.file}' is empty.[/red]")
+                return 1
+            console.print(f"[dim]📄 Loaded requirement from {args.file} ({len(requirement)} chars)[/dim]")
+        except OSError as e:
+            console.print(f"[red]Cannot read file '{args.file}': {e}[/red]")
+            return 1
+
     if not requirement:
         console.print(Panel.fit(
             "[bold cyan]🏢 AI Software House[/bold cyan]\n"
