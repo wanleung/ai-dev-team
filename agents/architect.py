@@ -1,0 +1,108 @@
+"""
+ArchitectAgent: transforms a PRD into a system design document.
+"""
+from __future__ import annotations
+
+from .base_agent import BaseAgent
+
+
+class ArchitectAgent(BaseAgent):
+    """Architect Agent — produces a system design from a PRD.
+
+    Input:  PRD markdown (from ProductManagerAgent)
+    Output: system design markdown + list of implementation modules
+    """
+
+    role_name = "architect"
+
+    def run(self, prd: str, project_name: str = "Project") -> dict:
+        """Produce a system design document from a PRD.
+
+        Args:
+            prd: The PRD markdown from the PM agent.
+            project_name: Human-readable project name for context.
+
+        Returns:
+            dict with keys:
+                - design (str): Full system design markdown
+                - modules (list[dict]): Parsed list of modules to implement
+                  Each module: {name: str, description: str}
+        """
+        prompt = (
+            f"You have received the following PRD for the project '{project_name}':\n\n"
+            f"---\n{prd}\n---\n\n"
+            f"Please produce a complete System Design document following your role instructions. "
+            f"Make sure to include an 'Implementation Modules' section that clearly lists each "
+            f"module/file that needs to be implemented."
+        )
+
+        design = self.call(prompt)
+        modules = self._parse_modules(design)
+
+        return {
+            "design": design,
+            "modules": modules,
+        }
+
+    def run_with_github(self, prd: str, project_name: str, github_client, issue_number: int) -> dict:
+        """Run and post the system design as a GitHub Issue comment.
+
+        Args:
+            prd: PRD markdown.
+            project_name: Project name.
+            github_client: A GitHubClient instance.
+            issue_number: The PRD issue number to comment on.
+
+        Returns:
+            Same as run() result.
+        """
+        result = self.run(prd, project_name)
+
+        github_client.add_issue_comment(
+            issue_number,
+            f"## 🏗️ System Design (Architect)\n\n{result['design']}",
+        )
+        return result
+
+    @staticmethod
+    def _parse_modules(design: str) -> list[dict]:
+        """Extract the list of modules from the system design document."""
+        modules = []
+        in_modules_section = False
+
+        for line in design.splitlines():
+            stripped = line.strip()
+
+            if "implementation modules" in stripped.lower() or "## modules" in stripped.lower():
+                in_modules_section = True
+                continue
+
+            # Stop at next major section heading
+            if in_modules_section and stripped.startswith("## ") and "module" not in stripped.lower():
+                break
+
+            # Parse numbered list items: "1. **module_name**: description"
+            if in_modules_section and stripped and stripped[0].isdigit():
+                # Remove leading "1. " etc.
+                content = stripped.split(". ", 1)[-1] if ". " in stripped else stripped
+                # Split on ":" for name/description
+                if "**" in content and "**:" in content:
+                    parts = content.split("**:", 1)
+                    name = parts[0].strip("* ").strip()
+                    desc = parts[1].strip() if len(parts) > 1 else ""
+                elif ":" in content:
+                    name, _, desc = content.partition(":")
+                    name = name.strip("* ").strip()
+                    desc = desc.strip()
+                else:
+                    name = content.strip("* ").strip()
+                    desc = ""
+
+                if name:
+                    modules.append({"name": name, "description": desc})
+
+        # Fallback: return a generic single module if parsing fails
+        if not modules:
+            modules = [{"name": "main", "description": "Main application module"}]
+
+        return modules

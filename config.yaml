@@ -1,0 +1,45 @@
+# AI Software House Configuration
+# Copy this file and edit to match your setup.
+
+# ── LLM Settings ───────────────────────────────────────────────────────────
+llm:
+  # Model to use via GitHub Models API (same backend as Copilot CLI)
+  # Options: gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini, claude-3.5-sonnet, meta-llama-3.1-70b-instruct
+  model: "gpt-4.1"
+
+  # Per-role model overrides (optional) — use a fast model for Engineer to save cost
+  overrides:
+    engineer: "gpt-4.1-mini"
+
+# ── GitHub Settings ─────────────────────────────────────────────────────────
+github:
+  # Target repository in 'owner/repo' format
+  # This is where the team will create issues, branches, PRs
+  repo: "your-username/your-repo"
+
+  # Branch prefix for engineer feature branches
+  branch_prefix: "feature/agent"
+
+# ── Team Composition ────────────────────────────────────────────────────────
+team:
+  # Number of parallel Engineer agents (each handles a separate module)
+  num_engineers: 2
+
+  # Enable/disable specific agents
+  agents:
+    product_manager: true
+    architect: true
+    engineer: true
+    code_reviewer: true
+    qa_engineer: true
+
+# ── Pipeline Settings ────────────────────────────────────────────────────────
+pipeline:
+  # Directory where generated code workspace will be written locally
+  workspace_dir: "./workspace"
+
+  # Stop the pipeline if the code reviewer requests changes
+  stop_on_review_issues: false
+
+  # Maximum retries per agent call on API failure
+  max_retries: 2
