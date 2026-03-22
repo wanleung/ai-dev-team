@@ -5,6 +5,7 @@ This is the same AI backbone that powers GitHub Copilot CLI.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -59,6 +60,8 @@ class BaseAgent:
     def call(self, user_message: str, context: Optional[str] = None) -> str:
         """Send a message to the LLM and return the response.
 
+        Retries up to 5 times with exponential backoff on 429 rate-limit errors.
+
         Args:
             user_message: The main task/prompt for the agent.
             context: Optional additional context prepended to the message.
@@ -73,12 +76,25 @@ class BaseAgent:
             messages.append({"role": "system", "content": self.system_prompt})
         messages.append({"role": "user", "content": full_message})
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=0.3,
-        )
-        return response.choices[0].message.content or ""
+        max_retries = 5
+        delay = 15  # seconds — start conservative for the 60-req/min window
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                )
+                return response.choices[0].message.content or ""
+            except Exception as exc:
+                # Check for rate-limit (429) — back off and retry
+                is_rate_limit = "429" in str(exc) or "RateLimitReached" in str(exc)
+                if is_rate_limit and attempt < max_retries - 1:
+                    wait = delay * (2 ** attempt)  # 15s, 30s, 60s, 120s
+                    print(f"    ⏳ Rate limited — waiting {wait}s before retry {attempt + 2}/{max_retries}…")
+                    time.sleep(wait)
+                else:
+                    raise
 
     @staticmethod
     def truncate_files(files: dict[str, str], max_chars: int = 12_000) -> dict[str, str]:
