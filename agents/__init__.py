@@ -2,6 +2,7 @@
 from .base_agent import BaseAgent
 from .product_manager import ProductManagerAgent
 from .architect import ArchitectAgent
+from .architect_reviewer import ArchitectReviewerAgent
 from .engineer import EngineerAgent
 from .code_reviewer import CodeReviewerAgent
 from .qa_engineer import QAEngineerAgent
@@ -11,6 +12,7 @@ __all__ = [
     "BaseAgent",
     "ProductManagerAgent",
     "ArchitectAgent",
+    "ArchitectReviewerAgent",
     "EngineerAgent",
     "CodeReviewerAgent",
     "QAEngineerAgent",
