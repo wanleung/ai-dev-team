@@ -21,6 +21,7 @@ from rich.table import Table
 from agents import (
     ArchitectAgent,
     CodeReviewerAgent,
+    DeploymentTesterAgent,
     EngineerAgent,
     ProductManagerAgent,
     QAEngineerAgent,
@@ -41,11 +42,15 @@ class PipelineResult:
     modules: list[dict] = field(default_factory=list)
     all_files: dict[str, str] = field(default_factory=dict)
     test_files: dict[str, str] = field(default_factory=dict)
+    deploy_files: dict[str, str] = field(default_factory=dict)
     review: str = ""
     verdict: str = ""
     test_plan: str = ""
+    deploy_plan: str = ""
     test_results: str = ""
+    deploy_test_results: str = ""
     tests_passed: Optional[bool] = None
+    deploy_tests_passed: Optional[bool] = None
     issue_number: Optional[int] = None
     issue_url: Optional[str] = None
     pr_number: Optional[int] = None
@@ -67,8 +72,11 @@ class PipelineResult:
             "review": self.review,
             "verdict": self.verdict,
             "test_plan": self.test_plan,
+            "deploy_plan": self.deploy_plan,
             "test_results": self.test_results,
+            "deploy_test_results": self.deploy_test_results,
             "tests_passed": self.tests_passed,
+            "deploy_tests_passed": self.deploy_tests_passed,
             "issue_number": self.issue_number,
             "issue_url": self.issue_url,
             "pr_number": self.pr_number,
@@ -81,7 +89,8 @@ class PipelineResult:
     def from_dict(cls, data: dict) -> "PipelineResult":
         r = cls(requirement=data["requirement"])
         for key in ["project_name", "prd", "design", "modules", "all_files", "test_files",
-                    "review", "verdict", "test_plan", "test_results", "tests_passed",
+                    "deploy_files", "review", "verdict", "test_plan", "deploy_plan",
+                    "test_results", "deploy_test_results", "tests_passed", "deploy_tests_passed",
                     "issue_number", "issue_url",
                     "pr_number", "pr_url", "branch", "completed_stages"]:
             setattr(r, key, data.get(key, getattr(r, key)))
@@ -128,6 +137,7 @@ class Orchestrator:
         )
         self.reviewer = CodeReviewerAgent(model=model, **agent_kwargs)
         self.qa = QAEngineerAgent(model=model, **agent_kwargs)
+        self.deployment_tester = DeploymentTesterAgent(model=model, **agent_kwargs)
 
         # Tracker GitHub (ai-software-house): PM issues, progress comments
         self.github: Optional[GitHubClient] = None
@@ -274,6 +284,22 @@ class Orchestrator:
         else:
             console.print("  ⏭️  [dim]🏃 Test Runner — skipped (checkpoint)[/dim]")
 
+        # ── Stage 7: Deployment Tester ────────────────────────────────────────
+        if "deployment_tester" not in result.completed_stages:
+            self._run_stage("🚀 Deployment Tester", "Generating deployment smoke tests...", result, lambda: self._stage_deployment_tester(result))
+            result.completed_stages.append("deployment_tester")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]🚀 Deployment Tester — skipped (checkpoint)[/dim]")
+
+        # ── Stage 8: Run Deployment Tests ─────────────────────────────────────
+        if "deploy_test_runner" not in result.completed_stages and result.deploy_files:
+            self._run_stage("🐳 Deploy Test Runner", "Running docker smoke tests...", result, lambda: self._stage_deploy_test_runner(result))
+            result.completed_stages.append("deploy_test_runner")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]🐳 Deploy Test Runner — skipped (checkpoint)[/dim]")
+
         # Pipeline complete — remove checkpoint
         self._clear_checkpoint(result)
         return self._finish(result, start_time)
@@ -408,6 +434,61 @@ class Orchestrator:
                 f"```\n{truncated}\n```",
             )
 
+    def _stage_deployment_tester(self, result: PipelineResult) -> None:
+        """Generate deployment smoke tests and commit them to the PR branch."""
+        deploy_result = self.deployment_tester.run(result.all_files, result.prd, result.project_name)
+        result.deploy_files = deploy_result["deploy_files"]
+        result.deploy_plan = deploy_result["deploy_plan"]
+        self._save_files_locally(result.deploy_files, result.project_name)
+
+        if self.target_github and result.branch and result.pr_number:
+            self.deployment_tester.run_with_github(
+                result.all_files, result.prd, result.project_name,
+                self.target_github, result.branch, result.pr_number,
+            )
+
+    def _stage_deploy_test_runner(self, result: PipelineResult) -> None:
+        """Run docker-compose deployment smoke tests locally."""
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
+        project_dir = self.workspace_dir / safe
+
+        # Check if docker is available
+        docker_check = subprocess.run(["docker", "info"], capture_output=True)
+        if docker_check.returncode != 0:
+            console.print("    ⚠️  Docker not available — skipping deployment tests.")
+            result.deploy_test_results = "Docker not available in this environment."
+            result.deploy_tests_passed = None
+            return
+
+        console.print("    🐳 Running docker deployment smoke tests…")
+        deploy_result = self.deployment_tester.run_docker_smoke_tests(project_dir)
+
+        if deploy_result.get("skipped"):
+            console.print(f"    ⏭️  {deploy_result['output']}")
+            result.deploy_tests_passed = None
+            return
+
+        output = deploy_result["output"]
+        passed = deploy_result["passed"]
+        status = "✅ Deployment tests passed" if passed else "❌ Deployment tests failed"
+        console.print(f"    {status}")
+
+        lines = output.strip().splitlines()
+        for line in lines[-20:]:
+            console.print(f"    [dim]{line}[/dim]")
+
+        result.deploy_test_results = output
+        result.deploy_tests_passed = passed
+
+        if self.target_github and result.pr_number:
+            truncated = "\n".join(lines[-60:]) if len(lines) > 60 else output
+            self.target_github.add_pr_comment(
+                result.pr_number,
+                f"## 🐳 Deployment Smoke Test Results\n\n"
+                f"**Status:** {status}\n\n"
+                f"```\n{truncated}\n```",
+            )
+
     # ── Helpers ─────────────────────────────────────────────────────────────
 
     def _run_stage(self, name: str, description: str, result: PipelineResult, fn) -> None:
@@ -505,6 +586,12 @@ class Orchestrator:
             table.add_row("Tests", "❌ Failed (see PR comment for details)")
         else:
             table.add_row("Tests", "—")
+        if result.deploy_tests_passed is True:
+            table.add_row("Deploy tests", "✅ Passed")
+        elif result.deploy_tests_passed is False:
+            table.add_row("Deploy tests", "❌ Failed (see PR comment for details)")
+        elif result.deploy_files:
+            table.add_row("Deploy tests", "⏭️  Skipped (no Docker)")
         if result.issue_url:
             table.add_row("GitHub Issue", result.issue_url)
         if result.pr_url:

@@ -8,6 +8,8 @@ on:
       - "tests/**"
       - "**.py"
       - "requirements*.txt"
+      - "docker-compose*.yml"
+      - "Dockerfile"
   workflow_dispatch:
     inputs:
       pr_number:
@@ -16,8 +18,8 @@ on:
         type: number
 
 jobs:
-  test:
-    name: pytest
+  unit-test:
+    name: pytest (unit + integration)
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -51,6 +53,7 @@ jobs:
         id: run_tests
         run: |
           pytest tests/ -v --tb=short \
+            --ignore=tests/test_deployment.py \
             --cov=. --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
             -p no:cacheprovider \
@@ -65,16 +68,13 @@ jobs:
           STATUS="${{ steps.run_tests.outcome }}"
           if [ "$STATUS" = "success" ]; then
             EMOJI="✅"
-            LABEL="All tests passed"
+            LABEL="All unit tests passed"
           else
             EMOJI="❌"
-            LABEL="Some tests failed"
+            LABEL="Some unit tests failed"
           fi
-
-          # Grab last 60 lines of output
           OUTPUT=$(tail -60 test_output.txt 2>/dev/null || echo "No output captured")
-
-          gh pr comment "${{ github.event.pull_request.number }}" --body "## 🧪 Test Run Results
+          gh pr comment "${{ github.event.pull_request.number }}" --body "## 🏃 Unit Test Results
 
 **Status:** ${EMOJI} ${LABEL}
 
@@ -89,3 +89,76 @@ ${OUTPUT}
           name: coverage-report
           path: coverage.xml
           if-no-files-found: ignore
+
+  deploy-test:
+    name: Docker deployment smoke tests
+    runs-on: ubuntu-latest
+    needs: unit-test
+    if: hashFiles('docker-compose.test.yml') != ''
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install smoke test dependencies
+        run: pip install pytest httpx -q
+
+      - name: Build and start test stack
+        run: |
+          docker compose -f docker-compose.test.yml up -d --build
+          echo "Waiting for services to be healthy..."
+
+      - name: Wait for healthy
+        run: |
+          for i in $(seq 1 24); do
+            STATUS=$(docker compose -f docker-compose.test.yml ps --format json 2>/dev/null || echo "")
+            if echo "$STATUS" | grep -q '"Health":"healthy"'; then
+              echo "✅ Services healthy"
+              break
+            fi
+            echo "Attempt $i/24 — waiting 5s..."
+            sleep 5
+          done
+          docker compose -f docker-compose.test.yml ps
+
+      - name: Run smoke tests
+        id: smoke
+        env:
+          BASE_URL: "http://localhost:8000"
+        run: |
+          pytest tests/test_deployment.py -v --tb=short 2>&1 | tee deploy_test_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+
+      - name: Post deployment test results to PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS="${{ steps.smoke.outcome }}"
+          if [ "$STATUS" = "success" ]; then
+            EMOJI="✅"
+            LABEL="Deployment smoke tests passed"
+          else
+            EMOJI="❌"
+            LABEL="Deployment smoke tests failed"
+          fi
+          OUTPUT=$(tail -60 deploy_test_output.txt 2>/dev/null || echo "No output captured")
+          gh pr comment "${{ github.event.pull_request.number }}" --body "## 🐳 Deployment Smoke Test Results
+
+**Status:** ${EMOJI} ${LABEL}
+
+\`\`\`
+${OUTPUT}
+\`\`\`"
