@@ -5,6 +5,8 @@ Manages artifact passing, logging, and optional GitHub integration.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +44,8 @@ class PipelineResult:
     review: str = ""
     verdict: str = ""
     test_plan: str = ""
+    test_results: str = ""
+    tests_passed: Optional[bool] = None
     issue_number: Optional[int] = None
     issue_url: Optional[str] = None
     pr_number: Optional[int] = None
@@ -63,6 +67,8 @@ class PipelineResult:
             "review": self.review,
             "verdict": self.verdict,
             "test_plan": self.test_plan,
+            "test_results": self.test_results,
+            "tests_passed": self.tests_passed,
             "issue_number": self.issue_number,
             "issue_url": self.issue_url,
             "pr_number": self.pr_number,
@@ -75,7 +81,8 @@ class PipelineResult:
     def from_dict(cls, data: dict) -> "PipelineResult":
         r = cls(requirement=data["requirement"])
         for key in ["project_name", "prd", "design", "modules", "all_files", "test_files",
-                    "review", "verdict", "test_plan", "issue_number", "issue_url",
+                    "review", "verdict", "test_plan", "test_results", "tests_passed",
+                    "issue_number", "issue_url",
                     "pr_number", "pr_url", "branch", "completed_stages"]:
             setattr(r, key, data.get(key, getattr(r, key)))
         return r
@@ -259,6 +266,14 @@ class Orchestrator:
         else:
             console.print("  ⏭️  [dim]🧪 QA Engineer — skipped (checkpoint)[/dim]")
 
+        # ── Stage 6: Test Runner ──────────────────────────────────────────────
+        if "test_runner" not in result.completed_stages and result.test_files:
+            self._run_stage("🏃 Test Runner", "Executing tests...", result, lambda: self._stage_test_runner(result))
+            result.completed_stages.append("test_runner")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]🏃 Test Runner — skipped (checkpoint)[/dim]")
+
         # Pipeline complete — remove checkpoint
         self._clear_checkpoint(result)
         return self._finish(result, start_time)
@@ -336,6 +351,62 @@ class Orchestrator:
         result.test_files = qa_result["test_files"]
         result.test_plan = qa_result["test_plan"]
         self._save_files_locally(result.test_files, result.project_name)
+
+    def _stage_test_runner(self, result: PipelineResult) -> None:
+        """Run pytest on the locally saved test files and post results back to the PR."""
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
+        project_dir = self.workspace_dir / safe
+
+        # Install test requirements if present
+        req_file = project_dir / "requirements-test.txt"
+        if not req_file.exists():
+            # Fallback: write a minimal one
+            req_file.write_text("pytest\npytest-cov\nhttpx\n", encoding="utf-8")
+
+        console.print("    📦 Installing test dependencies…")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q"],
+            check=False,
+        )
+
+        tests_dir = project_dir / "tests"
+        if not tests_dir.exists():
+            console.print("    ⚠️  No tests/ directory found — skipping execution.")
+            result.test_results = "No tests directory found."
+            return
+
+        console.print(f"    🏃 Running pytest in {tests_dir}…")
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", str(tests_dir), "-v", "--tb=short",
+             f"--rootdir={project_dir}", "-p", "no:cacheprovider"],
+            capture_output=True,
+            text=True,
+            cwd=str(project_dir),
+        )
+
+        output = proc.stdout + proc.stderr
+        passed = proc.returncode == 0
+        status = "✅ All tests passed" if passed else "❌ Some tests failed"
+        console.print(f"    {status}")
+
+        # Show last 40 lines in console
+        lines = output.strip().splitlines()
+        summary_lines = lines[-40:] if len(lines) > 40 else lines
+        for line in summary_lines:
+            console.print(f"    [dim]{line}[/dim]")
+
+        result.test_results = output
+        result.tests_passed = passed
+
+        # Post results as a PR comment
+        if self.target_github and result.pr_number:
+            truncated = "\n".join(lines[-80:]) if len(lines) > 80 else output
+            self.target_github.add_pr_comment(
+                result.pr_number,
+                f"## 🏃 Test Run Results\n\n"
+                f"**Status:** {status}\n\n"
+                f"```\n{truncated}\n```",
+            )
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -428,6 +499,12 @@ class Orchestrator:
         table.add_row("Code files", str(len(result.all_files)))
         table.add_row("Test files", str(len(result.test_files)))
         table.add_row("Review verdict", result.verdict or "—")
+        if result.tests_passed is True:
+            table.add_row("Tests", "✅ Passed")
+        elif result.tests_passed is False:
+            table.add_row("Tests", "❌ Failed (see PR comment for details)")
+        else:
+            table.add_row("Tests", "—")
         if result.issue_url:
             table.add_row("GitHub Issue", result.issue_url)
         if result.pr_url:

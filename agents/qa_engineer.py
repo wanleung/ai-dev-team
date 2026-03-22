@@ -122,7 +122,9 @@ class QAEngineerAgent(BaseAgent):
 
     @staticmethod
     def _parse_test_files(response: str) -> dict[str, str]:
-        """Parse '### FILE: tests/...' sections from the QA response."""
+        """Parse '### FILE: tests/...' sections from the QA response.
+        Also captures conftest.py and requirements-test.txt.
+        """
         files: dict[str, str] = {}
         current_path: str | None = None
         current_lines: list[str] = []
@@ -141,18 +143,22 @@ class QAEngineerAgent(BaseAgent):
                 if line.strip().startswith("```"):
                     in_code_block = not in_code_block
                     continue
-                # Only capture lines within the tests/ path convention
                 current_lines.append(line)
 
         if current_path and current_lines:
             files[current_path] = "\n".join(current_lines).strip()
 
-        # Ensure test files are under tests/ directory
+        # Normalise paths: test files → tests/, special files stay as-is
         normalized: dict[str, str] = {}
         for path, content in files.items():
-            if not path.startswith("tests/"):
-                path = f"tests/{path}"
-            normalized[path] = content
+            if path in ("requirements-test.txt", "conftest.py"):
+                normalized[path] = content
+            elif path.endswith("conftest.py") or path.endswith("requirements-test.txt"):
+                normalized[path] = content
+            elif not path.startswith("tests/"):
+                normalized[f"tests/{path}"] = content
+            else:
+                normalized[path] = content
 
         return normalized
 
