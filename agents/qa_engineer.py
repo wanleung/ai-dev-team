@@ -31,8 +31,11 @@ class QAEngineerAgent(BaseAgent):
                 - test_plan (str): Test plan summary markdown
                 - raw_response (str): Full LLM response
         """
+        # Truncate to fit within model token limits
+        files_for_qa = self.truncate_files(files, max_chars=10_000)
+
         code_section = "\n\n".join(
-            f"### FILE: {path}\n```python\n{content}\n```" for path, content in files.items()
+            f"### FILE: {path}\n```python\n{content}\n```" for path, content in files_for_qa.items()
         )
 
         prompt = (

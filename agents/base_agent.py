@@ -80,5 +80,48 @@ class BaseAgent:
         )
         return response.choices[0].message.content or ""
 
+    @staticmethod
+    def truncate_files(files: dict[str, str], max_chars: int = 12_000) -> dict[str, str]:
+        """Return a subset of files that fits within max_chars total.
+
+        Prioritises non-test, non-config files (source code first).
+        Truncates individual files that are very long.
+        Adds a summary comment when files are dropped.
+        """
+        # Sort: source files first, then config, then tests
+        def priority(path: str) -> int:
+            p = path.lower()
+            if "/test" in p or p.startswith("test"):
+                return 3
+            if p.endswith((".yaml", ".yml", ".json", ".toml", ".cfg", ".ini", ".md")):
+                return 2
+            return 1
+
+        sorted_files = sorted(files.items(), key=lambda kv: priority(kv[0]))
+        result: dict[str, str] = {}
+        used = 0
+        skipped = []
+
+        for path, content in sorted_files:
+            # Truncate a single file if it's huge
+            max_per_file = min(3_000, max_chars // 2)
+            if len(content) > max_per_file:
+                content = content[:max_per_file] + f"\n... [truncated — {len(content) - max_per_file} chars omitted]"
+
+            entry_len = len(path) + len(content) + 40  # overhead for markers
+            if used + entry_len <= max_chars:
+                result[path] = content
+                used += entry_len
+            else:
+                skipped.append(path)
+
+        if skipped:
+            result["__summary__"] = (
+                f"[{len(skipped)} additional file(s) omitted to fit token limit: "
+                + ", ".join(skipped) + "]"
+            )
+
+        return result
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(model={self.model!r})"
