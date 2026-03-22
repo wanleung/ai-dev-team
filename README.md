@@ -1,24 +1,21 @@
 # 🏢 AI Software House
 
-A team of AI agents that builds software from a plain-English requirement — powered by the **GitHub Models API** (the same AI backend as GitHub Copilot CLI) and integrated with **GitHub** for issue tracking, code management, and pull requests.
+A team of AI agents that builds software from a plain-English requirement — creating GitHub Issues, feature branches, pull requests, tests, and deployment smoke tests automatically.
 
-```
-Requirement → PM → Architect → Engineers ×N → Code Reviewer → QA → Test Runner → Deployment Tester → PR
-```
+Built on the **GitHub Models API** — the same AI backbone that powers GitHub Copilot CLI.
+
+---
 
 ## ✨ Features
 
-- **10 specialized agents**: Product Manager, PM Reviewer, Architect, Architect Reviewer, N Engineers, Code Reviewer, QA Planner, QA Engineer, Deployment Tester
-- **GitHub-native**: creates Issues (PRD), feature branches, Pull Requests, and review comments
-- **Auto-trigger on Issues**: label any issue `ai-fix` or `ai-feature` → pipeline runs automatically via GitHub Actions
-- **Two pipelines**: full feature build **and** focused bug-fix (diagnosis → fix → review → regression tests)
-- **Test execution**: unit tests + deployment smoke tests run automatically, results posted to PR
-- **Parallel engineering**: N engineer agents implement modules simultaneously
-- **Per-agent LLM**: each agent can use a different model (powerful for PM/Architect, fast/cheap for Engineer)
-- **Checkpoint/resume**: pipeline saves progress — re-run after a failure to continue from where it stopped
-- **Same AI as Copilot CLI**: uses your PAT (`GH_TOKEN` secret) and GitHub Models API — no extra API keys
-- **Local workspace**: all generated files saved to `./workspace/` for inspection
-- **Configurable**: YAML config for model selection, team size, and GitHub settings
+- **10 specialised agents** working in sequence: PM → PM Reviewer → Architect → Arch Reviewer → Engineers → Code Reviewer → QA Planner → QA Engineer → Deployment Tester
+- **Checkpoint / resume** — interrupted runs pick up from the last successful stage
+- **Multi-repo routing** — agents push to a target repo; tracking issues live in a central `ai-software-house` repo
+- **Per-agent LLM config** — assign any GitHub Models model to each agent independently
+- **Actual test execution** — pytest runs locally; results posted back to the PR as a comment
+- **Docker smoke tests** — deployment tester generates and runs container health checks
+- **GitHub Actions integration** — label an issue to trigger the full pipeline automatically
+- **Fully customisable** — add new agents, skills, and guides by editing markdown role files
 
 ---
 
@@ -26,299 +23,161 @@ Requirement → PM → Architect → Engineers ×N → Code Reviewer → QA → 
 
 ### 1. Prerequisites
 
-- Python 3.9+
-- A GitHub account with a [Personal Access Token](https://github.com/settings/tokens/new) (classic, not fine-grained)
-
-**Token permissions required (classic PAT):**
-| Permission | Why |
-|---|---|
-| **`repo`** (full) | Commit code, open PRs, create branches |
-| **`read:org`** | Required if repo is under an org |
-
-> ⚠️ Must be a **classic** token (`ghp_...`). Fine-grained PATs (`github_pat_...`) do NOT work with the GitHub Models API.
+- Python 3.11+
+- A GitHub **classic** PAT (not fine-grained) with scopes: `repo` + `read:org` (for GitHub Models access)
+- Docker (optional — for deployment smoke tests)
 
 ### 2. Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/ai-software-house
+git clone https://github.com/your-username/ai-software-house
 cd ai-software-house
-python3 -m venv venv && source venv/bin/activate
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
 
 ### 3. Configure
 
 ```bash
-export GITHUB_TOKEN=ghp_your_token_here
+cp config.yaml config.local.yaml   # optional — edit as needed
+export GITHUB_TOKEN=ghp_your_classic_pat
 ```
 
-Edit `config.yaml` to set your target GitHub repo:
+Edit `config.yaml`:
 ```yaml
 github:
-  repo: "your-username/your-project-repo"
+  repo: "your-username/your-repo"   # where code will be pushed
 ```
 
 ### 4. Run
 
 ```bash
-# With requirement inline
-python main.py "Build a REST API for a task management app with user authentication"
+# From a requirement file
+python main.py --file requirements/my-app.txt --repo owner/target-repo
 
-# Load requirement from a text file
-python main.py --file requirements.txt --repo myuser/myrepo
+# From a string
+python main.py --requirement "Build a REST API for a todo app" --repo owner/target-repo
 
-# Local only (no GitHub) — files saved to ./workspace/
-python main.py --file requirements.txt --no-github
+# Resume an interrupted run
+python main.py --file requirements/my-app.txt --repo owner/target-repo
 
-# Start fresh (ignore saved checkpoint)
-python main.py --file requirements.txt --repo myuser/myrepo --no-resume
+# Start fresh (ignore checkpoint)
+python main.py --file requirements/my-app.txt --repo owner/target-repo --no-resume
 ```
 
 ---
 
-## 📋 All CLI Options
+## 🤖 Pipeline Stages
 
 ```
-python main.py [requirement] [options]
-
-Positional:
-  requirement               Plain-English description of what to build
-
-Options:
-  --file PATH               Read requirement from a text/markdown file
-  --repo OWNER/REPO         GitHub repo for integration (overrides config.yaml)
-  --model MODEL             Default LLM for all agents  (e.g. gpt-4.1)
-  --model-override          Per-agent model, repeatable  (e.g. engineer=gpt-4.1-mini)
-    AGENT=MODEL
-  --engineers N             Number of parallel engineer agents (default: 2)
-  --no-github               Disable GitHub integration, save files locally only
-  --no-resume               Ignore checkpoint, start pipeline from scratch
-  --workspace DIR           Local output directory (default: ./workspace)
-  --token TOKEN             GitHub token (overrides GITHUB_TOKEN env var)
-  --config FILE             Config YAML file (default: config.yaml)
-```
-
-**Example `requirements.txt`:**
-```
-Build a task management REST API.
-
-## Features
-- User registration and JWT authentication
-- CRUD for tasks (title, description, due date, status)
-- Filter tasks by status: todo / in-progress / done
-- PostgreSQL with SQLAlchemy ORM
-- Pytest test suite
-
-## Constraints
-- Python 3.11+, FastAPI framework
-- Return JSON errors with meaningful messages
+1.  📋 Product Manager    — requirement → PRD + GitHub Issue
+2.  📝 PM Reviewer        — reviews PRD; optionally revises before architecture
+3.  🏗️  Architect          — PRD → system design + module list
+4.  🔎 Arch Reviewer      — reviews design; optionally revises before engineering
+5.  💻 Engineers ×N       — parallel code generation → feature branch + PR
+6.  🔍 Code Reviewer      — reviews code → PR comment with verdict
+7.  📋 QA Planner         — PRD + design + code → structured test plan + acceptance criteria
+8.  🧪 QA Engineer        — implements tests guided by QA Planner's test plan → PR
+9.  🏃 Test Runner        — runs pytest locally → PR comment with results
+10. 🚀 Deployment Tester  — generates docker-compose.test.yml + smoke tests → PR
+11. 🐳 Deploy Test Runner — runs docker smoke tests → PR comment (skips if Docker unavailable)
 ```
 
 ---
 
-## 🔧 Using the Orchestrators Directly
+## 🧑‍💼 Agent Roster
 
-The project has **two orchestrators** — choose based on what you need:
+| Agent | Name | Input | Output | GitHub Artifact |
+|---|---|---|---|---|
+| **Product Manager** | Alice | Raw requirement | PRD markdown | GitHub Issue |
+| **PM Reviewer** | Grace | PRD + requirement | Review + revised PRD (if needed) | Issue comment |
+| **Architect** | Bob | PRD | System design + modules | Issue comment |
+| **Arch Reviewer** | Frank | Design + PRD | Review + revised design (if needed) | Issue comment |
+| **Engineer ×N** | Alex ×N | System design | Source code files | Feature branch + PR |
+| **Code Reviewer** | Carol | Code + PRD | Review verdict | PR comment |
+| **QA Planner** | Henry | PRD + design + code | Test plan + acceptance criteria | Issue/PR comment |
+| **QA Engineer** | Edward | Code + PRD + test plan | Test files + conftest + requirements-test.txt | PR comment + branch |
+| **Deployment Tester** | Diana | Code + Dockerfile | docker-compose.test.yml + smoke tests + deploy script | PR comment + branch |
+
+---
+
+## 📋 All CLI Options (`main.py`)
+
+```
+python main.py [options]
+
+Input (one required):
+  --file PATH            Path to a .txt file containing the requirement
+  --requirement TEXT     Requirement as a command-line string
+
+Routing:
+  --repo OWNER/REPO      Target repository for code (overrides config.yaml)
+
+Model:
+  --model MODEL          Override model for ALL agents
+  --model-override AGENT=MODEL   Override model for one agent (repeatable)
+                         Agent names: product_manager, pm_reviewer, architect,
+                         architect_reviewer, engineer, code_reviewer,
+                         qa_planner, qa_engineer, deployment_tester
+
+Team:
+  --engineers N          Number of parallel Engineer agents (default: 2)
+
+Pipeline:
+  --no-resume            Ignore checkpoint and start from scratch
+  --stop-on-review       Halt pipeline if Code Reviewer requests changes
+```
+
+---
+
+## 🎛️ Using the Orchestrators Directly (Python API)
 
 ### `orchestrator.py` — Full Feature Build
 
-Runs the complete 8-stage pipeline from requirement to PR.
-
-**Via CLI (`main.py`):**
-```bash
-# Build from a file
-python main.py --file requirements.txt --repo wanleung/my-project
-
-# Use specific models per agent
-python main.py --file req.txt --repo wanleung/my-project \
-  --model-override architect=claude-3.5-sonnet \
-  --model-override engineer=gpt-4.1-mini
-
-# More parallel engineers for large projects
-python main.py --file req.txt --repo wanleung/my-project --engineers 4
-```
-
-**Via Python:**
 ```python
 from orchestrator import Orchestrator
 
-orch = Orchestrator.from_config("config.yaml", github_token="ghp_...")
-result = orch.run("Build a REST API for patient records")
+orch = Orchestrator(
+    model="gpt-4.1",
+    github_token="ghp_...",
+    target_repo="owner/my-app",
+    num_engineers=3,
+)
 
-print(result.pr_url)           # https://github.com/owner/repo/pull/3
-print(result.project_name)     # "Patient Records REST API"
-print(len(result.all_files))   # 24
-print(result.tests_passed)     # True
-print(result.deploy_tests_passed)  # True / False / None (skipped)
-```
+result = orch.run("Build a REST API for patient questionnaires")
 
-**Pipeline stages:**
+print(result.prd)               # PRD markdown
+print(result.prd_verdict)       # PRD APPROVED / NEEDS REVISION
+print(result.design)            # System design markdown
+print(result.design_verdict)    # DESIGN APPROVED / NEEDS REVISION
+print(result.qa_plan)           # Full test plan from QA Planner
+print(result.qa_acceptance_criteria)  # ['AC-01', 'AC-02', ...]
+print(result.pr_url)            # GitHub PR URL
+print(result.tests_passed)      # True / False / None
 ```
-1. 📋 Product Manager   — requirement → PRD + GitHub Issue
-2. 📝 PM Reviewer      — reviews PRD; optionally revises before architecture
-3. 🏗️  Architect        — PRD → system design + modules
-4. 🔎 Arch Reviewer    — reviews design; optionally revises before engineering
-5. 💻 Engineers ×N     — parallel code generation → feature branch + PR
-6. 🔍 Code Reviewer    — reviews code → PR comment
-7. 📋 QA Planner       — PRD + design + code → test plan with acceptance criteria
-8. 🧪 QA Engineer      — implements tests guided by QA Planner's test plan → PR
-9. 🏃 Test Runner      — runs pytest locally → PR comment with results
-10. 🚀 Deployment Tester— generates docker-compose.test.yml + smoke tests → PR
-11. 🐳 Deploy Test Runner— runs docker smoke tests → PR comment (skips if no Docker)
-```
-
----
 
 ### `bug_fix_orchestrator.py` — Bug Fix Pipeline
 
-Targeted pipeline for fixing bugs reported in GitHub Issues. Skips PM — the issue IS the requirement.
+Targeted pipeline for GitHub Issues. Skips PM — the issue body IS the requirement.
 
-**Via CLI (`fix_issue.py`):**
-```bash
-# Fix bug from issue #7 in the tracker repo
-# (code changes go to the repo in the issue body's "Target repo:" line)
-python fix_issue.py --issue-number 7 --repo wanleung/ai-software-house
-
-# Fix directly in a specific project repo
-python fix_issue.py --issue-number 3 --repo wanleung/test-mobile-01
-
-# With a custom model
-python fix_issue.py --issue-number 7 --repo wanleung/ai-software-house --model gpt-4.1
-```
-
-**Via Python:**
 ```python
 from bug_fix_orchestrator import BugFixOrchestrator
 
-orch = BugFixOrchestrator.from_config("config.yaml", github_token="ghp_...")
-result = orch.run(
-    issue_number=7,
-    tracker_repo="wanleung/ai-software-house"
+orch = BugFixOrchestrator(
+    model="gpt-4.1",
+    github_token="ghp_...",
+    tracker_repo="owner/ai-software-house",
+    target_repo="owner/my-app",
 )
-print(result.pr_url)   # PR with the targeted fix
+
+result = orch.run(issue_number=42)
+print(result.pr_url)
 ```
 
-**Pipeline stages:**
-```
-1. 🔬 Diagnosis (Architect) — reads issue + existing code → root cause analysis
-2. 🔧 Fix (Engineer)        — patches only the affected files → branch + PR
-3. 🔍 Code Reviewer         — reviews the fix → PR comment
-4. 🧪 Regression Tests (QA) — writes tests to prevent regression → PR
-```
-
----
-
-### `build_feature.py` — Feature from Issue (GitHub Actions entry point)
-
-Same as `main.py` but reads the requirement from a GitHub Issue. Used by `feature-build.yml`.
-
+**Via CLI (`fix_issue.py`):**
 ```bash
-# Manually invoke (same as triggering via label)
-python build_feature.py --issue-number 5 --tracker-repo wanleung/ai-software-house
+python fix_issue.py --issue 42 --repo owner/ai-software-house --target owner/my-app
 ```
-
----
-
-## 🤖 GitHub Actions — Auto-Trigger
-
-The pipelines run **automatically** when you label a GitHub Issue. No manual command needed.
-
-### Setup (one time)
-
-**1. Push this repo to GitHub:**
-```bash
-git remote add origin https://github.com/YOUR_USERNAME/ai-software-house
-git push -u origin master
-```
-
-**2. Add your PAT as a repository secret:**  
-Go to: **Settings → Secrets and variables → Actions → New repository secret**
-- Name: `GH_TOKEN`
-- Value: your classic Personal Access Token
-
-> **Why `GH_TOKEN` not `GITHUB_TOKEN`?** GitHub blocks secret names starting with `GITHUB_`. Also the auto-injected `GITHUB_TOKEN` represents `github-actions[bot]` which has no Copilot subscription — it can't call the AI API. Your PAT (stored as `GH_TOKEN`) is tied to your account which has Copilot access.
-
-**3. Create the required labels:**  
-Go to: **Actions → 🏷️ Setup AI Labels → Run workflow**
-
-This creates: `ai-fix`, `ai-feature`, `prd`, `ai-generated`
-
----
-
-### Triggering a bug fix
-
-```
-1. Open a GitHub Issue reporting the bug
-2. Add the label:  ai-fix
-3. GitHub Actions triggers automatically
-
-Pipeline:  Issue → Diagnosis → Fix → Review → Regression Tests → PR
-```
-
-**Example issue body:**
-```
-Title: Login fails with uppercase email addresses
-
-Steps to reproduce:
-1. Enter email with uppercase (e.g. User@Example.com)
-2. Click login
-Expected: logs in successfully
-Actual: nothing happens, no error shown
-```
-
----
-
-### Triggering a new feature build
-
-```
-1. Open a GitHub Issue describing the feature
-2. Add the label:  ai-feature
-3. The full 8-stage pipeline runs
-
-Pipeline:  Issue → PM → Architect → Engineers → Review → QA → Tests → Deploy Tests → PR
-```
-
----
-
-### 🏢 Central agency — targeting a different project repo
-
-Add a `Target repo:` line to the issue body and the agents will push code to that repo instead:
-
-```markdown
-Title: Add patient questionnaire API
-
-Target repo: wanleung/my-medical-app
-
-## Description
-Add a REST API for managing patient questionnaires.
-Patients can fill in forms, doctors can review responses.
-
-## Acceptance Criteria
-- POST /questionnaires — create a new questionnaire
-- GET /questionnaires/{id}/responses — list all patient responses
-- JWT auth required
-```
-
-When labeled `ai-feature`, the code goes to `wanleung/my-medical-app`, not to `ai-software-house`.
-
-**Multiple projects, one AI team:**
-```
-ai-software-house (your hub)
-├── Issue #5  [ai-feature]  Target repo: me/react-dashboard  → PR in react-dashboard
-├── Issue #6  [ai-fix]      Target repo: me/node-api         → fix PR in node-api
-└── Issue #7  [ai-feature]  (no Target repo)                 → PR in ai-software-house itself
-```
-
----
-
-### Workflows overview
-
-| Workflow | Trigger | Pipeline |
-|---|---|---|
-| `bug-fix.yml` | Issue labeled `ai-fix` | Diagnosis → Fix → Review → Tests |
-| `feature-build.yml` | Issue labeled `ai-feature` | PM → Architect → Engineers → Review → QA → Tests |
-| `run-tests.yml` | PR opened/updated | Unit tests + Docker smoke tests → PR comments |
-| `setup-labels.yml` | Manual (run once) | Creates required labels |
 
 ---
 
@@ -327,369 +186,239 @@ ai-software-house (your hub)
 ```yaml
 llm:
   # Default model for all agents
-  # GitHub Models options:
-  #   OpenAI:     gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, o4-mini, o3
-  #   Anthropic:  claude-3.7-sonnet, claude-3.5-sonnet, claude-3-haiku
-  #   Meta:       meta-llama-3.3-70b-instruct, meta-llama-3.1-405b-instruct
-  #   Mistral:    mistral-large-2411, mistral-small-2503
-  #   DeepSeek:   deepseek-r1, deepseek-v3
+  # Available: gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o4-mini, o3
+  #            claude-3.5-sonnet, claude-3.7-sonnet, claude-3-haiku
+  #            meta-llama-3.3-70b-instruct, mistral-large-2411
+  #            deepseek-r1, deepseek-v3, cohere-command-r-plus
   model: "gpt-4.1"
 
-  # Per-agent overrides — each agent can use a different LLM
-  # Tip: powerful model for PM/Architect (reasoning), cheap/fast for Engineer (repetitive)
+  # Per-agent model overrides
   overrides:
-    product_manager: "gpt-4.1"
+    product_manager: "gpt-4.1"       # reasoning-heavy
+    pm_reviewer: "gpt-4.1"
     architect: "gpt-4.1"
-    engineer: "gpt-4.1-mini"       # runs N times — use cheaper model
+    architect_reviewer: "gpt-4.1"
+    engineer: "gpt-4.1-mini"         # runs many times — use cheaper model
     code_reviewer: "gpt-4.1"
-    qa_engineer: "gpt-4.1-mini"
+    qa_planner: "gpt-4.1"            # test planning needs strong reasoning
+    qa_engineer: "gpt-4.1-mini"      # repetitive test writing — cheaper
     deployment_tester: "gpt-4.1-mini"
 
 github:
-  repo: "owner/repo"               # Where code PRs are created
+  repo: "owner/repo"                 # default target repo
   branch_prefix: "feature/agent"
 
 team:
-  num_engineers: 2                 # Parallel engineer agents
-  agents:
+  num_engineers: 2
+  agents:                            # enable / disable individual agents
     product_manager: true
+    pm_reviewer: true
     architect: true
     engineer: true
     code_reviewer: true
+    qa_planner: true
     qa_engineer: true
     deployment_tester: true
 
 pipeline:
-  workspace_dir: "./workspace"     # Local output directory
-  stop_on_review_issues: false     # Stop if reviewer requests changes
-```
-
-**CLI override** (takes precedence over config.yaml):
-```bash
-python main.py --file req.txt \
-  --model gpt-4.1 \
-  --model-override engineer=gpt-4.1-mini \
-  --model-override architect=claude-3.5-sonnet
+  workspace_dir: "./workspace"
+  stop_on_review_issues: false
+  max_retries: 2
 ```
 
 ---
 
-## 📁 Project Structure
+## 🎨 Defining Agent Skills & Guides
 
-```
-ai-software-house/
-├── main.py                      # CLI entry point for feature builds
-├── fix_issue.py                 # CLI entry point for bug fixes
-├── build_feature.py             # GitHub Actions entry point (reads from Issue)
-├── orchestrator.py              # Full 8-stage feature pipeline
-├── bug_fix_orchestrator.py      # Focused bug-fix pipeline
-├── github_client.py             # GitHub REST API wrapper
-├── config.yaml                  # Configuration
-├── requirements.txt
-│
-├── .github/workflows/
-│   ├── bug-fix.yml              # Auto-runs on "ai-fix" label
-│   ├── feature-build.yml        # Auto-runs on "ai-feature" label
-│   ├── run-tests.yml            # Auto-runs unit + docker tests on PRs
-│   └── setup-labels.yml         # One-time label setup
-│
-├── agents/
-│   ├── base_agent.py            # BaseAgent (GitHub Models API, retry logic)
-│   ├── product_manager.py
-│   ├── architect.py
-│   ├── engineer.py              # Parallel N-worker, rate-limit aware
-│   ├── code_reviewer.py
-│   ├── qa_engineer.py
-│   └── deployment_tester.py    # Docker smoke test generator
-│
-└── roles/                       # Agent system prompts (markdown)
-    ├── product_manager.md
-    ├── architect.md
-    ├── engineer.md
-    ├── code_reviewer.md
-    ├── qa_engineer.md
-    └── deployment_tester.md
-```
+Every agent's behaviour is controlled entirely by its **role file** (`roles/<agent>.md`). This file becomes the LLM's system prompt — change the markdown, change the agent.
 
----
-
-## 🤖 Agent Roles
-
-| Agent | Name | Input | Output | GitHub Artifact |
-|---|---|---|---|---|
-| **Product Manager** | Alice | Raw requirement | PRD markdown | GitHub Issue |
-| **PM Reviewer** | Grace | PRD + requirement | Review + revised PRD (if needed) | Issue comment |
-| **Architect** | Bob | PRD | System design + modules | Issue comment |
-| **Arch Reviewer** | Frank | Design + PRD | Review + revised design (if needed) | Issue comment |
-| **Engineer ×N** | Alex (×N) | System design | Code files | Feature branch + PR |
-| **Code Reviewer** | Carol | Code files + PRD | Review + verdict | PR review comment |
-| **QA Planner** | Henry | PRD + design + code | Test plan + acceptance criteria (AC-01…) | Issue/PR comment |
-| **QA Engineer** | Edward | Code + PRD + Test Plan | Test files + conftest + requirements-test.txt | PR comment + tests on branch |
-| **Deployment Tester** | Diana | Code + Dockerfile | docker-compose.test.yml + smoke tests + deploy script | PR comment + files on branch |
-
----
-
-## 🧩 How It Connects to Copilot CLI
-
-This project uses the **same AI backend** as GitHub Copilot CLI:
-
-| | GitHub Copilot CLI | AI Software House |
-|---|---|---|
-| AI Model | GitHub Models API | GitHub Models API |
-| Authentication | `GITHUB_TOKEN` (PAT) | `GH_TOKEN` secret |
-| API Endpoint | `models.inference.ai.azure.com` | `models.inference.ai.azure.com` |
-| Usage | Interactive terminal | Python orchestration pipeline |
-
----
-
-## 🔧 Extending the Team
-
-Add a new agent role by:
-
-1. Creating `roles/your_role.md` with the agent's system prompt
-2. Creating `agents/your_role.py` extending `BaseAgent`
-3. Adding it to `agents/__init__.py`
-4. Wiring it into `orchestrator.py` as a new stage
-
----
-
-## 📚 Background
-
-Inspired by:
-- **[MetaGPT](https://github.com/FoundationAgents/MetaGPT)** — "The Multi-Agent Framework: First AI Software Company" (ICLR 2024)
-- **[ChatDev](https://github.com/OpenBMB/ChatDev)** — "Communicative Agents for Software Development" (ACL 2024)
-
-The key insight: encoding **Standard Operating Procedures (SOPs)** into LLM agent workflows reduces hallucination cascades and produces more coherent, structured outputs than naive LLM chaining.
-
----
-
-## 📄 License
-
-MIT
-
-
-A team of AI agents that builds software from a plain-English requirement — powered by the **GitHub Models API** (the same AI backend as GitHub Copilot CLI) and integrated with **GitHub** for issue tracking, code management, and pull requests.
-
-```
-Requirement → PM → Architect → Engineers ×N → Code Reviewer → QA → PR on GitHub
-```
-
-## ✨ Features
-
-- **6 specialized agents**: Product Manager, Architect, N Engineers, Code Reviewer, QA
-- **GitHub-native**: creates Issues (PRD), feature branches, Pull Requests, and review comments
-- **Auto-trigger on Issues**: label any issue `ai-fix` → pipeline runs automatically via GitHub Actions
-- **Two pipelines**: full feature build **and** focused bug-fix (diagnosis → fix → review → regression tests)
-- **Parallel engineering**: N engineer agents implement modules simultaneously
-- **Same AI as Copilot CLI**: uses your PAT (`GH_TOKEN` secret) and GitHub Models API — no extra API keys
-- **Local workspace**: all generated files saved to `./workspace/` for inspection
-- **Configurable**: YAML config for model selection, team size, and GitHub settings
-
----
-
-## 🚀 Quick Start
-
-### 1. Prerequisites
-
-- Python 3.9+
-- A GitHub account with a [Personal Access Token](https://github.com/settings/personal-access-tokens/new)
-
-**Token permissions required:**
-| Permission | Why |
-|---|---|
-| **Copilot Requests** | LLM calls via GitHub Models API |
-| **Contents** (read/write) | Commit generated code |
-| **Issues** (read/write) | Create PRD issues |
-| **Pull requests** (read/write) | Open PRs and add reviews |
-
-### 2. Install
-
-```bash
-git clone https://github.com/YOUR_USERNAME/ai-software-house
-cd ai-software-house
-python3 -m pip install -r requirements.txt
-```
-
-### 3. Configure
-
-```bash
-export GITHUB_TOKEN=ghp_your_token_here  # your PAT (used locally and as GH_TOKEN secret in Actions)
-```
-
-Edit `config.yaml` to set your target GitHub repo:
-```yaml
-github:
-  repo: "your-username/your-project-repo"
-```
-
-### 4. Run
-
-```bash
-# Interactive mode (prompts for requirement)
-python main.py
-
-# With requirement inline
-python main.py "Build a REST API for a task management app with user authentication"
-
-# Load requirement from a text file
-python main.py --file requirements.txt
-
-# With GitHub integration (creates Issues + PR)
-python main.py "Build a blog platform with markdown support" --repo myuser/myrepo
-python main.py --file requirements.txt --repo myuser/myrepo
-
-# Local only (no GitHub) — files saved to ./workspace/
-python main.py --file requirements.txt --no-github
-
-# Use a faster/cheaper model
-python main.py "Build a calculator" --model gpt-4.1-mini --engineers 1
-```
-
-**Example `requirements.txt`:**
-```
-Build a task management REST API.
-
-## Features
-- User registration and JWT authentication
-- CRUD for tasks (title, description, due date, status)
-- Filter tasks by status: todo / in-progress / done
-- PostgreSQL with SQLAlchemy ORM
-- Pytest test suite
-
-## Constraints
-- Python 3.11+, FastAPI framework
-- Return JSON errors with meaningful messages
-```
-
-> **Tip:** The requirements file can be plain text or Markdown — headings, bullet points, and acceptance criteria all help the agents produce better output.
-
----
-
-## 🤖 GitHub Actions — Auto-Trigger
-
-The pipelines run **automatically** when you label a GitHub Issue. No manual command needed.
-
-### Setup (one time)
-
-**1. Push this repo to GitHub:**
-```bash
-git remote add origin https://github.com/YOUR_USERNAME/ai-software-house
-git push -u origin master
-```
-
-**2. Add your PAT as a repository secret:**  
-Go to: **Settings → Secrets and variables → Actions → New repository secret**
-- Name: `GH_TOKEN`
-- Value: your Personal Access Token from step 1
-
-> **Why not `GITHUB_TOKEN`?** GitHub blocks secret names starting with `GITHUB_`. Also, the auto-injected `GITHUB_TOKEN` represents the `github-actions[bot]` which has no Copilot subscription and can't call the AI API. Your PAT (stored as `GH_TOKEN`) is tied to your account which has Copilot access.
-
-**3. Create the required labels:**  
-Go to: **Actions → 🏷️ Setup AI Labels → Run workflow**
-
-This creates: `ai-fix`, `ai-feature`, `prd`, `ai-generated`
-
----
-
-### Triggering a bug fix automatically
-
-```
-1. Someone opens a GitHub Issue reporting a bug
-2. You (or a maintainer) add the label:  ai-fix
-3. GitHub Actions triggers automatically
-4. The AI pipeline runs:
-   Issue → Diagnosis → Fix → Code Review → Regression Tests → PR
-5. A PR is opened with the fix within ~2 minutes
-6. The issue gets comments at each stage
-```
-
-**Example issue that would trigger it:**
-```
-Title: Login button does nothing when clicking with email that has capital letters
-Body:  Steps to reproduce:
-       1. Enter email with uppercase letters (e.g. User@Example.com)
-       2. Click login
-       Expected: should log in
-       Actual: nothing happens, no error shown
-```
-
-After adding label `ai-fix`:
-- 🔬 Architect diagnoses root cause (case sensitivity bug in email comparison)
-- 🔧 Engineer patches the affected files
-- 🔍 Code Reviewer reviews the fix
-- 🧪 QA adds a regression test case
-- A PR is opened: `fix/agent/issue-42-login-button-does-nothing...`
-
----
-
-### Triggering a new feature build
-
-```
-1. Open a GitHub Issue describing a feature
-2. Add the label:  ai-feature
-3. The full pipeline runs:
-   Issue → PM (PRD) → Architect → Engineers ×N → Reviewer → QA → PR
-```
-
----
-
-### 🏢 Central agency — targeting any project repo
-
-`ai-software-house` can work as a **central AI team hub** that builds code in a *separate* project repo. Just add a `Target repo:` line to any issue body:
+### Role File Structure
 
 ```markdown
-Title: Add dark mode toggle to the settings page
+# Agent Name
 
-**Target repo:** myusername/my-webapp
+## Role
+One or two sentences: who this agent is and what their job is.
+Give them a name and a personality.
 
-## Description
-Add a dark mode toggle in the Settings page. It should persist in localStorage
-and apply a `dark` CSS class to the document root.
+## Responsibilities
+- Bullet list of what this agent does — these are the agent's "skills"
+- Be specific: "Write a conftest.py with shared pytest fixtures"
+- Not vague: "Write tests"
 
-## Acceptance Criteria
-- Toggle appears in Settings
-- State persists across page reloads
-- Works with existing Tailwind CSS setup
+## Critical Rules
+- Hard constraints that must never be violated
+- e.g. "Never hardcode credentials — use environment variables"
+- e.g. "Always use Given/When/Then format for acceptance tests"
+- e.g. "Do NOT write test code — that is Edward's job"
+
+## Output Format
+The exact markdown/code structure the agent must produce.
+Downstream parsers in the Python agent class look for specific markers.
+Use code blocks showing the exact template.
+
+## Quality Rules
+- What makes a good output vs a bad one
+- End with: `MY KEYWORD COMPLETE`   ← used by the parser to detect success
 ```
 
-When this issue is labeled `ai-fix` or `ai-feature`:
+### Agents and Their Role Files
 
-```
-ai-software-house repo           my-webapp repo
-       │                                │
-       ├── Issue #12 filed here         │
-       │   └── label: ai-feature        │
-       │                                │
-       ├── Pipeline runs (Actions)      │
-       │   PM creates tracker issue ─── │
-       │                                ├── feature/agent/... branch
-       │   Engineers commit code ──────▶│
-       │   PR opened ─────────────────▶│
-       │   PR review posted ──────────▶│
-       │   QA tests committed ────────▶│
-       │                                │
-       └── Issue #12 closed with link ──┘
-```
+| Agent | Role File | Key Skills Defined |
+|---|---|---|
+| Product Manager | `roles/product_manager.md` | Requirements analysis, user story writing, PRD structure |
+| PM Reviewer | `roles/pm_reviewer.md` | PRD completeness check, acceptance criteria quality, revision |
+| Architect | `roles/architect.md` | System design, module decomposition, tech stack selection |
+| Arch Reviewer | `roles/architect_reviewer.md` | Design critique, scalability review, revision |
+| Engineer | `roles/engineer.md` | Code generation, PEP 8, type hints, error handling |
+| Code Reviewer | `roles/code_reviewer.md` | Code quality, security, performance, verdict |
+| QA Planner | `roles/qa_planner.md` | Acceptance criteria, test strategy, module scenarios, Given/When/Then |
+| QA Engineer | `roles/qa_engineer.md` | pytest writing, mocking, conftest, runnable tests |
+| Deployment Tester | `roles/deployment_tester.md` | Docker compose, health checks, smoke tests |
 
-**Multiple projects, one AI team:**
-```
-ai-software-house
-├── Issue #5  [ai-feature]  Target repo: me/react-dashboard   → PR in react-dashboard
-├── Issue #6  [ai-fix]      Target repo: me/node-api          → fix PR in node-api
-└── Issue #7  [ai-feature]  (no Target repo)                  → PR in ai-software-house itself
+### Adding a Skill to an Existing Agent
+
+Edit the role file — no code changes needed:
+
+```bash
+# Add security skills to the Engineer
+nano roles/engineer.md
 ```
 
-> **Token permissions**: The auto-injected `GITHUB_TOKEN` in Actions can't call the GitHub Models API (no Copilot access). To commit code to a *different* project repo, create a PAT with `Contents` write access to that repo and add it as a secret named `GH_TOKEN` (same secret, just ensure it also has access to the target repo).
+```markdown
+## Security Skills
+- Never hardcode credentials — always use environment variables
+- Validate and sanitise all user input before processing
+- Use parameterised queries — never concatenate SQL strings
+- Set secure cookie flags; prefer HTTPS-only endpoints
+- Flag any third-party packages with known CVEs in a comment
+```
+
+### Adding a Brand-New Agent
+
+**Step 1 — Create the role file:**
+```bash
+cat > roles/security_reviewer.md << 'EOF'
+# Security Reviewer Agent
+
+## Role
+You are **Sam**, a Security Reviewer specialising in OWASP Top 10 vulnerabilities.
+
+## Skills
+- OWASP Top 10 vulnerability detection
+- Secrets / credential leak detection
+- SQL injection and XSS pattern recognition
+- Dependency audit (flag known-vulnerable packages)
+
+## Output Format
+### SECURITY VERDICT: [PASS | WARN | FAIL]
+#### Findings
+| Severity | File | Line | Issue | Recommendation |
+...
+End with: `SECURITY REVIEW COMPLETE`
+EOF
+```
+
+**Step 2 — Create the agent class:**
+```python
+# agents/security_reviewer.py
+from .base_agent import BaseAgent
+
+class SecurityReviewerAgent(BaseAgent):
+    role_name = "security_reviewer"   # maps to roles/security_reviewer.md
+
+    def run(self, files: dict[str, str], prd: str) -> dict:
+        truncated = self.truncate_files(files, max_chars=10_000)
+        code = "\n\n".join(
+            f"### {path}\n```\n{content}\n```"
+            for path, content in truncated.items()
+        )
+        response = self.call(f"Review this code for security issues:\n\n{code}")
+        verdict = "FAIL" if "FAIL" in response else "WARN" if "WARN" in response else "PASS"
+        return {"review": response, "verdict": verdict}
+```
+
+**Step 3 — Register & wire in:**
+- `agents/__init__.py` — add import and `__all__` entry
+- `orchestrator.py` — instantiate, add stage, add field to `PipelineResult`
+- `config.yaml` — add to `agents.overrides`
+- `main.py` — add to `agent_map`
+
+### Tuning Without Code Changes
+
+| Goal | Where |
+|---|---|
+| Change personality / tone | `roles/*.md` — Role section |
+| Add a new skill or check | `roles/*.md` — Responsibilities section |
+| Make a rule stricter | `roles/*.md` — Critical Rules section |
+| Change output structure | `roles/*.md` — Output Format section |
+| Use a smarter/cheaper model | `config.yaml` → `llm.overrides.<agent>` |
+| Change LLM temperature | `agents/base_agent.py` → `temperature=0.3` in `call()` |
 
 ---
 
-### Workflows overview
+## 🔄 GitHub Actions — Auto-Trigger
 
-| Workflow | Trigger | Pipeline |
+The pipeline runs automatically when you label a GitHub Issue.
+
+### One-Time Setup
+
+```bash
+# 1. Add GH_TOKEN secret (classic PAT, NOT fine-grained, NOT GITHUB_TOKEN)
+#    Go to: Settings → Secrets → Actions → New repository secret
+#    Name: GH_TOKEN    Value: ghp_your_classic_pat
+
+# 2. Set up labels
+gh workflow run setup-labels.yml
+
+# 3. (Optional) Set target repo for cross-repo builds
+#    Add secret: TARGET_REPO = owner/target-repo-name
+```
+
+### Triggering a Feature Build
+
+Create an issue with the `feature-request` label:
+
+```markdown
+Title: Patient questionnaire mobile app
+
+## Description
+Build iOS and Android apps for rectal cancer patient questionnaires.
+
+**Target repo:** wanleung/my-mobile-app
+
+## Acceptance Criteria
+- Patient can complete a questionnaire offline
+- Data syncs when connectivity is restored
+- Clinician dashboard shows aggregated results
+```
+
+> The `**Target repo:** owner/repo` line routes the code to a different repository.
+> Tracking issues (PRD, reviews) stay in the `ai-software-house` repo.
+
+### Triggering a Bug Fix
+
+Create an issue with the `bug` label:
+
+```markdown
+Title: Login fails for users with special characters in email
+
+Steps to reproduce:
+1. Register with email: user+test@example.com
+2. Attempt to login
+3. Error: 500 Internal Server Error
+
+Expected: Successful login
+```
+
+### Workflows
+
+| Workflow | Trigger | What it does |
 |---|---|---|
-| `bug-fix.yml` | Issue labeled `ai-fix` | Diagnosis → Fix → Review → Tests |
-| `feature-build.yml` | Issue labeled `ai-feature` | PM → Architect → Engineers → Review → QA |
-| `setup-labels.yml` | Manual (run once) | Creates required labels |
+| `feature-build.yml` | Issue labelled `feature-request` | Full 11-stage pipeline |
+| `bug-fix.yml` | Issue labelled `bug` | Bug fix pipeline (no PM) |
+| `run-tests.yml` | PR opened/updated | Runs pytest + docker smoke tests |
+| `setup-labels.yml` | Manual dispatch | Creates `feature-request` and `bug` labels |
 
 ---
 
@@ -697,138 +426,72 @@ ai-software-house
 
 ```
 ai-software-house/
-├── main.py                      # CLI: python main.py "Build a todo app"
-├── orchestrator.py              # Full feature pipeline
-├── bug_fix_orchestrator.py      # Bug-fix pipeline (triggered by GitHub Issues)
-├── fix_issue.py                 # Entry point for GitHub Actions bug-fix workflow
-├── build_feature.py             # Entry point for GitHub Actions feature workflow
-├── github_client.py             # GitHub REST API wrapper
-├── config.yaml                  # Configuration
+├── main.py                    # CLI entry point for full pipeline
+├── fix_issue.py               # CLI entry point for bug fix pipeline
+├── build_feature.py           # GitHub Actions entry point
+├── orchestrator.py            # Full pipeline (11 stages)
+├── bug_fix_orchestrator.py    # Bug fix pipeline
+├── github_client.py           # GitHub API wrapper (Issues, PRs, commits)
+├── config.yaml                # LLM models, team size, pipeline settings
 ├── requirements.txt
 │
-├── .github/
-│   └── workflows/
-│       ├── bug-fix.yml          # Auto-runs on "ai-fix" label
-│       ├── feature-build.yml    # Auto-runs on "ai-feature" label
-│       └── setup-labels.yml    # One-time label setup
-│
 ├── agents/
-│   ├── base_agent.py            # BaseAgent (calls GitHub Models API)
-│   ├── product_manager.py
-│   ├── architect.py
-│   ├── engineer.py              # Parallel N-worker engineer
-│   ├── code_reviewer.py
-│   └── qa_engineer.py
+│   ├── base_agent.py          # BaseAgent: API calls, retry, truncation
+│   ├── product_manager.py     # Alice — PRD writer
+│   ├── pm_reviewer.py         # Grace — PRD reviewer
+│   ├── architect.py           # Bob — system designer
+│   ├── architect_reviewer.py  # Frank — design reviewer
+│   ├── engineer.py            # Alex — code writer (parallel)
+│   ├── code_reviewer.py       # Carol — code reviewer
+│   ├── qa_planner.py          # Henry — test planner
+│   ├── qa_engineer.py         # Edward — test writer
+│   └── deployment_tester.py   # Diana — deployment tester
 │
-└── roles/                       # Agent role instructions (system prompts)
-    ├── product_manager.md
-    ├── architect.md
-    ├── engineer.md
-    ├── code_reviewer.md
-    └── qa_engineer.md
+├── roles/                     # Agent skills & guides (system prompts)
+│   ├── product_manager.md
+│   ├── pm_reviewer.md
+│   ├── architect.md
+│   ├── architect_reviewer.md
+│   ├── engineer.md
+│   ├── code_reviewer.md
+│   ├── qa_planner.md
+│   ├── qa_engineer.md
+│   └── deployment_tester.md
+│
+├── .github/workflows/
+│   ├── feature-build.yml      # Auto-trigger on 'feature-request' label
+│   ├── bug-fix.yml            # Auto-trigger on 'bug' label
+│   ├── run-tests.yml          # Run pytest + docker on PRs
+│   └── setup-labels.yml       # Create required issue labels
+│
+└── workspace/                 # Generated code written here locally
+    └── <project-name>/
+        ├── checkpoint.json    # Resume state
+        ├── src/               # Generated source files
+        └── tests/             # Generated test files
 ```
 
 ---
 
-## 🤖 Agent Roles
-
-| Agent | Name | Input | Output | GitHub Artifact |
-|---|---|---|---|---|
-| **Product Manager** | Alice | Raw requirement | PRD markdown | GitHub Issue |
-| **Architect** | Bob | PRD | System design + modules | Issue comment |
-| **Engineer ×N** | Alex (×N) | System design | Code files | Feature branch + PR |
-| **Code Reviewer** | Carol | Code files | Review + verdict | PR review |
-| **QA Engineer** | Edward | Code + PRD | Test files + report | PR comment + close issue |
-
----
-
-## ⚙️ Configuration Reference
-
-```yaml
-# config.yaml
-llm:
-  model: "gpt-4.1"              # Default model for all agents
-  overrides:
-    engineer: "gpt-4.1-mini"   # Use faster model for engineers
-
-github:
-  repo: "owner/repo"           # Target GitHub repo
-  branch_prefix: "feature/agent"
-
-team:
-  num_engineers: 2              # Parallel engineer agents
-
-pipeline:
-  workspace_dir: "./workspace"  # Local output directory
-  stop_on_review_issues: false  # Stop if reviewer requests changes
-```
-
----
-
-## 🧩 How It Connects to Copilot CLI
+## 🔗 How It Connects to GitHub Copilot CLI
 
 This project uses the **same AI backend** as GitHub Copilot CLI:
 
 | | GitHub Copilot CLI | AI Software House |
 |---|---|---|
 | AI Model | GitHub Models API | GitHub Models API |
-| Authentication | `GITHUB_TOKEN` (PAT) | `GH_TOKEN` secret |
+| Authentication | Classic PAT (`ghp_…`) | Classic PAT (`ghp_…`) |
 | API Endpoint | `models.inference.ai.azure.com` | `models.inference.ai.azure.com` |
-| Usage | Interactive terminal | Python orchestration |
-
-You can use the Copilot CLI's `/fleet` command to run multiple independent agent sessions in parallel — this project provides the Python-level equivalent for programmatic pipelines.
-
----
-
-## 📖 Example Output
-
-Running `python main.py "Build a task manager REST API"` produces:
-
-```
-🏢 AI Software House Pipeline
-Build a task manager REST API...
-
-  ✅ 📋 Product Manager complete
-  ✅ 🏗️  Architect complete
-  ✅ 💻 Engineers (×2) complete
-  ✅ 🔍 Code Reviewer complete
-  ✅ 🧪 QA Engineer complete
-
-┌─────────────────────────────────────────────┐
-│              Pipeline Summary               │
-├────────────────┬────────────────────────────┤
-│ Project        │ Task Manager REST API      │
-│ PRD            │ 1842 chars                 │
-│ Modules        │ 4                          │
-│ Code files     │ 8                          │
-│ Test files     │ 3                          │
-│ Review verdict │ APPROVED WITH MINOR COMMENTS│
-│ GitHub Issue   │ https://github.com/...     │
-│ Pull Request   │ https://github.com/...     │
-│ Duration       │ 47.3s                      │
-└────────────────┴────────────────────────────┘
-```
-
----
-
-## 🔧 Extending the Team
-
-Add a new agent role by:
-
-1. Creating `roles/your_role.md` with the agent's system prompt
-2. Creating `agents/your_role.py` extending `BaseAgent`
-3. Adding it to `agents/__init__.py`
-4. Wiring it into `orchestrator.py`
+| Usage | Interactive terminal assistant | Automated multi-agent pipeline |
+| Token scope | `copilot` | `repo` (classic PAT) |
 
 ---
 
 ## 📚 Background
 
-This project is inspired by the academic research behind:
-- **[MetaGPT](https://github.com/FoundationAgents/MetaGPT)** — "The Multi-Agent Framework: First AI Software Company" (ICLR 2024)
-- **[ChatDev](https://github.com/OpenBMB/ChatDev)** — "Communicative Agents for Software Development" (ACL 2024)
+This project demonstrates how GitHub's infrastructure — Models API, Issues, Pull Requests, Actions — can be wired together into a fully automated software development team. Each agent is a thin Python wrapper around a single LLM call; the orchestrator handles sequencing, checkpointing, and GitHub integration.
 
-The key insight: encoding **Standard Operating Procedures (SOPs)** into LLM agent workflows reduces hallucination cascades and produces more coherent, structured outputs than naive LLM chaining.
+The role files (`roles/*.md`) are the heart of the system. They encode domain knowledge, output contracts, and quality rules — making it easy to specialise, tune, or extend any agent without touching Python code.
 
 ---
 
