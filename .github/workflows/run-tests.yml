@@ -74,13 +74,9 @@ jobs:
             LABEL="Some unit tests failed"
           fi
           OUTPUT=$(tail -60 test_output.txt 2>/dev/null || echo "No output captured")
-          gh pr comment "${{ github.event.pull_request.number }}" --body "## 🏃 Unit Test Results
-
-**Status:** ${EMOJI} ${LABEL}
-
-\`\`\`
-${OUTPUT}
-\`\`\`"
+          printf "## 🏃 Unit Test Results\n\n**Status:** %s %s\n\n\`\`\`\n%s\n\`\`\`\n" \
+            "$EMOJI" "$LABEL" "$OUTPUT" > /tmp/unit_comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/unit_comment.md
 
       - name: Upload coverage report
         if: always()
@@ -155,10 +151,6 @@ ${OUTPUT}
             LABEL="Deployment smoke tests failed"
           fi
           OUTPUT=$(tail -60 deploy_test_output.txt 2>/dev/null || echo "No output captured")
-          gh pr comment "${{ github.event.pull_request.number }}" --body "## 🐳 Deployment Smoke Test Results
-
-**Status:** ${EMOJI} ${LABEL}
-
-\`\`\`
-${OUTPUT}
-\`\`\`"
+          printf "## 🐳 Deployment Smoke Test Results\n\n**Status:** %s %s\n\n\`\`\`\n%s\n\`\`\`\n" \
+            "$EMOJI" "$LABEL" "$OUTPUT" > /tmp/deploy_comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/deploy_comment.md
