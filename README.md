@@ -448,6 +448,100 @@ class SecurityReviewerAgent(BaseAgent):
 
 ---
 
+## ⏰ Cron Watcher — Hourly Auto-Dispatch
+
+Run the pipeline automatically on this machine — no GitHub Actions required.  
+`watcher.py` polls GitHub hourly, finds unprocessed issues, and dispatches pipelines in parallel.
+
+### How it works
+
+```
+Every hour:
+  For each repo in repos.yaml
+    → Find open issues labelled feature-request or bug
+         (that don't already have an agent-* state label)
+    → Label issue agent-queued
+    → Run the appropriate pipeline in a thread
+    → On success: label agent-complete
+    → On failure: label agent-failed + post error comment
+```
+
+**State labels** (auto-created in your repo):
+
+| Label | Meaning |
+|---|---|
+| `agent-queued` | Picked up this run, pipeline starting |
+| `agent-running` | Pipeline actively running |
+| `agent-complete` | ✅ Pipeline finished successfully |
+| `agent-failed` | ❌ Pipeline failed — remove label to retry |
+
+### Configure repos.yaml
+
+```yaml
+watchers:
+  - tracker_repo: wanleung/ai-software-house   # where issues are filed
+    default_target: wanleung/my-app            # default target repo for code
+    feature_label: feature-request
+    bug_label: bug
+    enabled: true
+
+  - tracker_repo: wanleung/another-project     # watch a second repo
+    default_target: ~                          # null = same repo as tracker
+    enabled: true
+
+settings:
+  max_parallel: 3       # max simultaneous pipeline runs
+  num_engineers: 2
+  model: "gpt-4.1"
+  log_dir: ./logs/watcher
+```
+
+> Use `**Target repo:** owner/repo` in the issue body to route code to a different repo than `default_target`.
+
+### Install cron job (runs every hour at :00)
+
+```bash
+chmod +x setup_cron.sh
+./setup_cron.sh
+```
+
+Or manually:
+```bash
+crontab -e
+# Add this line:
+0 * * * * cd /home/you/ai-software-house && source venv/bin/activate && python watcher.py >> logs/watcher/cron.log 2>&1
+```
+
+### Manual / test runs
+
+```bash
+# Dry run — shows what would run, makes no GitHub changes
+python watcher.py --dry-run
+
+# Run once immediately
+python watcher.py
+
+# Use a different config file
+python watcher.py --config my-other-repos.yaml
+```
+
+### Logs
+
+```
+logs/watcher/
+  cron.log                      ← all cron runs (appended)
+  watcher-YYYYMMDD.log          ← daily watcher log
+  issue-42-20260322-140000.log  ← per-issue pipeline output
+```
+
+### Prevent overlapping runs
+
+A lock file (`.watcher.lock`) is created at startup and removed on exit.  
+If a run is still active when the next cron fires, the new run exits immediately.  
+Stale locks (>1 hour old) are cleared automatically.
+
+---
+
 ## 🔄 GitHub Actions — Auto-Trigger
 
 The pipeline runs automatically when you label a GitHub Issue.
@@ -523,6 +617,9 @@ ai-software-house/
 ├── orchestrator.py            # Full pipeline (11 stages)
 ├── bug_fix_orchestrator.py    # Bug fix pipeline
 ├── github_client.py           # GitHub API wrapper (Issues, PRs, commits)
+├── watcher.py                 # Hourly cron poller — dispatches pipelines for new issues
+├── repos.yaml                 # Repos to watch + parallel/model settings
+├── setup_cron.sh              # One-command cron job installer
 ├── config.yaml                # LLM models, team size, pipeline settings
 ├── requirements.txt
 │

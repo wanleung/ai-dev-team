@@ -1,0 +1,44 @@
+# AI Software House — Repo Watcher Configuration
+# The watcher reads this file hourly and dispatches agent pipelines for
+# any open, unprocessed issues it finds.
+#
+# State labels applied by the watcher (auto-created if missing):
+#   agent-queued    — picked up this run, about to start
+#   agent-running   — pipeline is actively running
+#   agent-complete  — pipeline finished successfully
+#   agent-failed    — pipeline encountered an unrecoverable error
+#
+# Issues are skipped if they already have any of the above labels.
+
+watchers:
+
+    # ── Example 1: Central agency pattern ─────────────────────────────────
+    # Issues are filed in ai-software-house; target repo is in the issue body
+    # as "**Target repo:** owner/repo". Falls back to default_target if omitted.
+  - tracker_repo: wanleung/ai-software-house
+    default_target: wanleung/test-mobile-01
+    feature_label: feature-request         # label that triggers full pipeline
+    bug_label: bug                         # label that triggers bug-fix pipeline
+    enabled: true
+
+    # ── Example 2: Repo watches itself ─────────────────────────────────────
+    # Issues filed directly in the target project trigger the pipeline in-place.
+  # - tracker_repo: wanleung/my-other-app
+  #   default_target: ~                    # null = same repo as tracker
+  #   feature_label: feature-request
+  #   bug_label: bug
+  #   enabled: true
+
+# ── Global watcher settings ────────────────────────────────────────────────
+settings:
+  # Maximum parallel pipeline runs (one per issue)
+  max_parallel: 3
+
+  # Path to write per-run logs (relative to this file's directory)
+  log_dir: ./logs/watcher
+
+  # Number of engineer agents per pipeline run
+  num_engineers: 2
+
+  # Default LLM model (overridden by config.yaml per-agent settings)
+  model: "gpt-4.1"
