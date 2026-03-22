@@ -8,14 +8,15 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 
 ## ✨ Features
 
-- **10 specialised agents** working in sequence: PM → PM Reviewer → Architect → Arch Reviewer → Engineers → Code Reviewer → QA Planner → QA Engineer → Deployment Tester
+- **9 specialised agent types** (10+ agents in parallel): PM → PM Reviewer → Architect → Arch Reviewer → Engineers ×N → Code Reviewer → QA Planner → QA Engineer → Deployment Tester
 - **Checkpoint / resume** — interrupted runs pick up from the last successful stage
 - **Multi-repo routing** — agents push to a target repo; tracking issues live in a central `ai-software-house` repo
 - **Per-agent LLM config** — assign any GitHub Models model to each agent independently
 - **Actual test execution** — pytest runs locally; results posted back to the PR as a comment
 - **Docker smoke tests** — deployment tester generates and runs container health checks
 - **GitHub Actions integration** — label an issue to trigger the full pipeline automatically
-- **Fully customisable** — add new agents, skills, and guides by editing markdown role files
+- **Tool calling built-in** — Code Reviewer runs `ruff`, QA Planner searches GitHub Issues; any agent can call tools via `call_with_tools()`
+- **Fully customisable** — add agents, skills, and tools by editing markdown role files and Python tool functions
 
 ---
 
@@ -436,14 +437,14 @@ ai-software-house/
 ├── requirements.txt
 │
 ├── agents/
-│   ├── base_agent.py          # BaseAgent: API calls, retry, truncation
+│   ├── base_agent.py          # BaseAgent: call(), call_with_tools(), retry, truncation
 │   ├── product_manager.py     # Alice — PRD writer
 │   ├── pm_reviewer.py         # Grace — PRD reviewer
 │   ├── architect.py           # Bob — system designer
 │   ├── architect_reviewer.py  # Frank — design reviewer
 │   ├── engineer.py            # Alex — code writer (parallel)
-│   ├── code_reviewer.py       # Carol — code reviewer
-│   ├── qa_planner.py          # Henry — test planner
+│   ├── code_reviewer.py       # Carol — code reviewer  [tools: run_linter]
+│   ├── qa_planner.py          # Henry — test planner   [tools: search_github_issues]
 │   ├── qa_engineer.py         # Edward — test writer
 │   └── deployment_tester.py   # Diana — deployment tester
 │
@@ -457,6 +458,12 @@ ai-software-house/
 │   ├── qa_planner.md
 │   ├── qa_engineer.md
 │   └── deployment_tester.md
+│
+├── tools/                     # Tool calling — Option A (MCP-ready)
+│   ├── registry.py            # ToolRegistry ABC + LocalToolRegistry (@tool decorator)
+│   ├── builtin.py             # Built-in tools: run_linter, run_shell_command,
+│   │                          #   search_github_issues, get_github_file
+│   └── __init__.py
 │
 ├── .github/workflows/
 │   ├── feature-build.yml      # Auto-trigger on 'feature-request' label
