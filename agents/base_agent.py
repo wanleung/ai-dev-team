@@ -42,7 +42,7 @@ class BaseAgent:
 
         # GitHub Models API is OpenAI-compatible — same backend as Copilot CLI
         self.client = OpenAI(
-            base_url="https://models.inference.ai.azure.com",
+            base_url="https://models.github.ai/inference",
             api_key=token,
         )
         self.model = model
