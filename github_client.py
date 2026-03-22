@@ -93,6 +93,10 @@ class GitHubClient:
             json={"body": body},
         )
 
+    def get_issue(self, issue_number: int) -> dict:
+        """Fetch a single issue by number."""
+        return self._request("GET", f"/repos/{self.repo}/issues/{issue_number}")
+
     def close_issue(self, issue_number: int, comment: Optional[str] = None) -> None:
         """Close an issue, optionally adding a final comment."""
         if comment:

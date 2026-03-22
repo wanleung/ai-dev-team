@@ -11,3 +11,5 @@ venv/
 .vscode/
 *.log
 workspace/
+logs/
+.watcher.lock
