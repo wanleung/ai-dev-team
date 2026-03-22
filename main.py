@@ -170,6 +170,7 @@ def main() -> int:
         agent_map = {
             "product_manager": orch.pm,
             "architect": orch.architect,
+            "architect_reviewer": orch.architect_reviewer,
             "engineer": orch.engineer,
             "code_reviewer": orch.reviewer,
             "qa_engineer": orch.qa,
