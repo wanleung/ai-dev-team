@@ -6,6 +6,7 @@ from .architect import ArchitectAgent
 from .architect_reviewer import ArchitectReviewerAgent
 from .engineer import EngineerAgent
 from .code_reviewer import CodeReviewerAgent
+from .qa_planner import QAPlannerAgent
 from .qa_engineer import QAEngineerAgent
 from .deployment_tester import DeploymentTesterAgent
 
@@ -17,6 +18,7 @@ __all__ = [
     "ArchitectReviewerAgent",
     "EngineerAgent",
     "CodeReviewerAgent",
+    "QAPlannerAgent",
     "QAEngineerAgent",
     "DeploymentTesterAgent",
 ]

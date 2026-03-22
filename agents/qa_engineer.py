@@ -17,13 +17,15 @@ class QAEngineerAgent(BaseAgent):
 
     role_name = "qa_engineer"
 
-    def run(self, files: dict[str, str], prd: str, project_name: str = "Project") -> dict:
+    def run(self, files: dict[str, str], prd: str, project_name: str = "Project", test_plan: str = "") -> dict:
         """Generate tests for the implemented code.
 
         Args:
             files: dict of {filepath: file_content} from EngineerAgent.
             prd: PRD markdown for acceptance criteria.
             project_name: Project name for context.
+            test_plan: Optional structured Test Plan from QAPlannerAgent. When provided,
+                Edward uses it to prioritise which tests to write.
 
         Returns:
             dict with keys:
@@ -38,9 +40,16 @@ class QAEngineerAgent(BaseAgent):
             f"### FILE: {path}\n```python\n{content}\n```" for path, content in files_for_qa.items()
         )
 
+        plan_section = (
+            f"\n\n**Test Plan from QA Planner (implement these test cases):**\n---\n{test_plan[:4000]}\n---"
+            if test_plan
+            else ""
+        )
+
         prompt = (
             f"You are writing tests for the project '{project_name}'.\n\n"
-            f"**PRD (acceptance criteria to validate):**\n---\n{prd}\n---\n\n"
+            f"**PRD (acceptance criteria to validate):**\n---\n{prd}\n---"
+            f"{plan_section}\n\n"
             f"**Implemented code:**\n\n{code_section}\n\n"
             f"Write comprehensive pytest tests following your role instructions. "
             f"Use '### FILE: tests/test_xxx.py' format for each test file."
@@ -66,6 +75,7 @@ class QAEngineerAgent(BaseAgent):
         pr_number: int,
         issue_number: Optional[int] = None,
         tracker_github_client=None,
+        test_plan: str = "",
     ) -> dict:
         """Run QA, commit test files to the feature branch, and post a report on the PR.
 
@@ -86,7 +96,7 @@ class QAEngineerAgent(BaseAgent):
             Same as run() result.
         """
         tracker = tracker_github_client or github_client
-        result = self.run(files, prd, project_name)
+        result = self.run(files, prd, project_name, test_plan=test_plan)
 
         # Commit test files to the feature branch in the target project
         for filepath, content in result["test_files"].items():
