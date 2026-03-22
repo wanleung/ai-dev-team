@@ -4,6 +4,8 @@ module scenarios) that guides the QA Engineer's implementation.
 """
 from __future__ import annotations
 
+from tools import builtin_tools
+
 from .base_agent import BaseAgent
 
 
@@ -12,6 +14,10 @@ class QAPlannerAgent(BaseAgent):
 
     Input:  PRD + system design + generated code files
     Output: Structured Test Plan markdown (acceptance criteria, test strategy, module scenarios)
+
+    Tools used:
+        search_github_issues — searches for existing issues/tickets to avoid duplicate
+                               test coverage and find related acceptance criteria.
     """
 
     role_name = "qa_planner"
@@ -22,6 +28,7 @@ class QAPlannerAgent(BaseAgent):
         design: str,
         files: dict[str, str],
         project_name: str = "Project",
+        repo: str = "",
     ) -> dict:
         """Produce a test plan from PRD + design + code.
 
@@ -30,6 +37,7 @@ class QAPlannerAgent(BaseAgent):
             design:       System design markdown (from Architect / Arch Reviewer).
             files:        Dict of {filename: content} from Engineers.
             project_name: Project name for context.
+            repo:         Optional 'owner/repo' — enables search_github_issues tool.
 
         Returns:
             dict with keys:
@@ -43,15 +51,21 @@ class QAPlannerAgent(BaseAgent):
             for fname, content in list(truncated.items())[:10]
         )
 
+        repo_hint = (
+            f"\nYou can use the search_github_issues tool to search repo '{repo}' "
+            f"for related existing issues or acceptance criteria.\n"
+            if repo else ""
+        )
+
         prompt = (
-            f"Project: **{project_name}**\n\n"
+            f"Project: **{project_name}**\n{repo_hint}\n"
             f"## PRD\n{prd}\n\n"
             f"## System Design\n{design}\n\n"
             f"## Implemented Code (summary)\n{files_summary}\n\n"
             "Please produce the full Test Plan following your role instructions."
         )
 
-        response = self.call(prompt)
+        response = self.call_with_tools(prompt, tools=builtin_tools)
         acceptance_criteria = self._extract_ac_ids(response)
 
         return {
@@ -71,7 +85,8 @@ class QAPlannerAgent(BaseAgent):
         pr_number: int | None = None,
     ) -> dict:
         """Produce the test plan and post it as a GitHub comment."""
-        result = self.run(prd, design, files, project_name)
+        repo = github_client.repo if hasattr(github_client, "repo") else ""
+        result = self.run(prd, design, files, project_name, repo=repo)
 
         status = "✅" if result["success"] else "⚠️"
         ac_count = len(result["acceptance_criteria"])
