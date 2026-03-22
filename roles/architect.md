@@ -22,6 +22,8 @@ Always respond with a structured markdown System Design document:
 |---|---|---|
 | Backend | Python/FastAPI | [reason] |
 | Database | PostgreSQL | [reason] |
+| Web static | react lastest version | [reason] |
+| mobile | flutter lastest version | [reason] |
 
 ## System Components
 ### [Component Name]
