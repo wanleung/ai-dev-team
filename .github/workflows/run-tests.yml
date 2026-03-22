@@ -1,0 +1,91 @@
+name: 🧪 Run Tests on PR
+
+# Auto-run tests whenever an AI agent opens or updates a feature branch PR
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "tests/**"
+      - "**.py"
+      - "requirements*.txt"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to run tests for"
+        required: false
+        type: number
+
+jobs:
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install app dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt -q
+          fi
+
+      - name: Install test dependencies
+        run: |
+          if [ -f requirements-test.txt ]; then
+            pip install -r requirements-test.txt -q
+          else
+            pip install pytest pytest-cov httpx -q
+          fi
+
+      - name: Run tests
+        id: run_tests
+        run: |
+          pytest tests/ -v --tb=short \
+            --cov=. --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            -p no:cacheprovider \
+            2>&1 | tee test_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+
+      - name: Post test results to PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS="${{ steps.run_tests.outcome }}"
+          if [ "$STATUS" = "success" ]; then
+            EMOJI="✅"
+            LABEL="All tests passed"
+          else
+            EMOJI="❌"
+            LABEL="Some tests failed"
+          fi
+
+          # Grab last 60 lines of output
+          OUTPUT=$(tail -60 test_output.txt 2>/dev/null || echo "No output captured")
+
+          gh pr comment "${{ github.event.pull_request.number }}" --body "## 🧪 Test Run Results
+
+**Status:** ${EMOJI} ${LABEL}
+
+\`\`\`
+${OUTPUT}
+\`\`\`"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          if-no-files-found: ignore
