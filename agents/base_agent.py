@@ -4,12 +4,16 @@ This is the same AI backbone that powers GitHub Copilot CLI.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from openai import OpenAI
+
+if TYPE_CHECKING:
+    from tools.registry import ToolRegistry
 
 
 class BaseAgent:
@@ -56,6 +60,110 @@ class BaseAgent:
             raise FileNotFoundError(f"Role instruction file not found: {prompt_file}")
 
         return prompt_file.read_text(encoding="utf-8")
+
+    def call_with_tools(
+        self,
+        user_message: str,
+        tools: "ToolRegistry",
+        context: Optional[str] = None,
+        max_turns: int = 8,
+    ) -> str:
+        """Send a message to the LLM, executing tool calls until a final answer.
+
+        The LLM may call tools zero or more times before producing a text response.
+        This method handles the full tool-call loop automatically.
+
+        MCP migration path (Option B):
+            Pass an MCPToolRegistry instead of LocalToolRegistry.
+            `tools.schemas` will be fetched from the MCP server.
+            `tools.call()` will route through the MCP client.
+            This method stays identical.
+
+        Args:
+            user_message: The main task/prompt.
+            tools:        A ToolRegistry (LocalToolRegistry or future MCPToolRegistry).
+            context:      Optional context prepended to user_message.
+            max_turns:    Max tool-call rounds before forcing a text response.
+
+        Returns:
+            The LLM's final text response.
+        """
+        full_message = f"{context}\n\n{user_message}" if context else user_message
+
+        messages: list[dict] = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.append({"role": "user", "content": full_message})
+
+        max_retries = 5
+        delay = 15
+
+        for turn in range(max_turns):
+            # Call the API with tool schemas
+            for attempt in range(max_retries):
+                try:
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        tools=tools.schemas,
+                        tool_choice="auto",
+                        temperature=0.3,
+                    )
+                    break
+                except Exception as exc:
+                    is_rate_limit = "429" in str(exc) or "RateLimitReached" in str(exc)
+                    if is_rate_limit and attempt < max_retries - 1:
+                        wait = delay * (2 ** attempt)
+                        print(f"    ⏳ Rate limited — waiting {wait}s (turn {turn + 1})…")
+                        time.sleep(wait)
+                    else:
+                        raise
+
+            msg = response.choices[0].message
+
+            # No tool calls → final answer
+            if not msg.tool_calls:
+                return msg.content or ""
+
+            # Append assistant message (with tool_calls) to history
+            messages.append({
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ],
+            })
+
+            # Execute each tool call and append results
+            for tc in msg.tool_calls:
+                tool_name = tc.function.name
+                print(f"    🔧 Tool call: {tool_name}({tc.function.arguments[:80]}…)")
+                result = tools.call(tool_name, tc.function.arguments)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result,
+                })
+
+        # Max turns reached — ask for a final response without tools
+        messages.append({
+            "role": "user",
+            "content": "Please provide your final response based on the tool results above.",
+        })
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=0.3,
+        )
+        return response.choices[0].message.content or ""
 
     def call(self, user_message: str, context: Optional[str] = None) -> str:
         """Send a message to the LLM and return the response.

@@ -3,6 +3,8 @@ CodeReviewerAgent: reviews generated code and provides structured feedback.
 """
 from __future__ import annotations
 
+from tools import builtin_tools
+
 from .base_agent import BaseAgent
 
 
@@ -11,6 +13,10 @@ class CodeReviewerAgent(BaseAgent):
 
     Input:  dict of {filepath: content} + PRD acceptance criteria
     Output: structured review markdown + review verdict
+
+    Tools used:
+        run_linter — runs ruff on each Python file before writing the review,
+                     so lint results are included as concrete evidence.
     """
 
     role_name = "code_reviewer"
@@ -33,7 +39,6 @@ class CodeReviewerAgent(BaseAgent):
                 - verdict (str): One of APPROVED / APPROVED WITH MINOR COMMENTS / CHANGES REQUESTED
                 - has_critical_issues (bool): True if changes are required
         """
-        # Truncate to fit within model token limits
         files_to_review = self.truncate_files(files, max_chars=10_000)
 
         code_section = "\n\n".join(
@@ -44,10 +49,11 @@ class CodeReviewerAgent(BaseAgent):
             f"Please review the following code for the project '{project_name}'.\n\n"
             f"**PRD (for acceptance criteria reference):**\n---\n{prd}\n---\n\n"
             f"**Code to review:**\n\n{code_section}\n\n"
-            f"Provide a thorough code review following your role instructions."
+            f"Use the run_linter tool on any Python files you want to check for lint errors, "
+            f"then provide a thorough code review following your role instructions."
         )
 
-        review = self.call(prompt)
+        review = self.call_with_tools(prompt, tools=builtin_tools)
         verdict = self._extract_verdict(review)
 
         return {

@@ -473,6 +473,82 @@ ai-software-house/
 
 ---
 
+## 🛠️ Tool Calling (Option A) & MCP (Option B)
+
+Agents can call **tools** during their reasoning — not just produce text. The tool-call loop runs automatically inside `BaseAgent.call_with_tools()`.
+
+### How it works
+
+```
+Agent prompt
+    ↓
+LLM decides to call a tool  →  tool executes  →  result appended to messages
+    ↓ (repeat until no more tool calls)
+Final text response
+```
+
+### Built-in tools (`tools/builtin.py`)
+
+| Tool | Used by | What it does |
+|---|---|---|
+| `run_linter` | Code Reviewer | Runs `ruff` on Python files — concrete lint errors in the review |
+| `run_shell_command` | Any agent | Runs a safe shell command (pytest, syntax check, etc.) |
+| `search_github_issues` | QA Planner | Searches GitHub issues for existing ACs / related bugs |
+| `get_github_file` | Any agent | Reads a file from a GitHub repo at runtime |
+
+### Adding a custom tool
+
+```python
+from tools import LocalToolRegistry
+
+my_tools = LocalToolRegistry()
+
+@my_tools.tool(
+    name="check_dependencies",
+    description="Check if a Python package exists on PyPI",
+    parameters={
+        "type": "object",
+        "properties": {
+            "package": {"type": "string", "description": "Package name"},
+        },
+        "required": ["package"],
+    },
+)
+def check_dependencies(package: str) -> str:
+    import requests
+    r = requests.get(f"https://pypi.org/pypi/{package}/json", timeout=5)
+    return f"Found: {r.json()['info']['version']}" if r.ok else "Not found"
+
+# Use in any agent
+response = agent.call_with_tools("Check if fastapi exists", tools=my_tools)
+```
+
+### MCP migration path (Option B)
+
+The `ToolRegistry` is an abstract base class. To switch to MCP:
+
+```python
+# tools/mcp_registry.py
+from tools.registry import ToolRegistry
+
+class MCPToolRegistry(ToolRegistry):
+    def __init__(self, server_url: str):
+        self._client = MCPClient(server_url)   # any MCP client library
+
+    @property
+    def schemas(self) -> list[dict]:
+        return self._client.list_tools()       # fetched from MCP server
+
+    def call(self, name: str, arguments: str) -> str:
+        import json
+        return str(self._client.call_tool(name, json.loads(arguments)))
+```
+
+Then pass `MCPToolRegistry(server_url)` anywhere `builtin_tools` is used today.  
+**All agent code stays identical** — only the registry implementation changes.
+
+---
+
 ## 🔗 How It Connects to GitHub Copilot CLI
 
 This project uses the **same AI backend** as GitHub Copilot CLI:
