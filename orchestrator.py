@@ -24,6 +24,7 @@ from agents import (
     CodeReviewerAgent,
     DeploymentTesterAgent,
     EngineerAgent,
+    PMReviewerAgent,
     ProductManagerAgent,
     QAEngineerAgent,
 )
@@ -39,6 +40,8 @@ class PipelineResult:
     requirement: str
     project_name: str = ""
     prd: str = ""
+    prd_review: str = ""
+    prd_verdict: str = ""
     design: str = ""
     design_review: str = ""
     design_verdict: str = ""
@@ -68,6 +71,8 @@ class PipelineResult:
             "requirement": self.requirement,
             "project_name": self.project_name,
             "prd": self.prd,
+            "prd_review": self.prd_review,
+            "prd_verdict": self.prd_verdict,
             "design": self.design,
             "design_review": self.design_review,
             "design_verdict": self.design_verdict,
@@ -93,7 +98,7 @@ class PipelineResult:
     @classmethod
     def from_dict(cls, data: dict) -> "PipelineResult":
         r = cls(requirement=data["requirement"])
-        for key in ["project_name", "prd", "design", "design_review", "design_verdict",
+        for key in ["project_name", "prd", "prd_review", "prd_verdict", "design", "design_review", "design_verdict",
                     "modules", "all_files", "test_files",
                     "deploy_files", "review", "verdict", "test_plan", "deploy_plan",
                     "test_results", "deploy_test_results", "tests_passed", "deploy_tests_passed",
@@ -141,6 +146,7 @@ class Orchestrator:
             return self.model_overrides.get(agent_name, model)
 
         self.pm = ProductManagerAgent(model=_model("product_manager"), **agent_kwargs)
+        self.pm_reviewer = PMReviewerAgent(model=_model("pm_reviewer"), **agent_kwargs)
         self.architect = ArchitectAgent(model=_model("architect"), **agent_kwargs)
         self.architect_reviewer = ArchitectReviewerAgent(model=_model("architect_reviewer"), **agent_kwargs)
         self.engineer = EngineerAgent(model=_model("engineer"), **agent_kwargs)
@@ -237,6 +243,17 @@ class Orchestrator:
             self._save_checkpoint(result)
         else:
             console.print("  ⏭️  [dim]📋 Product Manager — skipped (checkpoint)[/dim]")
+
+        # ── Stage 1b: PM Reviewer ─────────────────────────────────────────────
+        if "pm_reviewer" not in result.completed_stages:
+            self._run_stage("📝 PM Reviewer", "Reviewing PRD for completeness...", result, lambda: self._stage_pm_reviewer(result, requirement))
+            if result.errors:
+                self._save_checkpoint(result)
+                return self._finish(result, start_time)
+            result.completed_stages.append("pm_reviewer")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]📝 PM Reviewer — skipped (checkpoint)[/dim]")
 
         # ── Stage 2: Architect ────────────────────────────────────────────────
         if "architect" not in result.completed_stages:
@@ -345,6 +362,22 @@ class Orchestrator:
             arch_result = self.architect.run(result.prd, result.project_name)
         result.design = arch_result["design"]
         result.modules = arch_result["modules"]
+
+    def _stage_pm_reviewer(self, result: PipelineResult, requirement: str) -> None:
+        """Review the PM's PRD. If revision needed, update prd + project_name."""
+        if self.github and result.issue_number:
+            rev_result = self.pm_reviewer.run_with_github(
+                result.prd, requirement, result.project_name, self.github, result.issue_number
+            )
+        else:
+            rev_result = self.pm_reviewer.run(result.prd, requirement, result.project_name)
+
+        result.prd_review = rev_result["review"]
+        result.prd_verdict = rev_result["verdict"]
+
+        if rev_result["needs_revision"] and rev_result["revised_prd"]:
+            result.prd = rev_result["revised_prd"]
+            result.project_name = rev_result["revised_project_name"]
 
     def _stage_architect_reviewer(self, result: PipelineResult) -> None:
         """Review the Architect's design. If revision needed, update design + modules."""
@@ -620,6 +653,8 @@ class Orchestrator:
 
         table.add_row("Project", result.project_name or "—")
         table.add_row("PRD", f"{len(result.prd)} chars" if result.prd else "—")
+        if result.prd_verdict:
+            table.add_row("PRD verdict", result.prd_verdict)
         table.add_row("Modules", str(len(result.modules)))
         if result.design_verdict:
             table.add_row("Design verdict", result.design_verdict)

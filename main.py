@@ -169,6 +169,7 @@ def main() -> int:
         # Apply CLI overrides
         agent_map = {
             "product_manager": orch.pm,
+            "pm_reviewer": orch.pm_reviewer,
             "architect": orch.architect,
             "architect_reviewer": orch.architect_reviewer,
             "engineer": orch.engineer,
