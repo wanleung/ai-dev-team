@@ -78,18 +78,12 @@ class CodeReviewerAgent(BaseAgent):
         """
         result = self.run(files, prd, project_name)
 
-        # Map verdict to GitHub review event
-        event_map = {
-            self.VERDICT_APPROVE: "APPROVE",
-            self.VERDICT_MINOR: "COMMENT",
-            self.VERDICT_CHANGES: "REQUEST_CHANGES",
-        }
-        event = event_map.get(result["verdict"], "COMMENT")
-
+        # GitHub doesn't allow APPROVE or REQUEST_CHANGES on your own PR.
+        # Always use COMMENT so the review body is still posted regardless of who opens the PR.
         github_client.add_pr_review(
             pr_number,
             body=f"## 🔍 Code Review (CodeReviewerAgent)\n\n{result['review']}",
-            event=event,
+            event="COMMENT",
         )
         return result
 
