@@ -130,14 +130,16 @@ class Orchestrator:
         # Shared kwargs for all agents
         agent_kwargs = {"github_token": github_token}
 
-        self.pm = ProductManagerAgent(model=model, **agent_kwargs)
-        self.architect = ArchitectAgent(model=model, **agent_kwargs)
-        self.engineer = EngineerAgent(
-            model=self.model_overrides.get("engineer", model), **agent_kwargs
-        )
-        self.reviewer = CodeReviewerAgent(model=model, **agent_kwargs)
-        self.qa = QAEngineerAgent(model=model, **agent_kwargs)
-        self.deployment_tester = DeploymentTesterAgent(model=model, **agent_kwargs)
+        def _model(agent_name: str) -> str:
+            """Return the model for a given agent, falling back to the global default."""
+            return self.model_overrides.get(agent_name, model)
+
+        self.pm = ProductManagerAgent(model=_model("product_manager"), **agent_kwargs)
+        self.architect = ArchitectAgent(model=_model("architect"), **agent_kwargs)
+        self.engineer = EngineerAgent(model=_model("engineer"), **agent_kwargs)
+        self.reviewer = CodeReviewerAgent(model=_model("code_reviewer"), **agent_kwargs)
+        self.qa = QAEngineerAgent(model=_model("qa_engineer"), **agent_kwargs)
+        self.deployment_tester = DeploymentTesterAgent(model=_model("deployment_tester"), **agent_kwargs)
 
         # Tracker GitHub (ai-software-house): PM issues, progress comments
         self.github: Optional[GitHubClient] = None
