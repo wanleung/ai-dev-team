@@ -90,7 +90,7 @@ jobs:
     name: Docker deployment smoke tests
     runs-on: ubuntu-latest
     needs: unit-test
-    if: hashFiles('docker-compose.test.yml') != ''
+    if: ${{ hashFiles('docker-compose.test.yml') != '' }}
     permissions:
       pull-requests: write
       contents: read
