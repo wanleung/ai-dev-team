@@ -8,7 +8,7 @@ Requirement → PM → Architect → Engineers ×N → Code Reviewer → QA → 
 
 ## ✨ Features
 
-- **7 specialized agents**: Product Manager, Architect, N Engineers, Code Reviewer, QA Engineer, Deployment Tester
+- **9 specialized agents**: Product Manager, PM Reviewer, Architect, Architect Reviewer, N Engineers, Code Reviewer, QA Engineer, Deployment Tester
 - **GitHub-native**: creates Issues (PRD), feature branches, Pull Requests, and review comments
 - **Auto-trigger on Issues**: label any issue `ai-fix` or `ai-feature` → pipeline runs automatically via GitHub Actions
 - **Two pipelines**: full feature build **and** focused bug-fix (diagnosis → fix → review → regression tests)
@@ -155,13 +155,15 @@ print(result.deploy_tests_passed)  # True / False / None (skipped)
 **Pipeline stages:**
 ```
 1. 📋 Product Manager   — requirement → PRD + GitHub Issue
-2. 🏗️  Architect         — PRD → system design + modules
-3. 💻 Engineers ×N      — parallel code generation → feature branch + PR
-4. 🔍 Code Reviewer     — reviews code → PR comment
-5. 🧪 QA Engineer       — writes tests + conftest.py + requirements-test.txt → PR
-6. 🏃 Test Runner       — runs pytest locally → PR comment with results
-7. 🚀 Deployment Tester — generates docker-compose.test.yml + smoke tests → PR
-8. 🐳 Deploy Test Runner— runs docker smoke tests → PR comment (skips if no Docker)
+2. 📝 PM Reviewer      — reviews PRD; optionally revises before architecture
+3. 🏗️  Architect        — PRD → system design + modules
+4. 🔎 Arch Reviewer    — reviews design; optionally revises before engineering
+5. 💻 Engineers ×N     — parallel code generation → feature branch + PR
+6. 🔍 Code Reviewer    — reviews code → PR comment
+7. 🧪 QA Engineer      — writes tests + conftest.py + requirements-test.txt → PR
+8. 🏃 Test Runner      — runs pytest locally → PR comment with results
+9. 🚀 Deployment Tester— generates docker-compose.test.yml + smoke tests → PR
+10. 🐳 Deploy Test Runner— runs docker smoke tests → PR comment (skips if no Docker)
 ```
 
 ---
@@ -415,7 +417,9 @@ ai-software-house/
 | Agent | Name | Input | Output | GitHub Artifact |
 |---|---|---|---|---|
 | **Product Manager** | Alice | Raw requirement | PRD markdown | GitHub Issue |
+| **PM Reviewer** | Grace | PRD + requirement | Review + revised PRD (if needed) | Issue comment |
 | **Architect** | Bob | PRD | System design + modules | Issue comment |
+| **Arch Reviewer** | Frank | Design + PRD | Review + revised design (if needed) | Issue comment |
 | **Engineer ×N** | Alex (×N) | System design | Code files | Feature branch + PR |
 | **Code Reviewer** | Carol | Code files + PRD | Review + verdict | PR review comment |
 | **QA Engineer** | Edward | Code + PRD | Test files + conftest + requirements-test.txt | PR comment + tests on branch |
