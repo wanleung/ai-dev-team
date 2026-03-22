@@ -20,7 +20,97 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 
 ---
 
-## 🚀 Quick Start
+## ⚡ MVP Setup (Get Running in 5 Minutes)
+
+The minimal setup to run the core pipeline — no Docker, no GitHub Actions, no reviewers. Just PM → Architect → Engineers → Code Reviewer → QA Engineer pushing code to a GitHub repo.
+
+### Step 1 — Clone & install
+
+```bash
+git clone https://github.com/your-username/ai-software-house
+cd ai-software-house
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Step 2 — GitHub classic PAT
+
+1. Go to [github.com/settings/tokens](https://github.com/settings/tokens) → **Tokens (classic)**
+2. Generate new token → tick **`repo`** scope (this also enables GitHub Models access)
+3. Copy the token (`ghp_...`)
+
+```bash
+export GITHUB_TOKEN=ghp_your_token_here
+```
+
+> ⚠️ Must be a **classic** PAT, not a fine-grained token. Fine-grained tokens return `401 models permission required`.
+
+### Step 3 — Create a target repo
+
+Create an **empty public repo** on GitHub (e.g. `your-username/my-first-agent-app`).  
+The pipeline will initialise it automatically.
+
+### Step 4 — Minimal config
+
+Edit `config.yaml` — change just one line:
+
+```yaml
+github:
+  repo: "your-username/my-first-agent-app"   # ← your new repo
+```
+
+Disable the optional agents to keep it fast:
+
+```yaml
+team:
+  num_engineers: 1        # start with 1 engineer
+  agents:
+    product_manager: true
+    pm_reviewer: false    # skip for MVP
+    architect: true
+    engineer: true
+    code_reviewer: true
+    qa_planner: false     # skip for MVP
+    qa_engineer: true
+    deployment_tester: false  # skip — needs Docker
+```
+
+### Step 5 — Run
+
+```bash
+python main.py \
+  --requirement "Build a simple REST API for a todo list with FastAPI" \
+  --repo your-username/my-first-agent-app
+```
+
+### What you'll get
+
+```
+workspace/
+  simple-todo-rest-api/       ← generated code saved locally
+
+GitHub:
+  Issue #1                    ← PRD created by Alice (PM)
+  Branch: feature/agent-...  ← code pushed by Alex (Engineer)
+  PR #2                       ← pull request with code review + test files
+```
+
+### MVP vs Full Pipeline
+
+| | MVP | Full |
+|---|---|---|
+| Agents | 4 core agents | 9 agent types |
+| Reviewers | Code Reviewer only | PM Reviewer + Arch Reviewer + Code Reviewer |
+| Test planning | QA Engineer only | QA Planner → QA Engineer |
+| Deployment tests | ❌ | ✅ Docker smoke tests |
+| GitHub Actions | ❌ | ✅ Auto-trigger on issue labels |
+| Time to first PR | ~2–3 min | ~5–10 min |
+
+Once the MVP works, turn agents back on one by one in `config.yaml`.
+
+---
+
+## 🚀 Full Setup
 
 ### 1. Prerequisites
 
