@@ -68,7 +68,17 @@ Setup:
     parser.add_argument(
         "--model",
         metavar="MODEL",
-        help="LLM model name (e.g. gpt-4.1, gpt-4.1-mini). Overrides config.yaml.",
+        help="Default LLM model for all agents (e.g. gpt-4.1). Overrides config.yaml.",
+    )
+    parser.add_argument(
+        "--model-override",
+        metavar="AGENT=MODEL",
+        action="append",
+        dest="model_overrides",
+        help=(
+            "Per-agent model override. Can be repeated. "
+            "e.g. --model-override engineer=gpt-4.1-mini --model-override architect=claude-3.5-sonnet"
+        ),
     )
     parser.add_argument(
         "--engineers",
@@ -157,12 +167,29 @@ def main() -> int:
             orch = Orchestrator(github_token=github_token)
 
         # Apply CLI overrides
+        agent_map = {
+            "product_manager": orch.pm,
+            "architect": orch.architect,
+            "engineer": orch.engineer,
+            "code_reviewer": orch.reviewer,
+            "qa_engineer": orch.qa,
+            "deployment_tester": orch.deployment_tester,
+        }
         if args.model:
+            for agent in agent_map.values():
+                agent.model = args.model
             orch.model = args.model
-            orch.pm.model = args.model
-            orch.architect.model = args.model
-            orch.reviewer.model = args.model
-            orch.qa.model = args.model
+        if args.model_overrides:
+            for spec in args.model_overrides:
+                if "=" not in spec:
+                    console.print(f"[yellow]⚠️  Ignoring invalid --model-override '{spec}' (expected AGENT=MODEL)[/yellow]")
+                    continue
+                agent_name, model_name = spec.split("=", 1)
+                if agent_name not in agent_map:
+                    console.print(f"[yellow]⚠️  Unknown agent '{agent_name}'. Valid: {', '.join(agent_map)}[/yellow]")
+                    continue
+                agent_map[agent_name].model = model_name
+                console.print(f"  🔧 {agent_name}: {model_name}")
         if args.engineers:
             orch.num_engineers = args.engineers
         if args.repo and not args.no_github:
