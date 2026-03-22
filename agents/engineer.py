@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
@@ -75,10 +76,12 @@ class EngineerAgent(BaseAgent):
         results = []
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(self.run_module, design, mod, project_name): mod
-                for mod in modules
-            }
+            futures = []
+            for i, mod in enumerate(modules):
+                if i > 0:
+                    # Small stagger to avoid burst rate limits (60k tokens/min window)
+                    time.sleep(2)
+                futures.append(executor.submit(self.run_module, design, mod, project_name))
             for future in futures:
                 result = future.result()
                 results.append(result)
