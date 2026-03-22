@@ -150,6 +150,7 @@ class GitHubClient:
 
     def create_branch(self, branch_name: str, from_branch: Optional[str] = None) -> str:
         """Create a new branch. Auto-initializes the repo if it is empty.
+        If the branch already exists, reuses it (idempotent).
 
         Returns the branch name.
         """
@@ -162,11 +163,18 @@ class GitHubClient:
                 sha = self.initialize_repo(default_branch=base)
             else:
                 raise
-        self._request(
-            "POST",
-            f"/repos/{self.repo}/git/refs",
-            json={"ref": f"refs/heads/{branch_name}", "sha": sha},
-        )
+        try:
+            self._request(
+                "POST",
+                f"/repos/{self.repo}/git/refs",
+                json={"ref": f"refs/heads/{branch_name}", "sha": sha},
+            )
+        except RuntimeError as e:
+            if "422" in str(e) and "already exists" in str(e).lower():
+                # Branch exists from a previous run — that's fine, reuse it
+                pass
+            else:
+                raise
         return branch_name
 
     def commit_file(
@@ -211,18 +219,31 @@ class GitHubClient:
         base: Optional[str] = None,
         draft: bool = False,
     ) -> dict:
-        """Open a pull request. Returns PR data including number and url."""
-        return self._request(
-            "POST",
-            f"/repos/{self.repo}/pulls",
-            json={
-                "title": title,
-                "body": body,
-                "head": head,
-                "base": base or self.get_default_branch(),
-                "draft": draft,
-            },
-        )
+        """Open a pull request. If one already exists for this head branch, returns it."""
+        base_branch = base or self.get_default_branch()
+        try:
+            return self._request(
+                "POST",
+                f"/repos/{self.repo}/pulls",
+                json={
+                    "title": title,
+                    "body": body,
+                    "head": head,
+                    "base": base_branch,
+                    "draft": draft,
+                },
+            )
+        except RuntimeError as e:
+            if "422" in str(e) and "already exists" in str(e).lower():
+                # PR already open for this branch — find and return it
+                prs = self._request(
+                    "GET",
+                    f"/repos/{self.repo}/pulls",
+                    params={"state": "open", "head": f"{self.repo.split('/')[0]}:{head}"},
+                )
+                if prs:
+                    return prs[0]
+            raise
 
     def add_pr_review(self, pr_number: int, body: str, event: str = "COMMENT") -> dict:
         """Add a review to a pull request.
