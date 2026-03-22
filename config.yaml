@@ -14,7 +14,7 @@ llm:
   model: "gpt-4.1"
 
   # Per-agent model overrides — each agent can use a different LLM.
-  # Agent names: product_manager, pm_reviewer, architect, architect_reviewer, engineer, code_reviewer, qa_engineer, deployment_tester
+  # Agent names: product_manager, pm_reviewer, architect, architect_reviewer, engineer, code_reviewer, qa_planner, qa_engineer, deployment_tester
   # Tip: use a powerful model for PM/Architect (reasoning-heavy), fast/cheap for Engineer (repetitive).
   overrides:
     product_manager: "gpt-4.1"           # Requirements analysis — needs good reasoning
@@ -23,6 +23,7 @@ llm:
     architect_reviewer: "gpt-4.1"        # Design review — needs critical thinking
     engineer: "gpt-4.1-mini"             # Code writing — runs many times, use cheaper model
     code_reviewer: "gpt-4.1"             # Code review — needs accuracy
+    qa_planner: "gpt-4.1"                # Test planning — needs strong reasoning
     qa_engineer: "gpt-4.1-mini"          # Test writing — repetitive, cheaper model fine
     deployment_tester: "gpt-4.1-mini"    # Smoke test generation
 
@@ -47,6 +48,7 @@ team:
     architect: true
     engineer: true
     code_reviewer: true
+    qa_planner: true
     qa_engineer: true
     deployment_tester: true
 

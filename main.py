@@ -174,6 +174,7 @@ def main() -> int:
             "architect_reviewer": orch.architect_reviewer,
             "engineer": orch.engineer,
             "code_reviewer": orch.reviewer,
+            "qa_planner": orch.qa_planner,
             "qa_engineer": orch.qa,
             "deployment_tester": orch.deployment_tester,
         }

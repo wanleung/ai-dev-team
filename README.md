@@ -8,7 +8,7 @@ Requirement → PM → Architect → Engineers ×N → Code Reviewer → QA → 
 
 ## ✨ Features
 
-- **9 specialized agents**: Product Manager, PM Reviewer, Architect, Architect Reviewer, N Engineers, Code Reviewer, QA Engineer, Deployment Tester
+- **10 specialized agents**: Product Manager, PM Reviewer, Architect, Architect Reviewer, N Engineers, Code Reviewer, QA Planner, QA Engineer, Deployment Tester
 - **GitHub-native**: creates Issues (PRD), feature branches, Pull Requests, and review comments
 - **Auto-trigger on Issues**: label any issue `ai-fix` or `ai-feature` → pipeline runs automatically via GitHub Actions
 - **Two pipelines**: full feature build **and** focused bug-fix (diagnosis → fix → review → regression tests)
@@ -160,10 +160,11 @@ print(result.deploy_tests_passed)  # True / False / None (skipped)
 4. 🔎 Arch Reviewer    — reviews design; optionally revises before engineering
 5. 💻 Engineers ×N     — parallel code generation → feature branch + PR
 6. 🔍 Code Reviewer    — reviews code → PR comment
-7. 🧪 QA Engineer      — writes tests + conftest.py + requirements-test.txt → PR
-8. 🏃 Test Runner      — runs pytest locally → PR comment with results
-9. 🚀 Deployment Tester— generates docker-compose.test.yml + smoke tests → PR
-10. 🐳 Deploy Test Runner— runs docker smoke tests → PR comment (skips if no Docker)
+7. 📋 QA Planner       — PRD + design + code → test plan with acceptance criteria
+8. 🧪 QA Engineer      — implements tests guided by QA Planner's test plan → PR
+9. 🏃 Test Runner      — runs pytest locally → PR comment with results
+10. 🚀 Deployment Tester— generates docker-compose.test.yml + smoke tests → PR
+11. 🐳 Deploy Test Runner— runs docker smoke tests → PR comment (skips if no Docker)
 ```
 
 ---
@@ -422,7 +423,8 @@ ai-software-house/
 | **Arch Reviewer** | Frank | Design + PRD | Review + revised design (if needed) | Issue comment |
 | **Engineer ×N** | Alex (×N) | System design | Code files | Feature branch + PR |
 | **Code Reviewer** | Carol | Code files + PRD | Review + verdict | PR review comment |
-| **QA Engineer** | Edward | Code + PRD | Test files + conftest + requirements-test.txt | PR comment + tests on branch |
+| **QA Planner** | Henry | PRD + design + code | Test plan + acceptance criteria (AC-01…) | Issue/PR comment |
+| **QA Engineer** | Edward | Code + PRD + Test Plan | Test files + conftest + requirements-test.txt | PR comment + tests on branch |
 | **Deployment Tester** | Diana | Code + Dockerfile | docker-compose.test.yml + smoke tests + deploy script | PR comment + files on branch |
 
 ---

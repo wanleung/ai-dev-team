@@ -27,6 +27,7 @@ from agents import (
     PMReviewerAgent,
     ProductManagerAgent,
     QAEngineerAgent,
+    QAPlannerAgent,
 )
 from github_client import GitHubClient, parse_target_repo
 
@@ -51,6 +52,8 @@ class PipelineResult:
     deploy_files: dict[str, str] = field(default_factory=dict)
     review: str = ""
     verdict: str = ""
+    qa_plan: str = ""          # structured test plan from QAPlanner
+    qa_acceptance_criteria: list[str] = field(default_factory=list)
     test_plan: str = ""
     deploy_plan: str = ""
     test_results: str = ""
@@ -81,6 +84,8 @@ class PipelineResult:
             "test_files": self.test_files,
             "review": self.review,
             "verdict": self.verdict,
+            "qa_plan": self.qa_plan,
+            "qa_acceptance_criteria": self.qa_acceptance_criteria,
             "test_plan": self.test_plan,
             "deploy_plan": self.deploy_plan,
             "test_results": self.test_results,
@@ -100,7 +105,8 @@ class PipelineResult:
         r = cls(requirement=data["requirement"])
         for key in ["project_name", "prd", "prd_review", "prd_verdict", "design", "design_review", "design_verdict",
                     "modules", "all_files", "test_files",
-                    "deploy_files", "review", "verdict", "test_plan", "deploy_plan",
+                    "deploy_files", "review", "verdict", "qa_plan", "qa_acceptance_criteria",
+                    "test_plan", "deploy_plan",
                     "test_results", "deploy_test_results", "tests_passed", "deploy_tests_passed",
                     "issue_number", "issue_url",
                     "pr_number", "pr_url", "branch", "completed_stages"]:
@@ -151,6 +157,7 @@ class Orchestrator:
         self.architect_reviewer = ArchitectReviewerAgent(model=_model("architect_reviewer"), **agent_kwargs)
         self.engineer = EngineerAgent(model=_model("engineer"), **agent_kwargs)
         self.reviewer = CodeReviewerAgent(model=_model("code_reviewer"), **agent_kwargs)
+        self.qa_planner = QAPlannerAgent(model=_model("qa_planner"), **agent_kwargs)
         self.qa = QAEngineerAgent(model=_model("qa_engineer"), **agent_kwargs)
         self.deployment_tester = DeploymentTesterAgent(model=_model("deployment_tester"), **agent_kwargs)
 
@@ -305,6 +312,14 @@ class Orchestrator:
         else:
             console.print("  ⏭️  [dim]🔍 Code Reviewer — skipped (checkpoint)[/dim]")
 
+        # ── Stage 4b: QA Planner ──────────────────────────────────────────────
+        if "qa_planner" not in result.completed_stages:
+            self._run_stage("📋 QA Planner", "Creating test plan & acceptance criteria...", result, lambda: self._stage_qa_planner(result))
+            result.completed_stages.append("qa_planner")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]📋 QA Planner — skipped (checkpoint)[/dim]")
+
         # ── Stage 5: QA Engineer ──────────────────────────────────────────────
         if "qa" not in result.completed_stages:
             self._run_stage("🧪 QA Engineer", "Writing tests & producing test plan...", result, lambda: self._stage_qa(result))
@@ -436,6 +451,29 @@ class Orchestrator:
         result.review = rev_result["review"]
         result.verdict = rev_result["verdict"]
 
+    def _stage_qa_planner(self, result: PipelineResult) -> None:
+        """QA Planner produces a structured test plan before QA Engineer writes tests."""
+        cross_repo = self.target_github is not self.github and self.target_github is not None
+        github_client = self.github  # test plan posted to tracker issue
+
+        if github_client and result.issue_number:
+            plan_result = self.qa_planner.run_with_github(
+                result.prd,
+                result.design,
+                result.all_files,
+                result.project_name,
+                github_client,
+                issue_number=result.issue_number,
+                pr_number=result.pr_number if not cross_repo else None,
+            )
+        else:
+            plan_result = self.qa_planner.run(
+                result.prd, result.design, result.all_files, result.project_name
+            )
+
+        result.qa_plan = plan_result["test_plan"]
+        result.qa_acceptance_criteria = plan_result["acceptance_criteria"]
+
     def _stage_qa(self, result: PipelineResult) -> None:
         cross_repo = self.target_github is not self.github and self.target_github is not None
         if self.target_github and result.branch and result.pr_number and result.issue_number:
@@ -448,9 +486,10 @@ class Orchestrator:
                 pr_number=result.pr_number,
                 issue_number=None if cross_repo else result.issue_number,
                 tracker_github_client=self.github if cross_repo else None,
+                test_plan=result.qa_plan,
             )
         else:
-            qa_result = self.qa.run(result.all_files, result.prd, result.project_name)
+            qa_result = self.qa.run(result.all_files, result.prd, result.project_name, test_plan=result.qa_plan)
         result.test_files = qa_result["test_files"]
         result.test_plan = qa_result["test_plan"]
         self._save_files_locally(result.test_files, result.project_name)
@@ -660,6 +699,8 @@ class Orchestrator:
             table.add_row("Design verdict", result.design_verdict)
         table.add_row("Code files", str(len(result.all_files)))
         table.add_row("Test files", str(len(result.test_files)))
+        if result.qa_acceptance_criteria:
+            table.add_row("Acceptance criteria", str(len(result.qa_acceptance_criteria)))
         table.add_row("Review verdict", result.verdict or "—")
         if result.tests_passed is True:
             table.add_row("Tests", "✅ Passed")
