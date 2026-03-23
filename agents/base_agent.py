@@ -1,6 +1,10 @@
 """
-BaseAgent: calls GitHub Models API (OpenAI-compatible) using GITHUB_TOKEN.
-This is the same AI backbone that powers GitHub Copilot CLI.
+BaseAgent: supports two LLM backends, selectable per-agent via config.yaml.
+
+  backend: github_models   — GitHub Models API (OpenAI-compatible, uses GITHUB_TOKEN)
+  backend: anthropic       — Anthropic Claude API (uses ANTHROPIC_API_KEY)
+
+Default backend is github_models for backwards compatibility.
 """
 from __future__ import annotations
 
@@ -10,20 +14,29 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from openai import OpenAI
-
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
+
+_ANTHROPIC_MODELS = {
+    "claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5",
+    "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022", "claude-3-opus-20240229",
+}
+
+def _is_anthropic_model(model: str) -> bool:
+    return model.startswith("claude-") or model in _ANTHROPIC_MODELS
 
 
 class BaseAgent:
     """Base class for all software house agents.
 
-    Each agent subclass defines its role by providing a role_name that maps to
-    a markdown instruction file in the roles/ directory.
+    Supports two backends:
+      - github_models: GitHub Models API via OpenAI SDK (GITHUB_TOKEN)
+      - anthropic:     Anthropic Claude API (ANTHROPIC_API_KEY)
+
+    Backend is auto-selected from the model name unless overridden.
     """
 
-    # Role name used to load the system prompt from roles/<role_name>.md
     role_name: str = ""
 
     def __init__(
@@ -31,22 +44,42 @@ class BaseAgent:
         model: str = "gpt-4.1",
         github_token: Optional[str] = None,
         roles_dir: Optional[Path] = None,
+        backend: Optional[str] = None,  # "github_models" | "anthropic" | None (auto)
     ) -> None:
-        token = github_token or os.environ.get("GITHUB_TOKEN")
-        if not token:
-            raise EnvironmentError(
-                "GITHUB_TOKEN environment variable is required. "
-                "Create a token at https://github.com/settings/personal-access-tokens/new "
-                "with 'Copilot Requests', 'Contents', 'Issues', and 'Pull requests' permissions."
-            )
-
-        # GitHub Models API is OpenAI-compatible — same backend as Copilot CLI
-        self.client = OpenAI(
-            base_url="https://models.github.ai/inference",
-            api_key=token,
-        )
         self.model = model
         self.system_prompt = self._load_system_prompt(roles_dir)
+
+        # Auto-detect backend from model name if not explicitly set
+        use_anthropic = (backend == "anthropic") or (
+            backend is None and _is_anthropic_model(model)
+        )
+
+        if use_anthropic:
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            if not api_key:
+                raise EnvironmentError(
+                    "ANTHROPIC_API_KEY environment variable is required for Claude models. "
+                    "Get your key at https://console.anthropic.com/"
+                )
+            import anthropic as _anthropic
+            self._anthropic_client = _anthropic.Anthropic(api_key=api_key)
+            self._backend = "anthropic"
+            self.client = None
+        else:
+            from openai import OpenAI
+            token = github_token or os.environ.get("GITHUB_TOKEN")
+            if not token:
+                raise EnvironmentError(
+                    "GITHUB_TOKEN environment variable is required. "
+                    "Create a token at https://github.com/settings/personal-access-tokens/new "
+                    "with 'Copilot Requests', 'Contents', 'Issues', and 'Pull requests' permissions."
+                )
+            self.client = OpenAI(
+                base_url="https://models.github.ai/inference",
+                api_key=token,
+            )
+            self._backend = "github_models"
+            self._anthropic_client = None
 
     def _load_system_prompt(self, roles_dir: Optional[Path]) -> str:
         """Load the role instruction file as the system prompt."""
@@ -60,6 +93,30 @@ class BaseAgent:
             raise FileNotFoundError(f"Role instruction file not found: {prompt_file}")
 
         return prompt_file.read_text(encoding="utf-8")
+
+    def _call_anthropic(self, full_message: str, max_retries: int = 5, delay: int = 15) -> str:
+        """Call the Anthropic Claude API with retry on rate limits."""
+        kwargs = dict(
+            model=self.model,
+            max_tokens=8096,
+            messages=[{"role": "user", "content": full_message}],
+        )
+        if self.system_prompt:
+            kwargs["system"] = self.system_prompt
+
+        for attempt in range(max_retries):
+            try:
+                response = self._anthropic_client.messages.create(**kwargs)
+                return response.content[0].text
+            except Exception as exc:
+                is_rate_limit = "429" in str(exc) or "rate_limit" in str(exc).lower()
+                if is_rate_limit and attempt < max_retries - 1:
+                    wait = delay * (2 ** attempt)
+                    print(f"    ⏳ Rate limited (Anthropic) — waiting {wait}s…")
+                    time.sleep(wait)
+                else:
+                    raise
+        raise RuntimeError("All Anthropic retries exhausted")
 
     def call_with_tools(
         self,
@@ -168,24 +225,22 @@ class BaseAgent:
     def call(self, user_message: str, context: Optional[str] = None) -> str:
         """Send a message to the LLM and return the response.
 
-        Retries up to 5 times with exponential backoff on 429 rate-limit errors.
-
-        Args:
-            user_message: The main task/prompt for the agent.
-            context: Optional additional context prepended to the message.
-
-        Returns:
-            The LLM's text response.
+        Routes to Anthropic Claude API or GitHub Models API based on backend.
+        Retries up to 5 times with exponential backoff on rate-limit errors.
         """
         full_message = f"{context}\n\n{user_message}" if context else user_message
 
+        if self._backend == "anthropic":
+            return self._call_anthropic(full_message)
+
+        # GitHub Models (OpenAI-compatible)
         messages = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
         messages.append({"role": "user", "content": full_message})
 
         max_retries = 5
-        delay = 15  # seconds — start conservative for the 60-req/min window
+        delay = 15
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
@@ -195,10 +250,9 @@ class BaseAgent:
                 )
                 return response.choices[0].message.content or ""
             except Exception as exc:
-                # Check for rate-limit (429) — back off and retry
                 is_rate_limit = "429" in str(exc) or "RateLimitReached" in str(exc)
                 if is_rate_limit and attempt < max_retries - 1:
-                    wait = delay * (2 ** attempt)  # 15s, 30s, 60s, 120s
+                    wait = delay * (2 ** attempt)
                     print(f"    ⏳ Rate limited — waiting {wait}s before retry {attempt + 2}/{max_retries}…")
                     time.sleep(wait)
                 else:
