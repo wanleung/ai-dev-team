@@ -4,32 +4,35 @@
 # ── LLM Settings ───────────────────────────────────────────────────────────
 llm:
   # Default model for all agents (used when no per-agent override is set)
-  # GitHub Models API endpoint: https://models.github.ai/inference
-  # Confirmed working model IDs (tested live):
+  #
+  # ── GitHub Models API (GITHUB_TOKEN required) ──────────────────────────
   #   OpenAI   : openai/gpt-4.1, openai/gpt-4.1-mini, openai/gpt-4.1-nano
   #   Mistral  : mistral-ai/mistral-small-2503
   #   DeepSeek : deepseek/deepseek-r1
   #   Meta     : meta-llama-3.1-405b-instruct
   #
-  # NOTE: Claude models (anthropic/*) are NOT available on GitHub Models free tier.
-  #       "claude-4.6-sonnet" is the internal model powering GitHub Copilot CLI — not
-  #       usable via the GitHub Models API.
+  # ── Anthropic Claude API (ANTHROPIC_API_KEY required) ──────────────────
+  #   claude-3-5-sonnet-20241022   (fast, smart — recommended)
+  #   claude-3-7-sonnet-20250219   (extended thinking)
+  #   claude-3-5-haiku-20241022    (fastest, cheapest)
+  #   claude-3-opus-20240229       (most capable)
+  #
+  # Claude models are auto-detected by name prefix "claude-" and will use
+  # the Anthropic API automatically. No extra config needed.
   model: "openai/gpt-4.1"
 
-  # Per-agent model overrides — each agent can use a different LLM.
-  # Agent names: product_manager, pm_reviewer, architect, architect_reviewer,
-  #              engineer, code_reviewer, qa_planner, qa_engineer, deployment_tester
-  # Tip: use a powerful model for PM/Architect (reasoning-heavy), fast/cheap for Engineer (repetitive).
+  # Per-agent model overrides — mix backends freely per agent.
+  # Example: use Claude for reasoning-heavy roles, GPT-4.1-mini for repetitive ones.
   overrides:
-    product_manager: "openai/gpt-4.1"          # Requirements analysis — needs good reasoning
-    pm_reviewer: "openai/gpt-4.1"              # PRD review — needs critical thinking
-    architect: "openai/gpt-4.1"                # System design — needs good reasoning
-    architect_reviewer: "openai/gpt-4.1"       # Design review — needs critical thinking
-    engineer: "openai/gpt-4.1-mini"            # Code writing — runs many times, use cheaper model
-    code_reviewer: "openai/gpt-4.1"            # Code review — needs accuracy
-    qa_planner: "openai/gpt-4.1"               # Test planning — needs strong reasoning
-    qa_engineer: "openai/gpt-4.1-mini"         # Test writing — repetitive, cheaper model fine
-    deployment_tester: "openai/gpt-4.1-mini"   # Smoke test generation
+    product_manager: "openai/gpt-4.1"          # or "claude-3-5-sonnet-20241022"
+    pm_reviewer: "openai/gpt-4.1"
+    architect: "openai/gpt-4.1"                # or "claude-3-5-sonnet-20241022"
+    architect_reviewer: "openai/gpt-4.1"
+    engineer: "openai/gpt-4.1-mini"            # Code writing — runs many times
+    code_reviewer: "openai/gpt-4.1"
+    qa_planner: "openai/gpt-4.1"
+    qa_engineer: "openai/gpt-4.1-mini"
+    deployment_tester: "openai/gpt-4.1-mini"
 
 # ── GitHub Settings ─────────────────────────────────────────────────────────
 github:
