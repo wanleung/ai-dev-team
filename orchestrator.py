@@ -31,6 +31,7 @@ from agents import (
 )
 from agents.summariser import SummaryAgent
 from agents.refactor_agent import RefactorAgent
+from agents.memory_consolidator import MemoryConsolidatorAgent
 from github_client import GitHubClient, parse_target_repo
 from memory_store import MemoryStore
 
@@ -724,6 +725,9 @@ class Orchestrator:
                 f.write(f"\n\n---\n## {datetime.date.today()} — {result.project_name or 'run'}\n")
                 f.write(summary_text)
             console.print("  🧠 [dim]Memory saved[/dim]")
+
+            # Auto-consolidate if enough run-tier entries have accumulated
+            self._maybe_consolidate(active_repo)
         except Exception as exc:
             console.print(f"  [yellow]⚠️  Memory save failed: {exc}[/yellow]")
 
@@ -766,6 +770,36 @@ class Orchestrator:
 
         console.print(table)
         return result
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TIERED MEMORY CONSOLIDATION
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _maybe_consolidate(self, repo: str) -> None:
+        """Check thresholds and trigger monthly / quarterly consolidation if needed."""
+        consolidator = MemoryConsolidatorAgent(model=self.model)
+
+        if self.memory.needs_consolidation(repo):
+            console.print("  🧠 [dim]Auto-consolidating monthly memory…[/dim]")
+            try:
+                self.memory.consolidate_monthly(
+                    repo=repo,
+                    llm_fn=consolidator.consolidate,
+                )
+                console.print("  🧠 [dim]Monthly snapshot saved[/dim]")
+            except Exception as exc:
+                console.print(f"  [yellow]⚠️  Monthly consolidation failed: {exc}[/yellow]")
+
+        if self.memory.needs_quarterly(repo):
+            console.print("  🧠 [dim]Auto-consolidating quarterly memory…[/dim]")
+            try:
+                self.memory.consolidate_quarterly(
+                    repo=repo,
+                    llm_fn=consolidator.consolidate,
+                )
+                console.print("  🧠 [dim]Quarterly snapshot saved[/dim]")
+            except Exception as exc:
+                console.print(f"  [yellow]⚠️  Quarterly consolidation failed: {exc}[/yellow]")
 
     # ──────────────────────────────────────────────────────────────────────────
     # REFACTOR / DREAM MODE
