@@ -17,6 +17,9 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **GitHub Actions integration** — label an issue to trigger the full pipeline automatically
 - **Tool calling built-in** — Code Reviewer runs `ruff`, QA Planner searches GitHub Issues; any agent can call tools via `call_with_tools()`
 - **Fully customisable** — add agents, skills, and tools by editing markdown role files and Python tool functions
+- 🧠 **Agent memory** — tiered SQLite memory (run → monthly → quarterly), conversation history within each run, auto-summariser after every pipeline
+- 🌙 **Refactor / dream mode** — `--refactor` flag analyses and cleans up workspace code, opens a cleanup PR
+- 🤖 **Anthropic Claude API** — `claude-*` models auto-routed to Anthropic API; `ANTHROPIC_API_KEY` required
 
 ---
 
@@ -134,6 +137,14 @@ cp config.yaml config.local.yaml   # optional — edit as needed
 export GITHUB_TOKEN=ghp_your_classic_pat
 ```
 
+> **Using Anthropic Claude models?** Add your Anthropic key alongside `GITHUB_TOKEN`:
+> ```bash
+> # For Anthropic Claude models (claude-sonnet-4.6, claude-opus-4.5, etc.)
+> export ANTHROPIC_API_KEY=sk-ant-your-key-here
+> ```
+> Model names starting with `claude-` are automatically routed to the Anthropic API.
+> `GITHUB_TOKEN` is still required for all GitHub operations.
+
 Edit `config.yaml`:
 ```yaml
 github:
@@ -172,6 +183,74 @@ python main.py --file requirements/my-app.txt --repo owner/target-repo --no-resu
 9.  🏃 Test Runner        — runs pytest locally → PR comment with results
 10. 🚀 Deployment Tester  — generates docker-compose.test.yml + smoke tests → PR
 11. 🐳 Deploy Test Runner — runs docker smoke tests → PR comment (skips if Docker unavailable)
+12. 🧠 Summariser         — writes compact memory entry (what was built, decisions, feedback, tech debt)
+```
+
+---
+
+## 🧠 Agent Memory
+
+Every pipeline run contributes to a tiered, persistent memory store so the system learns from past work on a repo.
+
+### How it works
+
+```
+Each run  →  run summary  (SummaryAgent writes after pipeline)
+                │
+                ▼  (after 10 run entries)
+           monthly snapshot  (MemoryConsolidatorAgent)
+                │
+                ▼  (after 3 monthly entries)
+           quarterly index  (MemoryConsolidatorAgent)
+```
+
+`recall()` always returns: **all quarterly entries + all monthly entries + last 3 run summaries** — capped at ~2 200 words regardless of total run count.
+
+### Storage
+
+| File | Location | Purpose |
+|---|---|---|
+| `memory.db` | `workspace/<repo>/memory.db` | SQLite store (all tiers) |
+| `memory.md` | `workspace/<repo>/memory.md` | Human-readable log of all entries |
+
+Long-term memory is loaded at the start of each run and injected as a `## 📚 Memory` block into every agent's system prompt.
+
+### Python API
+
+```python
+from orchestrator import Orchestrator
+
+orch = Orchestrator(model="gpt-4.1", github_token="ghp_...", target_repo="owner/repo")
+
+# View stats for a repo
+stats = orch.memory.stats("owner/repo")
+# → {"runs": 7, "monthly": 1, "quarterly": 0}
+
+# Keyword search across memory entries
+results = orch.memory.search("owner/repo", ["auth", "JWT"])
+# → list of matching memory entries
+```
+
+---
+
+### 🌙 Refactor / Dream Mode
+
+A standalone cleanup pass that scans existing workspace code, identifies code smells and tech debt, rewrites flagged files, and opens a cleanup PR. It does **not** run the normal build pipeline.
+
+**CLI:**
+```bash
+python main.py --refactor --repo owner/target-repo
+```
+
+**Python API:**
+```python
+result = orch.refactor()
+# Returns:
+# {
+#   "plan":    "...",          # identified smells & refactor plan
+#   "changes": {"file.py": "new content", ...},  # rewritten files
+#   "pr_url":  "https://github.com/..."
+# }
 ```
 
 ---
@@ -217,6 +296,7 @@ Team:
 Pipeline:
   --no-resume            Ignore checkpoint and start from scratch
   --stop-on-review       Halt pipeline if Code Reviewer requests changes
+  --refactor             Dream mode: analyse workspace code and open a cleanup PR
 ```
 
 ---
@@ -614,9 +694,10 @@ ai-software-house/
 ├── main.py                    # CLI entry point for full pipeline
 ├── fix_issue.py               # CLI entry point for bug fix pipeline
 ├── build_feature.py           # GitHub Actions entry point
-├── orchestrator.py            # Full pipeline (11 stages)
+├── orchestrator.py            # Full pipeline (12 stages)
 ├── bug_fix_orchestrator.py    # Bug fix pipeline
 ├── github_client.py           # GitHub API wrapper (Issues, PRs, commits)
+├── memory_store.py            # Tiered SQLite memory store (run/monthly/quarterly)
 ├── watcher.py                 # Hourly cron poller — dispatches pipelines for new issues
 ├── repos.yaml                 # Repos to watch + parallel/model settings
 ├── setup_cron.sh              # One-command cron job installer
@@ -633,7 +714,10 @@ ai-software-house/
 │   ├── code_reviewer.py       # Carol — code reviewer  [tools: run_linter]
 │   ├── qa_planner.py          # Henry — test planner   [tools: search_github_issues]
 │   ├── qa_engineer.py         # Edward — test writer
-│   └── deployment_tester.py   # Diana — deployment tester
+│   ├── deployment_tester.py   # Diana — deployment tester
+│   ├── summariser.py          # Writes compact memory entries after each run
+│   ├── refactor_agent.py      # Analyses and rewrites code in dream mode
+│   └── memory_consolidator.py # Consolidates N run summaries into snapshots
 │
 ├── roles/                     # Agent skills & guides (system prompts)
 │   ├── product_manager.md
@@ -644,7 +728,10 @@ ai-software-house/
 │   ├── code_reviewer.md
 │   ├── qa_planner.md
 │   ├── qa_engineer.md
-│   └── deployment_tester.md
+│   ├── deployment_tester.md
+│   ├── summariser.md
+│   ├── refactor_agent.md
+│   └── memory_consolidator.md
 │
 ├── tools/                     # Tool calling — Option A (MCP-ready)
 │   ├── registry.py            # ToolRegistry ABC + LocalToolRegistry (@tool decorator)
@@ -661,6 +748,8 @@ ai-software-house/
 └── workspace/                 # Generated code written here locally
     └── <project-name>/
         ├── checkpoint.json    # Resume state
+        ├── memory.db          # SQLite memory store (run/monthly/quarterly tiers)
+        ├── memory.md          # Human-readable memory log
         ├── src/               # Generated source files
         └── tests/             # Generated test files
 ```
