@@ -103,6 +103,11 @@ Setup:
         help="GitHub token (overrides GITHUB_TOKEN env var).",
     )
     parser.add_argument(
+        "--refactor",
+        action="store_true",
+        help="Run in dream/refactor mode: analyse workspace code and open a cleanup PR instead of building new features.",
+    )
+    parser.add_argument(
         "--no-resume",
         action="store_true",
         help="Ignore any saved checkpoint and start the pipeline from scratch.",
@@ -215,6 +220,13 @@ def main() -> int:
 
     # ── Run the pipeline ──────────────────────────────────────────────────────
     try:
+        if args.refactor:
+            refactor_result = orch.refactor()
+            if refactor_result.get("pr_url"):
+                console.print(f"\n[bold green]🌙 Refactor complete![/bold green] PR: {refactor_result['pr_url']}")
+            else:
+                console.print("\n[bold green]🌙 Refactor analysis complete![/bold green] (No PR — GitHub not configured or no changes)")
+            return 0
         result = orch.run(requirement, resume=not args.no_resume)
     except KeyboardInterrupt:
         console.print("\n[yellow]Pipeline interrupted.[/yellow]")

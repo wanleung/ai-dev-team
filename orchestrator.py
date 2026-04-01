@@ -29,7 +29,10 @@ from agents import (
     QAEngineerAgent,
     QAPlannerAgent,
 )
+from agents.summariser import SummaryAgent
+from agents.refactor_agent import RefactorAgent
 from github_client import GitHubClient, parse_target_repo
+from memory_store import MemoryStore
 
 console = Console()
 
@@ -160,6 +163,11 @@ class Orchestrator:
         self.qa_planner = QAPlannerAgent(model=_model("qa_planner"), **agent_kwargs)
         self.qa = QAEngineerAgent(model=_model("qa_engineer"), **agent_kwargs)
         self.deployment_tester = DeploymentTesterAgent(model=_model("deployment_tester"), **agent_kwargs)
+        self.summariser = SummaryAgent(model=_model("summariser"), **agent_kwargs)
+        self.refactor_agent = RefactorAgent(model=_model("refactor_agent"), **agent_kwargs)
+
+        # Long-term SQLite memory store
+        self.memory = MemoryStore(self.workspace_dir / "memory.db")
 
         # Tracker GitHub (ai-software-house): PM issues, progress comments
         self.github: Optional[GitHubClient] = None
@@ -223,6 +231,18 @@ class Orchestrator:
             console.print(f"  🎯 Targeting project repo: [bold]{target_repo_override}[/bold]")
         elif not self.target_github:
             self.target_github = self.github
+
+        # ── Inject long-term memory into agents ───────────────────────────────
+        active_repo = (self.target_github.repo if self.target_github else
+                       (self.github.repo if self.github else "local"))
+        memory_context = self.memory.recall(active_repo)
+        if memory_context:
+            console.print(f"  🧠 [dim]Loaded memory from {active_repo}[/dim]")
+            # Prepend past-work context to each agent's system prompt
+            for agent in (self.pm, self.architect, self.engineer,
+                          self.reviewer, self.qa, self.qa_planner):
+                if agent.system_prompt:
+                    agent.system_prompt = memory_context + "\n\n---\n\n" + agent.system_prompt
 
         # ── Load checkpoint if resuming ───────────────────────────────────────
         result = self._load_checkpoint(requirement) if resume else None
@@ -682,8 +702,30 @@ class Orchestrator:
             pass  # Label setup is non-critical
 
     def _finish(self, result: PipelineResult, start_time: float) -> PipelineResult:
-        """Print summary and return the final result."""
+        """Print summary, save memory, and return the final result."""
         result.duration_seconds = time.time() - start_time
+
+        # ── Save run summary to long-term memory ──────────────────────────────
+        active_repo = (self.target_github.repo if self.target_github else
+                       (self.github.repo if self.github else "local"))
+        try:
+            summary_text = self.summariser.summarise(
+                repo=active_repo,
+                requirement=result.requirement,
+                prd=result.prd,
+                design=result.design,
+                review=result.review,
+            )
+            self.memory.save(repo=active_repo, summary=summary_text, mode="feature")
+            # Save markdown copy to workspace
+            mem_file = self.workspace_dir / "memory.md"
+            with open(mem_file, "a", encoding="utf-8") as f:
+                import datetime
+                f.write(f"\n\n---\n## {datetime.date.today()} — {result.project_name or 'run'}\n")
+                f.write(summary_text)
+            console.print("  🧠 [dim]Memory saved[/dim]")
+        except Exception as exc:
+            console.print(f"  [yellow]⚠️  Memory save failed: {exc}[/yellow]")
 
         # Summary table
         table = Table(title="Pipeline Summary", show_header=True, header_style="bold magenta")
@@ -724,3 +766,113 @@ class Orchestrator:
 
         console.print(table)
         return result
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # REFACTOR / DREAM MODE
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def refactor(self, repo: Optional[str] = None) -> dict:
+        """Analyse the most recently generated code and open a cleanup PR.
+
+        Reads workspace files, runs the RefactorAgent, re-writes changed files,
+        and pushes a new refactor branch + PR to GitHub if configured.
+
+        Args:
+            repo: Optional target repo override (owner/name). Defaults to target_github.
+
+        Returns:
+            dict with keys: plan, changes, pr_url (or None if no GH).
+        """
+        import datetime
+
+        active_repo = repo or (self.target_github.repo if self.target_github else
+                               (self.github.repo if self.github else "local"))
+        memory_context = self.memory.recall(active_repo)
+
+        # ── Collect workspace code snapshot ───────────────────────────────────
+        ws_files: dict[str, str] = {}
+        for fp in self.workspace_dir.rglob("*"):
+            if fp.is_file() and fp.suffix in {".py", ".js", ".ts", ".go", ".java", ".rb", ".cs"}:
+                rel = str(fp.relative_to(self.workspace_dir))
+                try:
+                    ws_files[rel] = fp.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    pass
+
+        if not ws_files:
+            console.print("[yellow]⚠️  No code files found in workspace — nothing to refactor[/yellow]")
+            return {"plan": "", "changes": {}, "pr_url": None}
+
+        from agents.base_agent import BaseAgent
+        code_snapshot = BaseAgent.truncate_files(ws_files, max_chars=20_000)
+        snapshot_str = "\n\n".join(f"### {path}\n```\n{content}\n```" for path, content in code_snapshot.items())
+
+        console.print(Panel.fit(
+            f"[bold yellow]🌙 Dream / Refactor Mode[/bold yellow]\n"
+            f"[dim]Analysing {len(code_snapshot)} files in {active_repo}[/dim]",
+            border_style="yellow",
+        ))
+
+        # ── Analyse & plan ────────────────────────────────────────────────────
+        plan = self.refactor_agent.analyse(
+            code_snapshot=snapshot_str,
+            memory_context=memory_context,
+        )
+        console.print("  ✅ Refactor plan complete")
+
+        # ── Apply rewrites for files explicitly called out ────────────────────
+        changed: dict[str, str] = {}
+        import re
+        for match in re.finditer(r"### File: `([^`]+)`.*?(?=### File:|$)", plan, re.DOTALL):
+            file_path = match.group(1).strip()
+            # Find matching workspace file (partial path ok)
+            ws_match = next((k for k in ws_files if k.endswith(file_path) or file_path.endswith(k)), None)
+            if ws_match:
+                instructions = match.group(0)
+                rewritten = self.refactor_agent.rewrite(
+                    file_path=ws_match,
+                    current_code=ws_files[ws_match],
+                    fix_instructions=instructions,
+                )
+                changed[ws_match] = rewritten
+                # Write back to workspace
+                full_path = self.workspace_dir / ws_match
+                full_path.write_text(rewritten, encoding="utf-8")
+
+        console.print(f"  ✅ Rewrote {len(changed)} files")
+
+        # ── Save memory entry for this refactor run ───────────────────────────
+        self.memory.save(
+            repo=active_repo,
+            summary=f"[Refactor] {len(changed)} files cleaned up.\n\n{plan[:600]}",
+            mode="refactor",
+        )
+
+        # ── Push refactor branch + PR ─────────────────────────────────────────
+        pr_url = None
+        gh = self.target_github or self.github
+        if gh and changed:
+            branch = f"refactor/agent-{datetime.date.today()}"
+            try:
+                default_sha = gh.get_default_branch_sha()
+                gh.create_branch(branch, default_sha)
+                for path, content in changed.items():
+                    gh.commit_file(
+                        branch=branch,
+                        path=path,
+                        content=content,
+                        message=f"refactor: agent cleanup — {path}",
+                    )
+                pr = gh.create_pull_request(
+                    title=f"🌙 Agent Refactor: {datetime.date.today()}",
+                    body=f"## AI Refactor Pass\n\nFiles changed: {len(changed)}\n\n{plan[:3000]}",
+                    head=branch,
+                    base="main",
+                )
+                pr_url = pr.get("html_url", "")
+                console.print(f"  🔀 Refactor PR: [link]{pr_url}[/link]")
+            except Exception as exc:
+                console.print(f"  [yellow]⚠️  PR creation failed: {exc}[/yellow]")
+
+        return {"plan": plan, "changes": changed, "pr_url": pr_url}
+

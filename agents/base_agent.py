@@ -49,6 +49,10 @@ class BaseAgent:
         self.model = model
         self.system_prompt = self._load_system_prompt(roles_dir)
 
+        # Short-term conversation history — persists within a pipeline run.
+        # Call agent.reset_history() between unrelated tasks.
+        self._history: list[dict] = []
+
         # Auto-detect backend from model name if not explicitly set
         use_anthropic = (backend == "anthropic") or (
             backend is None and _is_anthropic_model(model)
@@ -81,6 +85,14 @@ class BaseAgent:
             self._backend = "github_models"
             self._anthropic_client = None
 
+    def reset_history(self) -> None:
+        """Clear conversation history (call between unrelated pipeline tasks)."""
+        self._history = []
+
+    def _history_messages(self) -> list[dict]:
+        """Return history formatted for OpenAI-compatible API."""
+        return list(self._history)
+
     def _load_system_prompt(self, roles_dir: Optional[Path]) -> str:
         """Load the role instruction file as the system prompt."""
         if not self.role_name:
@@ -95,11 +107,13 @@ class BaseAgent:
         return prompt_file.read_text(encoding="utf-8")
 
     def _call_anthropic(self, full_message: str, max_retries: int = 5, delay: int = 15) -> str:
-        """Call the Anthropic Claude API with retry on rate limits."""
+        """Call the Anthropic Claude API with history and retry on rate limits."""
+        # Build messages including history
+        messages = list(self._history) + [{"role": "user", "content": full_message}]
         kwargs = dict(
             model=self.model,
             max_tokens=8096,
-            messages=[{"role": "user", "content": full_message}],
+            messages=messages,
         )
         if self.system_prompt:
             kwargs["system"] = self.system_prompt
@@ -107,7 +121,11 @@ class BaseAgent:
         for attempt in range(max_retries):
             try:
                 response = self._anthropic_client.messages.create(**kwargs)
-                return response.content[0].text
+                reply = response.content[0].text
+                # Update history
+                self._history.append({"role": "user", "content": full_message})
+                self._history.append({"role": "assistant", "content": reply})
+                return reply
             except Exception as exc:
                 is_rate_limit = "429" in str(exc) or "rate_limit" in str(exc).lower()
                 if is_rate_limit and attempt < max_retries - 1:
@@ -225,6 +243,8 @@ class BaseAgent:
     def call(self, user_message: str, context: Optional[str] = None) -> str:
         """Send a message to the LLM and return the response.
 
+        Maintains conversation history within the same agent instance so the
+        LLM has context of what it said earlier in the same pipeline run.
         Routes to Anthropic Claude API or GitHub Models API based on backend.
         Retries up to 5 times with exponential backoff on rate-limit errors.
         """
@@ -233,10 +253,11 @@ class BaseAgent:
         if self._backend == "anthropic":
             return self._call_anthropic(full_message)
 
-        # GitHub Models (OpenAI-compatible)
-        messages = []
+        # GitHub Models (OpenAI-compatible) — include history
+        messages: list[dict] = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
+        messages.extend(self._history)
         messages.append({"role": "user", "content": full_message})
 
         max_retries = 5
@@ -248,7 +269,11 @@ class BaseAgent:
                     messages=messages,
                     temperature=0.3,
                 )
-                return response.choices[0].message.content or ""
+                reply = response.choices[0].message.content or ""
+                # Persist to history
+                self._history.append({"role": "user", "content": full_message})
+                self._history.append({"role": "assistant", "content": reply})
+                return reply
             except Exception as exc:
                 is_rate_limit = "429" in str(exc) or "RateLimitReached" in str(exc)
                 if is_rate_limit and attempt < max_retries - 1:
