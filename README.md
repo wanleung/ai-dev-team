@@ -255,6 +255,46 @@ result = orch.refactor()
 
 ---
 
+## 🗂️ Memory Bank
+
+The Memory Bank gives Copilot CLI persistent context across sessions. Six structured Markdown files are committed to each target repo and auto-read by Copilot at session start.
+
+### File hierarchy
+
+| File | Updated | Purpose |
+|------|---------|---------|
+| `memory-bank/projectbrief.md` | Rarely | Goals, scope, core requirements |
+| `memory-bank/productContext.md` | Rarely | Why it exists, user problems, UX goals |
+| `memory-bank/systemPatterns.md` | On design change | Architecture, patterns, conventions |
+| `memory-bank/techContext.md` | On stack change | Tech stack, dependencies, environment |
+| `memory-bank/activeContext.md` | Every run | Current focus, recent changes, next steps |
+| `memory-bank/progress.md` | Every run | Done / in-progress / blockers |
+
+### Automatic updates
+
+After every successful pipeline run, the `MemoryBankUpdaterAgent` reads the current bank files via the GitHub API and commits updated `activeContext.md` and `progress.md` (and optionally `systemPatterns.md` / `techContext.md`) to the feature branch. No manual action required.
+
+### Deploy to a target repo
+
+To add a Memory Bank to any project, use the templates from `copilot-agent-setting`:
+
+```bash
+cd /path/to/copilot-agent-setting
+./deploy-memory-bank.sh /path/to/your-project
+```
+
+Then fill in `memory-bank/projectbrief.md` and `memory-bank/productContext.md`. The pipeline will keep the other files up to date automatically.
+
+### Update modes
+
+| Mode | How |
+|------|-----|
+| **Fully automatic** | Pipeline updates bank after every run — no action needed |
+| **Semi-automatic** | `./install-memory-bank-hook.sh /path/to/project` — git post-commit hook updates bank after every commit |
+| **Manual** | `./update-memory-bank.sh "summary"` — run from inside the project |
+
+---
+
 ## 🧑‍💼 Agent Roster
 
 | Agent | Name | Input | Output | GitHub Artifact |
