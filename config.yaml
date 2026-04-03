@@ -33,6 +33,8 @@ llm:
     qa_planner: "openai/gpt-4.1"
     qa_engineer: "openai/gpt-4.1-mini"
     deployment_tester: "openai/gpt-4.1-mini"
+    summariser: "openai/gpt-4.1"
+    memory_bank_updater: "openai/gpt-4.1"
 
 # ── GitHub Settings ─────────────────────────────────────────────────────────
 github:
