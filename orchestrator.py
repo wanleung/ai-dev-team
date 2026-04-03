@@ -30,6 +30,7 @@ from agents import (
     QAPlannerAgent,
 )
 from agents.summariser import SummaryAgent
+from agents.memory_bank_updater import MemoryBankUpdaterAgent
 from agents.refactor_agent import RefactorAgent
 from agents.memory_consolidator import MemoryConsolidatorAgent
 from github_client import GitHubClient, parse_target_repo
@@ -731,6 +732,22 @@ class Orchestrator:
         except Exception as exc:
             console.print(f"  [yellow]⚠️  Memory save failed: {exc}[/yellow]")
 
+        # ── Update memory bank in target repo ─────────────────────────────────
+        if self.target_github and getattr(result, "branch", None):
+            try:
+                current_bank = self._read_memory_bank(self.target_github)
+                # Resolve model for memory_bank_updater from model_overrides
+                mb_model = self.model_overrides.get("memory_bank_updater", self.model)
+                updater = MemoryBankUpdaterAgent(
+                    model=mb_model,
+                    github_token=self._github_token,
+                )
+                summary_for_bank = locals().get("summary_text", getattr(result, "requirement", "")[:200])
+                updated_bank = updater.update(current_bank, summary_for_bank)
+                self._write_memory_bank(updated_bank, self.target_github, result.branch)
+            except Exception as exc:
+                console.print(f"  [yellow]⚠️  Memory bank update failed: {exc}[/yellow]")
+
         # Summary table
         table = Table(title="Pipeline Summary", show_header=True, header_style="bold magenta")
         table.add_column("Stage", style="cyan")
@@ -770,6 +787,48 @@ class Orchestrator:
 
         console.print(table)
         return result
+
+    def _read_memory_bank(self, gh: "GitHubClient") -> dict[str, str]:
+        """Read current memory bank files via GitHub API.
+
+        Returns filename -> content for all 6 bank files.
+        Files that don't exist yet return empty string (first run).
+        """
+        import base64
+
+        bank_names = [
+            "projectbrief.md", "productContext.md", "systemPatterns.md",
+            "techContext.md", "activeContext.md", "progress.md",
+        ]
+        bank: dict[str, str] = {}
+        for name in bank_names:
+            try:
+                file_data = gh._request("GET", f"/repos/{gh.repo}/contents/memory-bank/{name}")
+                bank[name] = base64.b64decode(file_data["content"]).decode("utf-8")
+            except Exception:
+                bank[name] = ""
+        return bank
+
+    def _write_memory_bank(
+        self,
+        updated_bank: dict[str, str],
+        gh: "GitHubClient",
+        branch: str,
+    ) -> None:
+        """Commit updated memory bank files to the feature branch."""
+        if not updated_bank or not branch:
+            return
+        for name, content in updated_bank.items():
+            try:
+                gh.commit_file(
+                    f"memory-bank/{name}",
+                    content,
+                    f"memory: update {name} after pipeline run",
+                    branch,
+                )
+                console.print(f"  🧠 [dim]Memory bank updated: {name}[/dim]")
+            except Exception as exc:
+                console.print(f"  [yellow]⚠️  Failed to update memory-bank/{name}: {exc}[/yellow]")
 
     # ──────────────────────────────────────────────────────────────────────────
     # TIERED MEMORY CONSOLIDATION
