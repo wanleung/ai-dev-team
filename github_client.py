@@ -267,6 +267,60 @@ class GitHubClient:
         """Add a general comment to a pull request's conversation."""
         return self.add_issue_comment(pr_number, body)
 
+    def get_pr(self, pr_number: int) -> dict:
+        """Return pull request metadata."""
+        return self._request("GET", f"/repos/{self.repo}/pulls/{pr_number}")
+
+    def get_pr_review_comments(self, pr_number: int) -> list:
+        """Return inline review comments on a pull request."""
+        return self._request("GET", f"/repos/{self.repo}/pulls/{pr_number}/comments")
+
+    def get_pr_reviews(self, pr_number: int) -> list:
+        """Return review-level submissions (APPROVED, CHANGES_REQUESTED, COMMENTED)."""
+        return self._request("GET", f"/repos/{self.repo}/pulls/{pr_number}/reviews")
+
+    def get_pr_files(self, pr_number: int) -> list:
+        """Return list of files changed in a pull request."""
+        return self._request("GET", f"/repos/{self.repo}/pulls/{pr_number}/files")
+
+    def get_file_content(self, path: str, ref: str) -> Optional[str]:
+        """Fetch decoded text content of a file at a given ref (branch/sha).
+
+        Returns None if the file does not exist or cannot be decoded.
+        """
+        import base64 as _b64
+        try:
+            data = self._request(
+                "GET", f"/repos/{self.repo}/contents/{path}", params={"ref": ref}
+            )
+        except RuntimeError:
+            return None
+        raw = data.get("content", "")
+        try:
+            return _b64.b64decode(raw).decode("utf-8")
+        except Exception:
+            return None
+
+    def get_issue_comments(self, issue_number: int) -> list:
+        """Return all comments on an issue (or PR timeline)."""
+        return self._request("GET", f"/repos/{self.repo}/issues/{issue_number}/comments")
+
+    def add_pr_label(self, pr_number: int, label_name: str) -> None:
+        """Add a label to a pull request (uses the issues labels endpoint)."""
+        self._request(
+            "POST", f"/repos/{self.repo}/issues/{pr_number}/labels",
+            json={"labels": [label_name]},
+        )
+
+    def remove_pr_label(self, pr_number: int, label_name: str) -> None:
+        """Remove a label from a pull request. Ignores errors if label absent."""
+        try:
+            self._request(
+                "DELETE", f"/repos/{self.repo}/issues/{pr_number}/labels/{label_name}"
+            )
+        except RuntimeError:
+            pass
+
     # ── Labels ───────────────────────────────────────────────────────────────
 
     def ensure_labels(self, labels: list[dict]) -> None:
