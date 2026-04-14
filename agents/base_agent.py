@@ -1,8 +1,9 @@
 """
-BaseAgent: supports two LLM backends, selectable per-agent via config.yaml.
+BaseAgent: supports three LLM backends, selectable per-agent via config.yaml.
 
   backend: github_models   — GitHub Models API (OpenAI-compatible, uses GITHUB_TOKEN)
   backend: anthropic       — Anthropic Claude API (uses ANTHROPIC_API_KEY)
+  backend: ollama          — Local Ollama server (OpenAI-compatible, model prefix "ollama/")
 
 Default backend is github_models for backwards compatibility.
 """
@@ -37,9 +38,10 @@ def _is_ollama_model(model: str) -> bool:
 class BaseAgent:
     """Base class for all software house agents.
 
-    Supports two backends:
+    Supports three backends:
       - github_models: GitHub Models API via OpenAI SDK (GITHUB_TOKEN)
       - anthropic:     Anthropic Claude API (ANTHROPIC_API_KEY)
+      - ollama:        Local Ollama server via OpenAI SDK (model prefix "ollama/")
 
     Backend is auto-selected from the model name unless overridden.
     """
@@ -84,7 +86,7 @@ class BaseAgent:
         elif use_ollama:
             self._backend = "ollama"
             self._api_model = model.removeprefix("ollama/")
-            self.client = OpenAI(base_url=f"{ollama_url}/v1", api_key="ollama")
+            self.client = OpenAI(base_url=f"{ollama_url.rstrip('/')}/v1", api_key="ollama")
             self._anthropic_client = None
         else:
             token = github_token or os.environ.get("GITHUB_TOKEN")
