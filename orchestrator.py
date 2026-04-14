@@ -253,6 +253,10 @@ class Orchestrator:
         m = re.search(r"(?:Closes|Related to|Fixes|Resolves)\s+#(\d+)", body, re.IGNORECASE)
         return int(m.group(1)) if m else None
 
+    def _safe_fence(self, content: str) -> str:
+        """Escape triple backticks to prevent prompt injection via file content."""
+        return content.replace("```", "` ` `")
+
     def _collect_pr_feedback(self, pr_number: int) -> list[dict]:
         """Return non-bot PR review comments and review bodies as a flat list.
 
@@ -271,7 +275,8 @@ class Orchestrator:
             body = (c.get("body") or "").strip()
             if not body:
                 continue
-            location = f"{c.get('path', '?')} line {c.get('line') if c.get('line') is not None else c.get('original_line', '?')}"
+            line_no = c.get('line')
+            location = f"{c.get('path', '?')} line {line_no if line_no is not None else c.get('original_line', '?')}"
             feedback.append({"author": login, "body": body, "location": location})
 
         for r in reviews:
@@ -325,6 +330,7 @@ class Orchestrator:
         pr = self.target_github.get_pr(pr_number)
         head_branch = pr["head"]["ref"]
         pr_body = pr.get("body") or ""
+        issue_number = self._extract_issue_number(pr_body)
         labels = [lbl["name"] for lbl in pr.get("labels", [])]
 
         # ── 2. Check revision cap ─────────────────────────────────────────────
@@ -346,7 +352,6 @@ class Orchestrator:
         console.print(f"  💬 Collected [bold]{len(feedback)}[/bold] feedback item(s) from PR #{pr_number}")
 
         # ── 4. Fetch design from linked issue ─────────────────────────────────
-        issue_number = self._extract_issue_number(pr_body)
         design = self._fetch_design_from_issue(issue_number) if issue_number else ""
         if not design:
             console.print("  [yellow]⚠️  No system design found in linked issue — engineer will use feedback only[/yellow]")
@@ -364,7 +369,7 @@ class Orchestrator:
 
         # ── 6. Build augmented design for engineer ────────────────────────────
         current_files_block = "\n\n".join(
-            f"### `{path}`\n```\n{content}\n```"
+            f"### `{path}`\n```\n{self._safe_fence(content)}\n```"
             for path, content in current_files.items()
         )
         augmented_design = (
@@ -397,15 +402,36 @@ class Orchestrator:
         console.print("  👷 [cyan]Engineer[/cyan] — revising code based on PR feedback...")
         eng_result = self.engineer.run_all_modules(augmented_design, revision_modules, project_name)
         revised_files: dict[str, str] = eng_result.get("all_files", {})
+        if not revised_files:
+            console.print("  [red]⚠️  Engineer returned no files — aborting revision[/red]")
+            self.target_github.add_pr_comment(
+                pr_number,
+                "⚠️ Revision aborted: the engineer agent produced no updated files. "
+                "Please retry or check the model logs.",
+            )
+            return {"status": "error", "reason": "engineer_returned_no_files"}
 
         # Commit revised files to the existing branch
+        commit_errors: list[str] = []
         for filepath, content in revised_files.items():
-            self.target_github.commit_file(
-                path=filepath,
-                content=content,
-                message=f"fix: revision {new_revision} — address PR feedback [{filepath}]",
-                branch=head_branch,
+            try:
+                self.target_github.commit_file(
+                    path=filepath,
+                    content=content,
+                    message=f"fix: revision {new_revision} — address PR feedback [{filepath}]",
+                    branch=head_branch,
+                )
+            except RuntimeError as exc:
+                commit_errors.append(f"{filepath}: {exc}")
+                console.print(f"  [red]⚠️  Failed to commit {filepath}: {exc}[/red]")
+
+        if commit_errors:
+            self.target_github.add_pr_comment(
+                pr_number,
+                f"⚠️ Revision {new_revision} partially failed. "
+                f"Could not commit:\n" + "\n".join(f"- `{e}`" for e in commit_errors),
             )
+            return {"status": "error", "reason": "commit_failed", "errors": commit_errors}
 
         console.print(f"  ✅ Committed [bold]{len(revised_files)}[/bold] revised file(s) to [cyan]{head_branch}[/cyan]")
 
@@ -438,7 +464,10 @@ class Orchestrator:
         summary = (
             f"## ✅ Revision {new_revision} Complete\n\n"
             f"The AI agents have addressed **{len(feedback)} feedback item(s)**:\n\n"
-            + "\n".join(f"- {item['body'][:120]}" for item in feedback)
+            + "\n".join(
+                f"- {item['body'][:120]}{'…' if len(item['body']) > 120 else ''}"
+                for item in feedback
+            )
             + f"\n\n**Files updated:** {', '.join(f'`{p}`' for p in revised_files)}\n"
             f"**Code review verdict:** {rev_result.get('verdict', 'N/A')}\n"
             f"**Test files updated:** {len(test_files)}"
