@@ -72,3 +72,6 @@ pipeline:
   # Maximum retries per agent call on API failure
   max_retries: 2
 
+  # Maximum automated revision rounds per PR (0 = disabled)
+  max_revisions: 3
+

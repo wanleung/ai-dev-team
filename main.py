@@ -108,6 +108,18 @@ Setup:
         help="Run in dream/refactor mode: analyse workspace code and open a cleanup PR instead of building new features.",
     )
     parser.add_argument(
+        "--mode",
+        choices=["build", "revise"],
+        default="build",
+        help="Pipeline mode: 'build' (default) builds new software; 'revise' processes PR feedback.",
+    )
+    parser.add_argument(
+        "--pr",
+        type=int,
+        metavar="PR_NUMBER",
+        help="Pull request number to revise (required when --mode=revise).",
+    )
+    parser.add_argument(
         "--no-resume",
         action="store_true",
         help="Ignore any saved checkpoint and start the pipeline from scratch.",
@@ -226,6 +238,24 @@ def main() -> int:
                 console.print(f"\n[bold green]🌙 Refactor complete![/bold green] PR: {refactor_result['pr_url']}")
             else:
                 console.print("\n[bold green]🌙 Refactor analysis complete![/bold green] (No PR — GitHub not configured or no changes)")
+            return 0
+        if getattr(args, "mode", "build") == "revise":
+            if not getattr(args, "pr", None):
+                console.print("[red]--pr PR_NUMBER is required when --mode=revise[/red]")
+                return 1
+            revision_result = orch.run_revision(args.pr)
+            status = revision_result.get("status")
+            if status == "max_revisions_reached":
+                console.print("\n[yellow]⏹ Max revisions reached — no changes made.[/yellow]")
+            elif status == "no_feedback":
+                console.print("\n[dim]No human feedback found — no changes made.[/dim]")
+            elif status == "error":
+                console.print(f"\n[red]⚠️ Revision failed: {revision_result.get('reason', 'unknown')}[/red]")
+                return 1
+            else:
+                rev_num = revision_result.get("revision", "?")
+                files = revision_result.get("files_updated", 0)
+                console.print(f"\n[bold green]✅ Revision {rev_num} complete![/bold green] {files} file(s) updated.")
             return 0
         result = orch.run(requirement, resume=not args.no_resume)
     except KeyboardInterrupt:
