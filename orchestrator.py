@@ -155,6 +155,7 @@ class Orchestrator:
         use_github: bool = False,
         target_repo: Optional[str] = None,
         ollama_url: str = "http://localhost:11434",
+        max_revisions: int = 3,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -165,6 +166,7 @@ class Orchestrator:
         self.use_github = use_github and bool(github_repo)
         self._github_token = github_token
         self.ollama_url = ollama_url
+        self.max_revisions = max_revisions
 
         # Shared kwargs for all agents
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url}
@@ -235,7 +237,75 @@ class Orchestrator:
             model_overrides=llm.get("overrides", {}),
             use_github=use_github,
             ollama_url=llm.get("ollama_url", "http://localhost:11434"),
+            max_revisions=pipeline.get("max_revisions", 3),
         )
+
+    # ── Revision helpers ──────────────────────────────────────────────────────
+
+    def _get_revision_number(self, labels: list[str]) -> int:
+        """Return the highest ai-revision-N number found in labels, or 0."""
+        import re
+        nums = [int(m.group(1)) for lbl in labels if (m := re.fullmatch(r"ai-revision-(\d+)", lbl))]
+        return max(nums, default=0)
+
+    def _extract_issue_number(self, body: str) -> Optional[int]:
+        """Extract a GitHub issue number from phrases like 'Closes #42' or 'Related to #7'."""
+        import re
+        m = re.search(r"(?:Closes|Related to|Fixes|Resolves)\s+#(\d+)", body, re.IGNORECASE)
+        return int(m.group(1)) if m else None
+
+    def _collect_pr_feedback(self, pr_number: int) -> list[dict]:
+        """Return non-bot PR review comments and review bodies as a flat list.
+
+        Each item: {"author": str, "body": str, "location": str}
+        """
+        bot_logins = {"github-actions[bot]", "copilot[bot]"}
+
+        inline = self.target_github.get_pr_review_comments(pr_number)
+        reviews = self.target_github.get_pr_reviews(pr_number)
+
+        feedback = []
+        for c in inline:
+            login = c.get("user", {}).get("login", "")
+            if login in bot_logins:
+                continue
+            body = (c.get("body") or "").strip()
+            if not body:
+                continue
+            location = f"{c.get('path', '?')} line {c.get('line') or c.get('original_line', '?')}"
+            feedback.append({"author": login, "body": body, "location": location})
+
+        for r in reviews:
+            login = r.get("user", {}).get("login", "")
+            if login in bot_logins:
+                continue
+            body = (r.get("body") or "").strip()
+            if not body:
+                continue
+            feedback.append({"author": login, "body": body, "location": "review"})
+
+        return feedback
+
+    def _format_feedback(self, feedback: list[dict]) -> str:
+        """Format a list of feedback dicts as a markdown bullet list."""
+        lines = ["### PR Feedback to Address\n"]
+        for item in feedback:
+            location = f" _(at {item['location']})_" if item["location"] != "review" else ""
+            lines.append(f"- **{item['author']}**{location}: {item['body']}")
+        return "\n".join(lines)
+
+    def _fetch_design_from_issue(self, issue_number: int) -> str:
+        """Read issue comments to find the architect's system design post.
+
+        Returns the body of the first comment containing '🏗️ System Design',
+        or an empty string if not found.
+        """
+        comments = self.github.get_issue_comments(issue_number)
+        for c in comments:
+            body = c.get("body", "")
+            if "System Design" in body and "🏗️" in body:
+                return body
+        return ""
 
     def run(self, requirement: str, trigger_issue_body: Optional[str] = None, resume: bool = True) -> PipelineResult:
         """Execute the full pipeline for a given requirement.
