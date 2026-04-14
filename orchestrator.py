@@ -209,6 +209,13 @@ class Orchestrator:
         with open(config_path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
 
+        # Load optional local override config (never committed)
+        local_path = Path(config_path).parent / "config.local.yaml"
+        if local_path.exists():
+            with open(local_path, encoding="utf-8") as lf:
+                local_cfg = yaml.safe_load(lf) or {}
+            cfg = _deep_merge(cfg, local_cfg)
+
         llm = cfg.get("llm", {})
         gh = cfg.get("github", {})
         team = cfg.get("team", {})
