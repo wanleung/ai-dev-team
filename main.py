@@ -152,7 +152,7 @@ def main() -> int:
             console.print(f"[red]Cannot read file '{args.file}': {e}[/red]")
             return 1
 
-    if not requirement:
+    if not requirement and args.mode != "revise":
         console.print(Panel.fit(
             "[bold cyan]🏢 AI Software House[/bold cyan]\n"
             "[dim]A team of AI agents: PM → Architect → Engineers → Reviewer → QA[/dim]",
@@ -215,6 +215,7 @@ def main() -> int:
         if args.repo and not args.no_github:
             from github_client import GitHubClient
             orch.github = GitHubClient(repo=args.repo, github_token=github_token)
+            orch.target_github = orch.github
             orch.use_github = True
         if args.no_github:
             orch.github = None
