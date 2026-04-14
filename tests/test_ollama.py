@@ -122,3 +122,19 @@ def test_orchestrator_from_config_reads_ollama_url(tmp_path):
     config_path.write_text(yaml.dump(cfg))
     orc = Orchestrator.from_config(str(config_path))
     assert orc.agent_kwargs.get("ollama_url") == "http://10.0.0.1:11434"
+
+
+def test_orchestrator_from_config_default_ollama_url(tmp_path):
+    """from_config() uses default ollama_url when key is absent from YAML."""
+    from orchestrator import Orchestrator
+    import yaml
+    cfg = {
+        "project": {"name": "test", "description": "desc", "requirements": []},
+        "github": {"owner": "org", "repo": "", "branch": "main"},
+        "llm": {"model": "gpt-4.1"},  # no ollama_url key
+        "pipeline": {"stages": []},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(cfg))
+    orc = Orchestrator.from_config(str(config_path))
+    assert orc.agent_kwargs.get("ollama_url") == "http://localhost:11434"
