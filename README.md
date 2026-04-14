@@ -151,6 +151,30 @@ github:
   repo: "your-username/your-repo"   # where code will be pushed
 ```
 
+#### Using Ollama (Local LLM)
+
+To use a local [Ollama](https://ollama.com) server instead of GitHub Models or Anthropic:
+
+1. Set any agent's model to an `ollama/` prefixed name in `config.yaml`:
+   ```yaml
+   llm:
+     model: "ollama/llama3.2"
+     overrides:
+       engineer: "ollama/qwen2.5-coder"
+   ```
+
+2. Create `config.local.yaml` alongside `config.yaml` to set your Ollama server URL (this file is gitignored — never committed):
+   ```yaml
+   llm:
+     ollama_url: "http://your-ollama-host:11434"
+   ```
+   If omitted, defaults to `http://localhost:11434`.
+
+3. Pull the required model on your Ollama server:
+   ```bash
+   ollama pull llama3.2
+   ```
+
 ### 4. Run
 
 ```bash

@@ -138,3 +138,25 @@ def test_orchestrator_from_config_default_ollama_url(tmp_path):
     config_path.write_text(yaml.dump(cfg))
     orc = Orchestrator.from_config(str(config_path))
     assert orc.agent_kwargs.get("ollama_url") == "http://localhost:11434"
+
+
+def test_from_config_loads_config_local_yaml(tmp_path):
+    """config.local.yaml is deep-merged over config.yaml when present."""
+    import yaml
+    from orchestrator import Orchestrator
+
+    base_cfg = {
+        "project": {"name": "test", "description": "desc", "requirements": []},
+        "github": {"owner": "org", "repo": "", "branch": "main"},
+        "llm": {"model": "gpt-4.1"},
+        "pipeline": {"stages": []},
+    }
+    local_cfg = {
+        "llm": {"ollama_url": "http://10.100.1.30:11434"},
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(base_cfg))
+    (tmp_path / "config.local.yaml").write_text(yaml.dump(local_cfg))
+
+    orc = Orchestrator.from_config(str(tmp_path / "config.yaml"))
+    assert orc.agent_kwargs["ollama_url"] == "http://10.100.1.30:11434"
+

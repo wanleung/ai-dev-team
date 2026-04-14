@@ -13,3 +13,7 @@ venv/
 workspace/
 logs/
 .watcher.lock
+
+# Local config overrides (private network settings, never commit)
+config.local.yaml
+**/config.local.yaml
