@@ -288,7 +288,6 @@ class GitHubClient:
 
         Returns None if the file does not exist or cannot be decoded.
         """
-        import base64 as _b64
         try:
             data = self._request(
                 "GET", f"/repos/{self.repo}/contents/{path}", params={"ref": ref}
@@ -297,7 +296,7 @@ class GitHubClient:
             return None
         raw = data.get("content", "")
         try:
-            return _b64.b64decode(raw).decode("utf-8")
+            return base64.b64decode(raw).decode("utf-8")
         except Exception:
             return None
 
