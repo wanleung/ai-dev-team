@@ -5,6 +5,7 @@ Manages artifact passing, logging, and optional GitHub integration.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -306,6 +307,147 @@ class Orchestrator:
             if "System Design" in body and "🏗️" in body:
                 return body
         return ""
+
+    def run_revision(self, pr_number: int) -> dict:
+        """Re-run engineer→reviewer→QA for a PR based on human review comments.
+
+        Reads all non-bot review comments from the PR, re-generates the code
+        incorporating the feedback, pushes commits to the same branch, posts a
+        summary comment, and updates the ai-revision-N label.
+
+        Returns a dict with a "status" key:
+          - "max_revisions_reached" — revision cap hit, nothing done
+          - "no_feedback"           — no human comments found, nothing done
+          - "ok"                    — revision committed, "revision" key has round number
+        """
+        if self.target_github is None:
+            raise RuntimeError("target_github is required for run_revision()")
+
+        # ── 1. PR metadata ────────────────────────────────────────────────────
+        pr = self.target_github.get_pr(pr_number)
+        head_branch = pr["head"]["ref"]
+        pr_body = pr.get("body") or ""
+        labels = [lbl["name"] for lbl in pr.get("labels", [])]
+
+        # ── 2. Check revision cap ─────────────────────────────────────────────
+        current_rev = self._get_revision_number(labels)
+        if current_rev >= self.max_revisions:
+            self.target_github.add_pr_comment(
+                pr_number,
+                f"⏹ Max revisions reached ({current_rev}/{self.max_revisions}). "
+                "No further automated revisions will be made.",
+            )
+            return {"status": "max_revisions_reached"}
+
+        # ── 3. Collect human feedback ─────────────────────────────────────────
+        feedback = self._collect_pr_feedback(pr_number)
+        if not feedback:
+            return {"status": "no_feedback"}
+
+        feedback_md = self._format_feedback(feedback)
+        console.print(f"  💬 Collected [bold]{len(feedback)}[/bold] feedback item(s) from PR #{pr_number}")
+
+        # ── 4. Fetch design from linked issue ─────────────────────────────────
+        issue_number = self._extract_issue_number(pr_body)
+        design = self._fetch_design_from_issue(issue_number) if issue_number else ""
+        if not design:
+            console.print("  [yellow]⚠️  No system design found in linked issue — engineer will use feedback only[/yellow]")
+
+        # ── 5. Read current files from branch ─────────────────────────────────
+        pr_files = self.target_github.get_pr_files(pr_number)
+        current_files: dict[str, str] = {}
+        for f in pr_files:
+            path = f["filename"]
+            content = self.target_github.get_file_content(path, ref=head_branch)
+            if content is not None:
+                current_files[path] = content
+
+        console.print(f"  📂 Read [bold]{len(current_files)}[/bold] current file(s) from branch [cyan]{head_branch}[/cyan]")
+
+        # ── 6. Build augmented design for engineer ────────────────────────────
+        current_files_block = "\n\n".join(
+            f"### `{path}`\n```\n{content}\n```"
+            for path, content in current_files.items()
+        )
+        augmented_design = (
+            f"{design}\n\n"
+            f"---\n\n"
+            f"## Current Code on Branch `{head_branch}`\n\n"
+            f"{current_files_block}\n\n"
+            f"---\n\n"
+            f"{feedback_md}"
+        )
+
+        # ── 7. Re-run engineer → reviewer → QA ───────────────────────────────
+        new_revision = current_rev + 1
+        console.print(f"\n[bold cyan]🔄 Revision {new_revision}/{self.max_revisions}[/bold cyan]")
+
+        revision_modules = [
+            {
+                "name": "Revision",
+                "description": (
+                    f"Revise the existing code to address all PR feedback listed above. "
+                    f"Return updated versions of these files: {', '.join(current_files.keys())}. "
+                    f"Only change what is necessary to address the feedback."
+                ),
+            }
+        ]
+
+        project_name = pr.get("title", f"PR #{pr_number}").replace("[Implementation] ", "")
+
+        # Engineer: generate revised files
+        console.print("  👷 [cyan]Engineer[/cyan] — revising code based on PR feedback...")
+        eng_result = self.engineer.run_all_modules(augmented_design, revision_modules, project_name)
+        revised_files: dict[str, str] = eng_result.get("all_files", {})
+
+        # Commit revised files to the existing branch
+        for filepath, content in revised_files.items():
+            self.target_github.commit_file(
+                path=filepath,
+                content=content,
+                message=f"fix: revision {new_revision} — address PR feedback [{filepath}]",
+                branch=head_branch,
+            )
+
+        console.print(f"  ✅ Committed [bold]{len(revised_files)}[/bold] revised file(s) to [cyan]{head_branch}[/cyan]")
+
+        # Code Reviewer
+        rev_result = self.reviewer.run(revised_files, design or "N/A", project_name)
+        console.print(f"  🔍 Code review verdict: [bold]{rev_result.get('verdict', '?')}[/bold]")
+
+        # QA Engineer
+        qa_result = self.qa.run(revised_files, design or "N/A", project_name)
+        test_files: dict[str, str] = qa_result.get("test_files", {})
+        for filepath, content in test_files.items():
+            self.target_github.commit_file(
+                path=filepath,
+                content=content,
+                message=f"test: revision {new_revision} — update tests [{filepath}]",
+                branch=head_branch,
+            )
+
+        # ── 8. Update label and post summary comment ──────────────────────────
+        old_label = f"ai-revision-{current_rev}" if current_rev > 0 else None
+        new_label = f"ai-revision-{new_revision}"
+
+        self.target_github.ensure_labels([
+            {"name": new_label, "color": "0075ca", "description": f"AI revision round {new_revision}"}
+        ])
+        if old_label:
+            self.target_github.remove_pr_label(pr_number, old_label)
+        self.target_github.add_pr_label(pr_number, new_label)
+
+        summary = (
+            f"## ✅ Revision {new_revision} Complete\n\n"
+            f"The AI agents have addressed **{len(feedback)} feedback item(s)**:\n\n"
+            + "\n".join(f"- {item['body'][:120]}" for item in feedback)
+            + f"\n\n**Files updated:** {', '.join(f'`{p}`' for p in revised_files)}\n"
+            f"**Code review verdict:** {rev_result.get('verdict', 'N/A')}\n"
+            f"**Test files updated:** {len(test_files)}"
+        )
+        self.target_github.add_pr_comment(pr_number, summary)
+
+        return {"status": "ok", "revision": new_revision, "files_updated": len(revised_files)}
 
     def run(self, requirement: str, trigger_issue_body: Optional[str] = None, resume: bool = True) -> PipelineResult:
         """Execute the full pipeline for a given requirement.
