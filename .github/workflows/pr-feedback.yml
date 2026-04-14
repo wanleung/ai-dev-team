@@ -61,8 +61,8 @@ jobs:
 
       - name: Run revision pipeline
         run: |
-          python main.py --mode revise --pr ${{ steps.params.outputs.pr_number }} \
-            --repo ${{ steps.params.outputs.target_repo }}
+          python main.py --mode revise --pr "${{ steps.params.outputs.pr_number }}" \
+            --repo "${{ steps.params.outputs.target_repo }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ steps.params.outputs.target_repo }}
