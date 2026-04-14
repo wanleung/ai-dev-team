@@ -198,6 +198,8 @@ class BaseAgent:
                 try:
                     response = self.client.chat.completions.create(
                         model=self._api_model,
+                        messages=messages,
+                        tools=tools.schemas,
                         tool_choice="auto",
                         temperature=0.3,
                     )
@@ -270,7 +272,7 @@ class BaseAgent:
         if self._backend == "anthropic":
             return self._call_anthropic(full_message)
 
-        # GitHub Models (OpenAI-compatible) — include history
+        # OpenAI-compatible backends (GitHub Models + Ollama) — include history
         messages: list[dict] = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
