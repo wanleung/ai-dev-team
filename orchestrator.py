@@ -154,6 +154,7 @@ class Orchestrator:
         model_overrides: Optional[dict] = None,
         use_github: bool = False,
         target_repo: Optional[str] = None,
+        ollama_url: str = "http://localhost:11434",
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -163,9 +164,11 @@ class Orchestrator:
         self.model_overrides = model_overrides or {}
         self.use_github = use_github and bool(github_repo)
         self._github_token = github_token
+        self.ollama_url = ollama_url
 
         # Shared kwargs for all agents
-        agent_kwargs = {"github_token": github_token}
+        agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url}
+        self.agent_kwargs = agent_kwargs
 
         def _model(agent_name: str) -> str:
             """Return the model for a given agent, falling back to the global default."""
@@ -224,6 +227,7 @@ class Orchestrator:
             stop_on_review_issues=pipeline.get("stop_on_review_issues", False),
             model_overrides=llm.get("overrides", {}),
             use_github=use_github,
+            ollama_url=llm.get("ollama_url", "http://localhost:11434"),
         )
 
     def run(self, requirement: str, trigger_issue_body: Optional[str] = None, resume: bool = True) -> PipelineResult:
