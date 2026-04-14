@@ -1,0 +1,68 @@
+name: 🔄 AI PR Feedback Loop
+
+# Triggers:
+#   1. Manually via GitHub UI (primary — specify PR number and target repo)
+#   2. Via API using repository_dispatch (for automation from target repos)
+#
+# For automatic triggering from the target repo, add a workflow to the target
+# repo that sends a repository_dispatch event to wanleung/ai-software-house
+# when a pull_request_review or pull_request_review_comment event fires.
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to revise (in the target repo)"
+        required: true
+        type: number
+      target_repo:
+        description: "Target repo (owner/repo) where the PR lives"
+        required: false
+        type: string
+
+  repository_dispatch:
+    types: [ai-pr-revise]
+
+concurrency:
+  group: ai-revise-pr-${{ github.event.inputs.pr_number || github.event.client_payload.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  revise:
+    name: Run AI Revision Pipeline
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout ai-software-house
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine PR number and target repo
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "pr_number=${{ github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
+            echo "target_repo=${{ github.event.inputs.target_repo || secrets.TARGET_REPO }}" >> $GITHUB_OUTPUT
+          else
+            echo "pr_number=${{ github.event.client_payload.pr_number }}" >> $GITHUB_OUTPUT
+            echo "target_repo=${{ github.event.client_payload.target_repo || secrets.TARGET_REPO }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run revision pipeline
+        run: |
+          python main.py --mode revise --pr ${{ steps.params.outputs.pr_number }} \
+            --repo ${{ steps.params.outputs.target_repo }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ steps.params.outputs.target_repo }}
