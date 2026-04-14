@@ -94,3 +94,31 @@ def test_base_agent_ollama_url_trailing_slash_normalised():
             base_url="http://localhost:11434/v1",
             api_key="ollama",
         )
+
+
+# ── Orchestrator wiring ───────────────────────────────────────────────────────
+
+def test_orchestrator_init_passes_ollama_url_to_agent_kwargs():
+    """Orchestrator.__init__ includes ollama_url in agent_kwargs."""
+    from orchestrator import Orchestrator
+    orc = Orchestrator(
+        github_token="ghp_fake",
+        ollama_url="http://10.0.0.1:11434",
+    )
+    assert orc.agent_kwargs.get("ollama_url") == "http://10.0.0.1:11434"
+
+
+def test_orchestrator_from_config_reads_ollama_url(tmp_path):
+    """from_config() reads llm.ollama_url from YAML and passes to Orchestrator."""
+    from orchestrator import Orchestrator
+    import yaml
+    cfg = {
+        "project": {"name": "test", "description": "desc", "requirements": []},
+        "github": {"owner": "org", "repo": "", "branch": "main"},
+        "llm": {"model": "ollama/llama3.2", "ollama_url": "http://10.0.0.1:11434"},
+        "pipeline": {"stages": []},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(cfg))
+    orc = Orchestrator.from_config(str(config_path))
+    assert orc.agent_kwargs.get("ollama_url") == "http://10.0.0.1:11434"
