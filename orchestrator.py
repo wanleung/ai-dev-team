@@ -39,6 +39,21 @@ from memory_store import MemoryStore
 console = Console()
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base, returning a new dict.
+
+    Nested dicts are merged at the leaf level; scalars are overwritten.
+    Neither input dict is mutated.
+    """
+    result = dict(base)
+    for key, val in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
+
+
 @dataclass
 class PipelineResult:
     """Holds the full output of a completed pipeline run."""

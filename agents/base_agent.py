@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
 
+from openai import OpenAI
+
 _ANTHROPIC_MODELS = {
     "claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5",
     "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022",
@@ -25,6 +27,11 @@ _ANTHROPIC_MODELS = {
 
 def _is_anthropic_model(model: str) -> bool:
     return model.startswith("claude-") or model in _ANTHROPIC_MODELS
+
+
+def _is_ollama_model(model: str) -> bool:
+    """Return True if the model name indicates an Ollama-hosted model."""
+    return model.startswith("ollama/")
 
 
 class BaseAgent:
@@ -44,7 +51,8 @@ class BaseAgent:
         model: str = "gpt-4.1",
         github_token: Optional[str] = None,
         roles_dir: Optional[Path] = None,
-        backend: Optional[str] = None,  # "github_models" | "anthropic" | None (auto)
+        backend: Optional[str] = None,  # "github_models" | "anthropic" | "ollama" | None (auto)
+        ollama_url: str = "http://localhost:11434",
     ) -> None:
         self.model = model
         self.system_prompt = self._load_system_prompt(roles_dir)
@@ -56,6 +64,9 @@ class BaseAgent:
         # Auto-detect backend from model name if not explicitly set
         use_anthropic = (backend == "anthropic") or (
             backend is None and _is_anthropic_model(model)
+        )
+        use_ollama = (backend == "ollama") or (
+            backend is None and _is_ollama_model(model)
         )
 
         if use_anthropic:
@@ -69,8 +80,13 @@ class BaseAgent:
             self._anthropic_client = _anthropic.Anthropic(api_key=api_key)
             self._backend = "anthropic"
             self.client = None
+            self._api_model = model
+        elif use_ollama:
+            self._backend = "ollama"
+            self._api_model = model.removeprefix("ollama/")
+            self.client = OpenAI(base_url=f"{ollama_url}/v1", api_key="ollama")
+            self._anthropic_client = None
         else:
-            from openai import OpenAI
             token = github_token or os.environ.get("GITHUB_TOKEN")
             if not token:
                 raise EnvironmentError(
@@ -83,6 +99,7 @@ class BaseAgent:
                 api_key=token,
             )
             self._backend = "github_models"
+            self._api_model = model
             self._anthropic_client = None
 
     def reset_history(self) -> None:
@@ -178,9 +195,7 @@ class BaseAgent:
             for attempt in range(max_retries):
                 try:
                     response = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=messages,
-                        tools=tools.schemas,
+                        model=self._api_model,
                         tool_choice="auto",
                         temperature=0.3,
                     )
@@ -234,7 +249,7 @@ class BaseAgent:
             "content": "Please provide your final response based on the tool results above.",
         })
         response = self.client.chat.completions.create(
-            model=self.model,
+            model=self._api_model,
             messages=messages,
             temperature=0.3,
         )
@@ -265,7 +280,7 @@ class BaseAgent:
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
-                    model=self.model,
+                    model=self._api_model,
                     messages=messages,
                     temperature=0.3,
                 )
