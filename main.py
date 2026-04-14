@@ -239,8 +239,8 @@ def main() -> int:
             else:
                 console.print("\n[bold green]🌙 Refactor analysis complete![/bold green] (No PR — GitHub not configured or no changes)")
             return 0
-        if getattr(args, "mode", "build") == "revise":
-            if not getattr(args, "pr", None):
+        if args.mode == "revise":
+            if not args.pr:
                 console.print("[red]--pr PR_NUMBER is required when --mode=revise[/red]")
                 return 1
             revision_result = orch.run_revision(args.pr)
@@ -252,10 +252,13 @@ def main() -> int:
             elif status == "error":
                 console.print(f"\n[red]⚠️ Revision failed: {revision_result.get('reason', 'unknown')}[/red]")
                 return 1
-            else:
+            elif status == "ok":
                 rev_num = revision_result.get("revision", "?")
                 files = revision_result.get("files_updated", 0)
                 console.print(f"\n[bold green]✅ Revision {rev_num} complete![/bold green] {files} file(s) updated.")
+            else:
+                console.print(f"[red]⚠️ Unexpected revision status: {status}[/red]")
+                return 1
             return 0
         result = orch.run(requirement, resume=not args.no_resume)
     except KeyboardInterrupt:
