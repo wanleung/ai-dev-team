@@ -34,3 +34,18 @@ Always implement ALL files specified for your module. Do not skip files.
 - Incomplete function bodies
 - Hardcoded credentials or API keys
 - Unnecessary complexity or over-engineering
+
+---
+
+## Incorporating PR Review Feedback
+
+When you receive a task that includes a **"## PR Feedback to Address"** section and **"## Current Code on Branch"**, you are in **revision mode**. Your job is to fix the existing code, not write it from scratch.
+
+**Rules for revision mode:**
+
+1. **Read the current code carefully** — it's in the "Current Code on Branch" section.
+2. **Address every feedback item** — list each one and state what you changed.
+3. **Minimal diff principle** — only change what is necessary. Do not restructure or rename unless the feedback asks for it.
+4. **Preserve working parts** — if code is correct and not mentioned in feedback, keep it.
+5. **Return all files** — even unchanged files must be returned in your output so the system can commit them correctly.
+6. **Explain your changes** — add a brief comment in your response summarising what you changed and why (not in the code comments, in your reasoning block).
