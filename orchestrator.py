@@ -245,13 +245,11 @@ class Orchestrator:
 
     def _get_revision_number(self, labels: list[str]) -> int:
         """Return the highest ai-revision-N number found in labels, or 0."""
-        import re
         nums = [int(m.group(1)) for lbl in labels if (m := re.fullmatch(r"ai-revision-(\d+)", lbl))]
         return max(nums, default=0)
 
     def _extract_issue_number(self, body: str) -> Optional[int]:
         """Extract a GitHub issue number from phrases like 'Closes #42' or 'Related to #7'."""
-        import re
         m = re.search(r"(?:Closes|Related to|Fixes|Resolves)\s+#(\d+)", body, re.IGNORECASE)
         return int(m.group(1)) if m else None
 
@@ -273,7 +271,7 @@ class Orchestrator:
             body = (c.get("body") or "").strip()
             if not body:
                 continue
-            location = f"{c.get('path', '?')} line {c.get('line') or c.get('original_line', '?')}"
+            location = f"{c.get('path', '?')} line {c.get('line') if c.get('line') is not None else c.get('original_line', '?')}"
             feedback.append({"author": login, "body": body, "location": location})
 
         for r in reviews:
@@ -1153,7 +1151,6 @@ class Orchestrator:
 
         # ── Apply rewrites for files explicitly called out ────────────────────
         changed: dict[str, str] = {}
-        import re
         for match in re.finditer(r"### File: `([^`]+)`.*?(?=### File:|$)", plan, re.DOTALL):
             file_path = match.group(1).strip()
             # Find matching workspace file (partial path ok)
