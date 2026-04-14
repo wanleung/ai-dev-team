@@ -82,3 +82,15 @@ def test_base_agent_github_models_api_model_unchanged():
         agent = ba_module.BaseAgent(model="openai/gpt-4.1")
         assert agent._backend == "github_models"
         assert agent._api_model == "openai/gpt-4.1"
+
+
+def test_base_agent_ollama_url_trailing_slash_normalised():
+    """Trailing slash in ollama_url is stripped to avoid double-slash in base_url."""
+    with patch("agents.base_agent.OpenAI") as mock_openai_cls:
+        mock_openai_cls.return_value = MagicMock()
+        from agents.base_agent import BaseAgent
+        BaseAgent(model="ollama/llama3.2", ollama_url="http://localhost:11434/")
+        mock_openai_cls.assert_called_once_with(
+            base_url="http://localhost:11434/v1",
+            api_key="ollama",
+        )
