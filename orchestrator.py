@@ -207,7 +207,7 @@ class Orchestrator:
     def from_config(cls, config_path: str = "config.yaml", github_token: Optional[str] = None) -> "Orchestrator":
         """Create an Orchestrator from a YAML config file."""
         with open(config_path, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
+            cfg = yaml.safe_load(f) or {}
 
         # Load optional local override config (never committed)
         local_path = Path(config_path).parent / "config.local.yaml"
