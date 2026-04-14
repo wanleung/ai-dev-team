@@ -117,6 +117,8 @@ def test_run_revision_exits_when_max_revisions_reached(orch):
     orch.target_github.add_pr_comment.assert_called_once()
     comment_body = orch.target_github.add_pr_comment.call_args[0][1]
     assert "Max revisions reached" in comment_body
+    orch.target_github.get_pr_files.assert_not_called()
+    orch.target_github.commit_file.assert_not_called()
 
 
 def test_run_revision_exits_when_no_human_feedback(orch):
@@ -130,3 +132,6 @@ def test_run_revision_exits_when_no_human_feedback(orch):
     orch.target_github.get_pr_reviews.return_value = []
     result = orch.run_revision(pr_number=10)
     assert result["status"] == "no_feedback"
+    orch.target_github.get_pr_files.assert_not_called()
+    orch.target_github.commit_file.assert_not_called()
+    orch.target_github.add_pr_comment.assert_not_called()
