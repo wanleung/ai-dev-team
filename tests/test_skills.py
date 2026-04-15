@@ -1,6 +1,7 @@
 """Tests for the SkillLoader."""
 from __future__ import annotations
 
+import json
 import textwrap
 from pathlib import Path
 
@@ -331,3 +332,88 @@ def test_role_section_missing_from_body_returns_no_content(tmp_path):
     blocks = loader.for_role("qa_planner", matched)
     # No ## For QA Planners section → for_role silently skips → empty list
     assert blocks == []
+
+
+# ── Security regression tests (marketplace hardening) ─────────────────────────
+
+def test_path_traversal_skill_name_sanitised(tmp_path):
+    """Skill names with path traversal sequences must be sanitised to just the filename."""
+    import unittest.mock as mock
+
+    loader = SkillLoader(config={}, local_skills_dir=tmp_path)
+    loader.init()
+
+    # Simulate marketplace index with a traversal skill name
+    traversal_index = json.dumps([
+        {"name": "../../etc/passwd", "url": "https://raw.githubusercontent.com/fake/repo/main/evil.md", "description": "evil"}
+    ])
+
+    with mock.patch("urllib.request.urlopen") as mock_urlopen:
+        # First call: index fetch; second call: skill fetch
+        mock_index = mock.MagicMock()
+        mock_index.__enter__ = lambda s: s
+        mock_index.__exit__ = mock.MagicMock(return_value=False)
+        mock_index.read.return_value = traversal_index.encode()
+
+        mock_skill_resp = mock.MagicMock()
+        mock_skill_resp.__enter__ = lambda s: s
+        mock_skill_resp.__exit__ = mock.MagicMock(return_value=False)
+        mock_skill_resp.read.return_value = b"---\nname: evil\ndescription: evil\n---\nEvil content"
+
+        mock_urlopen.side_effect = [mock_index, mock_skill_resp]
+
+        loader._marketplace_repo = "fake/repo"
+        loader._load_marketplace(update=True)
+
+    # The file must NOT have been written outside cache_dir
+    evil_path = tmp_path / "etc" / "passwd"
+    assert not evil_path.exists(), "Path traversal was NOT prevented!"
+
+
+def test_ssrf_untrusted_skill_url_skipped(tmp_path):
+    """Skill entries with URLs not on the allowlist must be skipped with a warning."""
+    import unittest.mock as mock
+
+    loader = SkillLoader(config={}, local_skills_dir=tmp_path)
+    loader.init()
+
+    evil_index = json.dumps([
+        {"name": "evil-skill", "url": "http://internal.corp/secret", "description": "evil"}
+    ])
+
+    with mock.patch("urllib.request.urlopen") as mock_urlopen:
+        mock_index = mock.MagicMock()
+        mock_index.__enter__ = lambda s: s
+        mock_index.__exit__ = mock.MagicMock(return_value=False)
+        mock_index.read.return_value = evil_index.encode()
+        mock_urlopen.return_value = mock_index
+
+        loader._marketplace_repo = "fake/repo"
+
+        with pytest.warns(UserWarning, match="untrusted URL"):
+            loader._load_marketplace(update=True)
+
+    # urlopen should only have been called once (for index), NOT for the skill URL
+    assert mock_urlopen.call_count == 1
+
+
+def test_marketplace_non_list_index_skips_gracefully(tmp_path):
+    """If marketplace index JSON is not a list, emit warning and return empty."""
+    import unittest.mock as mock
+
+    loader = SkillLoader(config={}, local_skills_dir=tmp_path)
+    loader.init()
+
+    with mock.patch("urllib.request.urlopen") as mock_urlopen:
+        mock_resp = mock.MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = mock.MagicMock(return_value=False)
+        mock_resp.read.return_value = json.dumps({"error": "rate limited"}).encode()
+        mock_urlopen.return_value = mock_resp
+
+        loader._marketplace_repo = "fake/repo"
+
+        with pytest.warns(UserWarning, match="not a JSON array"):
+            result = loader._load_marketplace(update=True)
+
+    assert result == []

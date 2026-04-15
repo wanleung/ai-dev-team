@@ -355,7 +355,7 @@ class SkillLoader:
 
             # Critical 1: sanitise skill_name to prevent path traversal
             safe_name = Path(skill_name).name
-            if not safe_name or safe_name == ".":
+            if not safe_name or safe_name in (".", ".."):
                 warnings.warn(f"[skills] Invalid skill name '{skill_name}', skipping.")
                 continue
 
