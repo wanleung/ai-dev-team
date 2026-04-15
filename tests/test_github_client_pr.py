@@ -110,3 +110,21 @@ def test_remove_pr_label_calls_delete(client):
 def test_remove_pr_label_ignores_404(client):
     client._request = MagicMock(side_effect=RuntimeError("Label does not exist"))
     client.remove_pr_label(42, "ai-revision-99")  # should not raise
+
+
+# ── get_repo_languages ────────────────────────────────────────────────────────
+
+def test_get_repo_languages_returns_lowercase_list(client):
+    """get_repo_languages returns lowercase language names."""
+    _mock_request(client, {"Dart": 12345, "Python": 5678})
+    result = client.get_repo_languages("owner/repo")
+    client._request.assert_called_once_with("GET", "/repos/owner/repo/languages")
+    assert set(result) == {"dart", "python"}
+    assert isinstance(result, list)
+
+
+def test_get_repo_languages_returns_empty_on_error(client):
+    """get_repo_languages returns [] on any API error."""
+    client._request = MagicMock(side_effect=RuntimeError("API Error"))
+    result = client.get_repo_languages("owner/repo")
+    assert result == []

@@ -332,5 +332,23 @@ class GitHubClient:
                 except RuntimeError:
                     pass  # Label may have been created concurrently
 
+    def get_repo_languages(self, repo: str) -> list[str]:
+        """Return lowercase list of programming languages used in a repo.
+
+        Calls GET /repos/{repo}/languages (GitHub Linguist endpoint).
+        Returns [] on any error.
+
+        Args:
+            repo: Repository in "owner/repo" format.
+
+        Returns:
+            List of lowercase language names (e.g. ["python", "dart"]).
+        """
+        try:
+            data = self._request("GET", f"/repos/{repo}/languages")
+            return [lang.lower() for lang in data.keys()]
+        except Exception:
+            return []
+
     def __repr__(self) -> str:
         return f"GitHubClient(repo={self.repo!r})"
