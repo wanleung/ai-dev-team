@@ -245,6 +245,7 @@ def main() -> int:
                 console.print("[bold green]✅ Skills updated.[/bold green]")
             except Exception as e:
                 console.print(f"[bold red]❌ Failed to update skills: {e}[/bold red]")
+                return 1
         else:
             console.print("[yellow]No skill_loader configured.[/yellow]")
         return 0

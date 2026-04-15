@@ -200,6 +200,18 @@ class Orchestrator:
         self.qa_planner = QAPlannerAgent(model=_model("qa_planner"), **agent_kwargs)
         self.qa = QAEngineerAgent(model=_model("qa_engineer"), **agent_kwargs)
         self.deployment_tester = DeploymentTesterAgent(model=_model("deployment_tester"), **agent_kwargs)
+
+        # Snapshot original system prompts to prevent stacking on repeated run() calls
+        self._original_system_prompts: dict = {
+            agent: agent.system_prompt
+            for agent in (
+                self.pm, self.pm_reviewer, self.architect, self.architect_reviewer,
+                self.engineer, self.reviewer, self.qa_planner, self.qa,
+                self.deployment_tester,
+            )
+            if agent is not None
+        }
+
         self.summariser = SummaryAgent(model=_model("summariser"), **agent_kwargs)
         self.refactor_agent = RefactorAgent(model=_model("refactor_agent"), **agent_kwargs)
 
@@ -361,17 +373,11 @@ class Orchestrator:
                 repo_languages=repo_languages,
             )
             matched_skills = self.skill_loader.detect(skill_ctx)
-            # Save original prompts before skill injection
-            _agent_original_prompts = {
-                agent: agent.system_prompt
-                for agent in (self.engineer, self.reviewer, self.qa)
-                if agent is not None
-            }
             for role, agent in [("engineer", self.engineer), ("code_reviewer", self.reviewer), ("qa_engineer", self.qa)]:
                 blocks = self.skill_loader.for_role(role, matched_skills)
                 block_text = self.skill_loader.render_prompt_block(blocks)
                 if block_text:
-                    original = _agent_original_prompts.get(agent, agent.system_prompt or "")
+                    original = getattr(self, '_original_system_prompts', {}).get(agent, agent.system_prompt or "")
                     if original:
                         agent.system_prompt = block_text + "\n\n---\n\n" + original
 
@@ -570,12 +576,6 @@ class Orchestrator:
                 console.print(f"  🎯 [dim]Skills loaded: {skill_names}[/dim]")
             # Save original prompts before any injection (memory + skills)
             # This prevents prompt stacking if run() is called multiple times on the same instance
-            _agent_original_prompts = {
-                agent: agent.system_prompt
-                for agent in (self.pm, self.pm_reviewer, self.architect, self.architect_reviewer,
-                              self.engineer, self.reviewer, self.qa_planner, self.qa, self.deployment_tester)
-                if agent is not None
-            }
             _role_agents = {
                 "product_manager": self.pm,
                 "pm_reviewer": self.pm_reviewer,
@@ -591,7 +591,7 @@ class Orchestrator:
                 blocks = self.skill_loader.for_role(role, matched_skills)
                 block_text = self.skill_loader.render_prompt_block(blocks)
                 if block_text:
-                    original = _agent_original_prompts.get(agent, agent.system_prompt or "")
+                    original = getattr(self, '_original_system_prompts', {}).get(agent, agent.system_prompt or "")
                     if original:
                         agent.system_prompt = block_text + "\n\n---\n\n" + original
 
