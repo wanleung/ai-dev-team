@@ -15,6 +15,9 @@ from typing import Optional
 import yaml
 
 
+# ── Security: allowed URL prefixes for marketplace fetches ────────────────────
+ALLOWED_URL_PREFIXES = ("https://raw.githubusercontent.com/",)
+
 # ── Role name mapping ─────────────────────────────────────────────────────────
 # Maps internal role key → markdown section header suffix
 _ROLE_SECTION_MAP: dict[str, str] = {
@@ -225,6 +228,9 @@ class SkillLoader:
             List of SkillBlock objects containing role-specific content.
         """
         section_header = _ROLE_SECTION_MAP.get(role)
+        if section_header is None:
+            warnings.warn(f"[skills] Unknown role '{role}', no section map entry found.")
+            return []
         blocks: list[SkillBlock] = []
 
         for skill in matched_skills:
@@ -309,6 +315,13 @@ class SkillLoader:
         owner_repo = self._marketplace_repo
         index_url = f"https://raw.githubusercontent.com/{owner_repo}/main/skills-index.json"
 
+        # Critical 2: validate marketplace index URL against allowlist
+        if not index_url.startswith(ALLOWED_URL_PREFIXES):
+            warnings.warn(
+                f"[skills] Marketplace index URL '{index_url}' is not in the allowed prefixes, skipping."
+            )
+            return []
+
         # Determine cache directory
         cache_dir = self._cache_dir or Path.home() / ".ai-software-house" / "skills"
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -329,12 +342,31 @@ class SkillLoader:
                 warnings.warn("[skills] No cache available, skipping marketplace skills.")
                 return []
 
+        # Critical 3: validate index_data is a list
+        if not isinstance(index_data, list):
+            warnings.warn("[skills] Marketplace index is not a JSON array, skipping marketplace skills.")
+            return []
+
         # Fetch/cache individual skill files
         skills: list[SkillEntry] = []
         for item in index_data:
             skill_name = item.get("name", "")
             skill_url = item.get("url", "")
-            skill_cache = cache_dir / f"{skill_name}.md"
+
+            # Critical 1: sanitise skill_name to prevent path traversal
+            safe_name = Path(skill_name).name
+            if not safe_name or safe_name == ".":
+                warnings.warn(f"[skills] Invalid skill name '{skill_name}', skipping.")
+                continue
+
+            # Critical 2: validate skill URL against allowlist
+            if not skill_url.startswith(ALLOWED_URL_PREFIXES):
+                warnings.warn(
+                    f"[skills] Marketplace skill '{safe_name}' has untrusted URL '{skill_url}', skipping."
+                )
+                continue
+
+            skill_cache = cache_dir / f"{safe_name}.md"
 
             if skill_cache.exists() and not update:
                 entry = self._parse_skill_file(skill_cache)
@@ -345,7 +377,7 @@ class SkillLoader:
                     skill_cache.write_text(skill_content, encoding="utf-8")
                     entry = self._parse_skill_file(skill_cache)
                 except Exception as exc:
-                    warnings.warn(f"[skills] Failed to fetch marketplace skill '{skill_name}': {exc}")
+                    warnings.warn(f"[skills] Failed to fetch marketplace skill '{safe_name}': {exc}")
                     entry = self._parse_skill_file(skill_cache) if skill_cache.exists() else None
 
             if entry is not None:

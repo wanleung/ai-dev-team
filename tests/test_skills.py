@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from skills_loader import SkillContext, SkillLoader
+from skills_loader import SkillBlock, SkillContext, SkillEntry, SkillLoader
 
 
 @pytest.fixture
@@ -206,3 +206,128 @@ def test_no_role_section_skips_gracefully(skills_dir):
     # security-audit has content for all roles
     blocks = loader.for_role("qa_engineer", matched)
     assert any("OWASP" in b.content for b in blocks)
+
+
+# ── render_prompt_block ────────────────────────────────────────────────────────
+
+def test_render_prompt_block(skills_dir):
+    """render_prompt_block includes skill name and content; empty list returns ''."""
+    loader = make_loader(skills_dir)
+    loader.init()
+
+    # non-empty case
+    blocks = [
+        SkillBlock(name="flutter", source="local", content="Run build_runner after model changes."),
+        SkillBlock(name="security-audit", source="local", content="Never log secrets."),
+    ]
+    output = loader.render_prompt_block(blocks)
+    assert "flutter" in output
+    assert "Run build_runner after model changes." in output
+    assert "security-audit" in output
+    assert "Never log secrets." in output
+
+    # empty case
+    assert loader.render_prompt_block([]) == ""
+
+
+# ── detect score ordering ──────────────────────────────────────────────────────
+
+def test_detect_score_ordering(tmp_path):
+    """Skills with higher tag-match scores appear first; ties broken alphabetically."""
+    # skill_a matches 1 tag, skill_b matches 2 tags → skill_b should rank first
+    skill_a_md = textwrap.dedent("""\
+        ---
+        name: skill-alpha
+        description: Alpha skill
+        version: 1.0.0
+        roles: {}
+        tags: [security]
+        source: local
+        ---
+        Alpha body.
+    """)
+    skill_b_md = textwrap.dedent("""\
+        ---
+        name: skill-beta
+        description: Beta skill
+        version: 1.0.0
+        roles: {}
+        tags: [security, auth]
+        source: local
+        ---
+        Beta body.
+    """)
+    (tmp_path / "skill-alpha.md").write_text(skill_a_md)
+    (tmp_path / "skill-beta.md").write_text(skill_b_md)
+
+    loader = make_loader(tmp_path)
+    loader.init()
+
+    ctx = SkillContext(issue_body="security and auth concerns", explicit_skills=[], repo_languages=[])
+    matched = loader.detect(ctx)
+
+    names = [s.name for s in matched]
+    assert names.index("skill-beta") < names.index("skill-alpha")
+
+
+# ── for_role unknown role warns ────────────────────────────────────────────────
+
+def test_for_role_unknown_role_warns(skills_dir):
+    """for_role with an unknown role key returns [] and issues a warning."""
+    loader = make_loader(skills_dir)
+    loader.init()
+    ctx = SkillContext(issue_body="flutter app", explicit_skills=[], repo_languages=[])
+    matched = loader.detect(ctx)
+
+    with pytest.warns(UserWarning, match="Unknown role 'nonexistent_role'"):
+        result = loader.for_role("nonexistent_role", matched)
+
+    assert result == []
+
+
+# ── detect always_load not found warns ────────────────────────────────────────
+
+def test_detect_always_load_not_found_warns(skills_dir):
+    """always_load referencing a missing skill issues a warning and returns []."""
+    loader = make_loader(skills_dir, always_load=["nonexistent"])
+    loader.init()
+    ctx = SkillContext(issue_body="anything", explicit_skills=[], repo_languages=[])
+
+    with pytest.warns(UserWarning, match="always_load skill 'nonexistent' not found"):
+        result = loader.detect(ctx)
+
+    assert result == []
+
+
+# ── role section missing from body ────────────────────────────────────────────
+
+def test_role_section_missing_from_body_returns_no_content(tmp_path):
+    """Skill enabled for qa_planner but missing ## For QA Planners section is skipped."""
+    skill_md = textwrap.dedent("""\
+        ---
+        name: no-section-skill
+        description: A skill with no QA Planner section
+        version: 1.0.0
+        roles:
+          qa_planner: true
+        tags: [planning]
+        source: local
+        ---
+
+        # No Section Skill
+
+        ## For Engineers
+        Some engineer guidance here.
+    """)
+    (tmp_path / "no-section-skill.md").write_text(skill_md)
+
+    loader = make_loader(tmp_path)
+    loader.init()
+
+    ctx = SkillContext(issue_body="planning task", explicit_skills=[], repo_languages=[])
+    matched = loader.detect(ctx)
+    assert any(s.name == "no-section-skill" for s in matched)
+
+    blocks = loader.for_role("qa_planner", matched)
+    # No ## For QA Planners section → for_role silently skips → empty list
+    assert blocks == []
