@@ -361,11 +361,19 @@ class Orchestrator:
                 repo_languages=repo_languages,
             )
             matched_skills = self.skill_loader.detect(skill_ctx)
+            # Save original prompts before skill injection
+            _agent_original_prompts = {
+                agent: agent.system_prompt
+                for agent in (self.engineer, self.reviewer, self.qa)
+                if agent is not None
+            }
             for role, agent in [("engineer", self.engineer), ("code_reviewer", self.reviewer), ("qa_engineer", self.qa)]:
                 blocks = self.skill_loader.for_role(role, matched_skills)
                 block_text = self.skill_loader.render_prompt_block(blocks)
-                if block_text and agent.system_prompt:
-                    agent.system_prompt = block_text + "\n\n---\n\n" + agent.system_prompt
+                if block_text:
+                    original = _agent_original_prompts.get(agent, agent.system_prompt or "")
+                    if original:
+                        agent.system_prompt = block_text + "\n\n---\n\n" + original
 
         # ── 2. Check revision cap ─────────────────────────────────────────────
         current_rev = self._get_revision_number(labels)
@@ -560,6 +568,14 @@ class Orchestrator:
             if matched_skills:
                 skill_names = ", ".join(s.name for s in matched_skills)
                 console.print(f"  🎯 [dim]Skills loaded: {skill_names}[/dim]")
+            # Save original prompts before any injection (memory + skills)
+            # This prevents prompt stacking if run() is called multiple times on the same instance
+            _agent_original_prompts = {
+                agent: agent.system_prompt
+                for agent in (self.pm, self.pm_reviewer, self.architect, self.architect_reviewer,
+                              self.engineer, self.reviewer, self.qa_planner, self.qa, self.deployment_tester)
+                if agent is not None
+            }
             _role_agents = {
                 "product_manager": self.pm,
                 "pm_reviewer": self.pm_reviewer,
@@ -569,12 +585,15 @@ class Orchestrator:
                 "code_reviewer": self.reviewer,
                 "qa_planner": self.qa_planner,
                 "qa_engineer": self.qa,
+                "deployment_tester": self.deployment_tester,
             }
             for role, agent in _role_agents.items():
                 blocks = self.skill_loader.for_role(role, matched_skills)
                 block_text = self.skill_loader.render_prompt_block(blocks)
-                if block_text and agent.system_prompt:
-                    agent.system_prompt = block_text + "\n\n---\n\n" + agent.system_prompt
+                if block_text:
+                    original = _agent_original_prompts.get(agent, agent.system_prompt or "")
+                    if original:
+                        agent.system_prompt = block_text + "\n\n---\n\n" + original
 
         # ── Load checkpoint if resuming ───────────────────────────────────────
         result = self._load_checkpoint(requirement) if resume else None
