@@ -239,9 +239,12 @@ def main() -> int:
     # ── Handle --update-skills ────────────────────────────────────────────────
     if args.update_skills:
         if orch.skill_loader:
-            console.print("[bold cyan]🔄 Updating skills from marketplace...[/bold cyan]")
-            orch.skill_loader.update_marketplace()
-            console.print("[bold green]✅ Skills updated.[/bold green]")
+            try:
+                console.print("[bold cyan]🔄 Updating skills from marketplace...[/bold cyan]")
+                orch.skill_loader.update_marketplace()
+                console.print("[bold green]✅ Skills updated.[/bold green]")
+            except Exception as e:
+                console.print(f"[bold red]❌ Failed to update skills: {e}[/bold red]")
         else:
             console.print("[yellow]No skill_loader configured.[/yellow]")
         return 0

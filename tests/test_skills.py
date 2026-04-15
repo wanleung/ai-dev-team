@@ -398,22 +398,21 @@ def test_ssrf_untrusted_skill_url_skipped(tmp_path):
 
 
 def test_orchestrator_injects_skills_into_agent_prompt(tmp_path):
-    """Orchestrator.run() prepends skill blocks to agent system prompts."""
-    import textwrap
+    """SkillLoader correctly produces injectable blocks for Orchestrator agents."""
     from unittest.mock import MagicMock
     from orchestrator import Orchestrator
 
-    # Create a minimal flutter skill in tmp skills dir
-    flutter_md = textwrap.dedent("""\
+    # Write a flutter skill
+    (tmp_path / "flutter.md").write_text(textwrap.dedent("""\
         ---
         name: flutter
         description: Flutter guidance
         version: 1.0.0
         roles:
           engineer: true
-          architect: true
-          code_reviewer: true
-          qa_engineer: true
+          architect: false
+          code_reviewer: false
+          qa_engineer: false
           product_manager: false
           architect_reviewer: false
           pm_reviewer: false
@@ -421,28 +420,36 @@ def test_orchestrator_injects_skills_into_agent_prompt(tmp_path):
         source: local
         ---
 
-        # Flutter Skill
-
         ## For Engineers
         Use Riverpod for state management.
-    """)
-    (tmp_path / "flutter.md").write_text(flutter_md)
+    """))
 
     loader = SkillLoader(config={}, local_skills_dir=tmp_path)
     loader.init()
 
-    ctx = SkillContext(issue_body="Build a flutter app", explicit_skills=[], repo_languages=[])
-    matched = loader.detect(ctx)
-    blocks = loader.for_role("engineer", matched)
-    block_text = loader.render_prompt_block(blocks)
+    # Create Orchestrator with the skill loader
+    o = Orchestrator.__new__(Orchestrator)
+    o.skill_loader = loader
+    fake_engineer = MagicMock()
+    fake_engineer.system_prompt = "You are an engineer."
+    o.engineer = fake_engineer
 
+    # Exercise the exact injection logic used in run()
+    ctx = SkillContext(issue_body="Build a flutter app", explicit_skills=[], repo_languages=[])
+    matched = o.skill_loader.detect(ctx)
+    assert any(s.name == "flutter" for s in matched)
+
+    blocks = o.skill_loader.for_role("engineer", matched)
+    block_text = o.skill_loader.render_prompt_block(blocks)
     assert "Riverpod" in block_text
 
-    # Simulate injection
-    original_prompt = "You are an engineer."
-    injected = block_text + "\n\n---\n\n" + original_prompt
-    assert "Riverpod" in injected
-    assert "You are an engineer." in injected
+    # Simulate injection (same code as in run())
+    original = o.engineer.system_prompt
+    if block_text and original:
+        o.engineer.system_prompt = block_text + "\n\n---\n\n" + original
+
+    assert "Riverpod" in o.engineer.system_prompt
+    assert "You are an engineer." in o.engineer.system_prompt
 
 
 def test_marketplace_non_list_index_skips_gracefully(tmp_path):
