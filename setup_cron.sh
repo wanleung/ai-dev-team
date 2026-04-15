@@ -21,9 +21,9 @@ mkdir -p "$LOG_DIR"
 CRON_CMD="0 * * * * cd $SCRIPT_DIR && source $VENV && python $WATCHER >> $LOG_DIR/cron.log 2>&1"
 
 # Add only if not already present
-if crontab -l 2>/dev/null | grep -qF "watcher.py"; then
+if crontab -l 2>/dev/null | grep -qF "ai-software-house.*watcher.py"; then
     echo "✅ Cron job already installed."
-    crontab -l | grep "watcher.py"
+    crontab -l | grep "ai-software-house.*watcher.py"
 else
     (crontab -l 2>/dev/null; echo "$CRON_CMD") | crontab -
     echo "✅ Cron job installed — runs every hour at :00"
