@@ -70,8 +70,22 @@ pipeline:
   stop_on_review_issues: false
 
   # Maximum retries per agent call on API failure
-  max_retries: 2
+  max_retries: 10
 
   # Maximum automated revision rounds per PR (0 = disabled)
-  max_revisions: 3
+  max_revisions: 10
+
+# ── Skills System ────────────────────────────────────────────────────────────
+skills:
+  # Skills that are always loaded regardless of project context
+  always_load: []
+
+  # GitHub repo for the skills marketplace (e.g. "myorg/skills-repo")
+  marketplace_repo: ""
+
+  # Local directory for caching marketplace skills (defaults to ~/.ai-software-house/skills/)
+  cache_dir: ""
+
+  # Timeout in seconds for marketplace HTTP requests
+  fetch_timeout: 5
 
