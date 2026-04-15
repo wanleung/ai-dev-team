@@ -36,6 +36,7 @@ from agents.refactor_agent import RefactorAgent
 from agents.memory_consolidator import MemoryConsolidatorAgent
 from github_client import GitHubClient, parse_target_repo
 from memory_store import MemoryStore
+from skills_loader import SkillContext, SkillLoader
 
 console = Console()
 
@@ -53,6 +54,14 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = val
     return result
+
+
+def _parse_explicit_skills(text: str) -> list[str]:
+    """Parse 'skills: name1, name2' directive from issue body."""
+    m = re.search(r"^skills\s*:\s*(.+)$", text, re.IGNORECASE | re.MULTILINE)
+    if not m:
+        return []
+    return [s.strip() for s in m.group(1).split(",") if s.strip()]
 
 
 @dataclass
@@ -143,6 +152,9 @@ class Orchestrator:
         result = orch.run("Build a task management REST API")
     """
 
+    # Class-level default so __new__-constructed instances have the attribute
+    skill_loader: Optional["SkillLoader"] = None
+
     def __init__(
         self,
         model: str = "gpt-4.1",
@@ -157,6 +169,7 @@ class Orchestrator:
         target_repo: Optional[str] = None,
         ollama_url: str = "http://localhost:11434",
         max_revisions: int = 3,
+        skill_loader: Optional["SkillLoader"] = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -168,6 +181,7 @@ class Orchestrator:
         self._github_token = github_token
         self.ollama_url = ollama_url
         self.max_revisions = max_revisions
+        self.skill_loader: Optional[SkillLoader] = skill_loader
 
         # Shared kwargs for all agents
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url}
@@ -224,6 +238,9 @@ class Orchestrator:
         team = cfg.get("team", {})
         pipeline = cfg.get("pipeline", {})
 
+        skill_loader = SkillLoader(config=cfg)
+        skill_loader.init()
+
         repo = gh.get("repo", "")
         use_github = bool(repo) and repo != "your-username/your-repo"
 
@@ -239,6 +256,7 @@ class Orchestrator:
             use_github=use_github,
             ollama_url=llm.get("ollama_url", "http://localhost:11434"),
             max_revisions=pipeline.get("max_revisions", 3),
+            skill_loader=skill_loader,
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
@@ -332,6 +350,22 @@ class Orchestrator:
         pr_body = pr.get("body") or ""
         issue_number = self._extract_issue_number(pr_body)
         labels = [lbl["name"] for lbl in pr.get("labels", [])]
+
+        # ── Inject skills ─────────────────────────────────────────────────────
+        if self.skill_loader:
+            active_repo = self.target_github.repo
+            repo_languages = self.target_github.get_repo_languages(active_repo)
+            skill_ctx = SkillContext(
+                issue_body=pr_body,
+                explicit_skills=_parse_explicit_skills(pr_body),
+                repo_languages=repo_languages,
+            )
+            matched_skills = self.skill_loader.detect(skill_ctx)
+            for role, agent in [("engineer", self.engineer), ("code_reviewer", self.reviewer), ("qa_engineer", self.qa)]:
+                blocks = self.skill_loader.for_role(role, matched_skills)
+                block_text = self.skill_loader.render_prompt_block(blocks)
+                if block_text and agent.system_prompt:
+                    agent.system_prompt = block_text + "\n\n---\n\n" + agent.system_prompt
 
         # ── 2. Check revision cap ─────────────────────────────────────────────
         current_rev = self._get_revision_number(labels)
@@ -510,6 +544,37 @@ class Orchestrator:
                           self.reviewer, self.qa, self.qa_planner):
                 if agent.system_prompt:
                     agent.system_prompt = memory_context + "\n\n---\n\n" + agent.system_prompt
+
+        # ── Inject skills into agents ─────────────────────────────────────────
+        if self.skill_loader:
+            repo_languages: list[str] = []
+            if self.target_github:
+                repo_languages = self.target_github.get_repo_languages(active_repo)
+            explicit_skills = _parse_explicit_skills(trigger_issue_body or "")
+            skill_ctx = SkillContext(
+                issue_body=trigger_issue_body or requirement,
+                explicit_skills=explicit_skills,
+                repo_languages=repo_languages,
+            )
+            matched_skills = self.skill_loader.detect(skill_ctx)
+            if matched_skills:
+                skill_names = ", ".join(s.name for s in matched_skills)
+                console.print(f"  🎯 [dim]Skills loaded: {skill_names}[/dim]")
+            _role_agents = {
+                "product_manager": self.pm,
+                "pm_reviewer": self.pm_reviewer,
+                "architect": self.architect,
+                "architect_reviewer": self.architect_reviewer,
+                "engineer": self.engineer,
+                "code_reviewer": self.reviewer,
+                "qa_planner": self.qa_planner,
+                "qa_engineer": self.qa,
+            }
+            for role, agent in _role_agents.items():
+                blocks = self.skill_loader.for_role(role, matched_skills)
+                block_text = self.skill_loader.render_prompt_block(blocks)
+                if block_text and agent.system_prompt:
+                    agent.system_prompt = block_text + "\n\n---\n\n" + agent.system_prompt
 
         # ── Load checkpoint if resuming ───────────────────────────────────────
         result = self._load_checkpoint(requirement) if resume else None

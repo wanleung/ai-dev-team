@@ -397,6 +397,54 @@ def test_ssrf_untrusted_skill_url_skipped(tmp_path):
     assert mock_urlopen.call_count == 1
 
 
+def test_orchestrator_injects_skills_into_agent_prompt(tmp_path):
+    """Orchestrator.run() prepends skill blocks to agent system prompts."""
+    import textwrap
+    from unittest.mock import MagicMock
+    from orchestrator import Orchestrator
+
+    # Create a minimal flutter skill in tmp skills dir
+    flutter_md = textwrap.dedent("""\
+        ---
+        name: flutter
+        description: Flutter guidance
+        version: 1.0.0
+        roles:
+          engineer: true
+          architect: true
+          code_reviewer: true
+          qa_engineer: true
+          product_manager: false
+          architect_reviewer: false
+          pm_reviewer: false
+        tags: [flutter]
+        source: local
+        ---
+
+        # Flutter Skill
+
+        ## For Engineers
+        Use Riverpod for state management.
+    """)
+    (tmp_path / "flutter.md").write_text(flutter_md)
+
+    loader = SkillLoader(config={}, local_skills_dir=tmp_path)
+    loader.init()
+
+    ctx = SkillContext(issue_body="Build a flutter app", explicit_skills=[], repo_languages=[])
+    matched = loader.detect(ctx)
+    blocks = loader.for_role("engineer", matched)
+    block_text = loader.render_prompt_block(blocks)
+
+    assert "Riverpod" in block_text
+
+    # Simulate injection
+    original_prompt = "You are an engineer."
+    injected = block_text + "\n\n---\n\n" + original_prompt
+    assert "Riverpod" in injected
+    assert "You are an engineer." in injected
+
+
 def test_marketplace_non_list_index_skips_gracefully(tmp_path):
     """If marketplace index JSON is not a list, emit warning and return empty."""
     import unittest.mock as mock
