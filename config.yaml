@@ -70,10 +70,10 @@ pipeline:
   stop_on_review_issues: false
 
   # Maximum retries per agent call on API failure
-  max_retries: 10
+  max_retries: 2
 
   # Maximum automated revision rounds per PR (0 = disabled)
-  max_revisions: 10
+  max_revisions: 3
 
 # ── Skills System ────────────────────────────────────────────────────────────
 skills:

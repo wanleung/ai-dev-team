@@ -128,3 +128,11 @@ def test_get_repo_languages_returns_empty_on_error(client):
     client._request = MagicMock(side_effect=RuntimeError("API Error"))
     result = client.get_repo_languages("owner/repo")
     assert result == []
+
+
+def test_get_repo_languages_returns_empty_on_empty_response(client):
+    """Empty body response (e.g. 204-equivalent) returns []."""
+    # Mock _request to return {}
+    with patch.object(client, '_request', return_value={}):
+        result = client.get_repo_languages("owner/repo")
+    assert result == []
