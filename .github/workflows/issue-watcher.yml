@@ -1,0 +1,79 @@
+name: 👁️ Issue Watcher
+
+# Polls every 15 minutes for issues labelled ai-feature or ai-fix
+# that have not yet been queued (lack the ai-queued label).
+# Complements the native label-trigger on feature-build.yml / bug-fix.yml
+# by catching issues created with labels already attached.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}   # allow manual run for testing
+
+concurrency:
+  group: issue-watcher
+  cancel-in-progress: true   # only one watcher at a time
+
+jobs:
+  watch:
+    name: Find and queue unprocessed issues
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      actions: write   # needed to trigger other workflows
+
+    steps:
+      - name: Find unprocessed ai-feature issues
+        id: feature_issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          issues=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label "ai-feature" \
+            --state open \
+            --json number,labels \
+            --jq '[.[] | select(.labels | map(.name) | contains(["ai-queued"]) | not) | .number]')
+          echo "numbers=$issues" >> $GITHUB_OUTPUT
+
+      - name: Find unprocessed ai-fix issues
+        id: fix_issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          issues=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label "ai-fix" \
+            --state open \
+            --json number,labels \
+            --jq '[.[] | select(.labels | map(.name) | contains(["ai-queued"]) | not) | .number]')
+          echo "numbers=$issues" >> $GITHUB_OUTPUT
+
+      - name: Trigger feature-build for each unqueued ai-feature issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo '${{ steps.feature_issues.outputs.numbers }}' | \
+          jq -r '.[]' | while read -r issue_number; do
+            echo "Triggering feature-build for issue #$issue_number"
+            gh workflow run feature-build.yml \
+              --repo "${{ github.repository }}" \
+              --field issue_number="$issue_number"
+            gh issue edit "$issue_number" \
+              --repo "${{ github.repository }}" \
+              --add-label "ai-queued"
+          done
+
+      - name: Trigger bug-fix for each unqueued ai-fix issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo '${{ steps.fix_issues.outputs.numbers }}' | \
+          jq -r '.[]' | while read -r issue_number; do
+            echo "Triggering bug-fix for issue #$issue_number"
+            gh workflow run bug-fix.yml \
+              --repo "${{ github.repository }}" \
+              --field issue_number="$issue_number"
+            gh issue edit "$issue_number" \
+              --repo "${{ github.repository }}" \
+              --add-label "ai-queued"
+          done
