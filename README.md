@@ -14,7 +14,8 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **Per-agent LLM config** — assign any GitHub Models model to each agent independently
 - **Actual test execution** — pytest runs locally; results posted back to the PR as a comment
 - **Docker smoke tests** — deployment tester generates and runs container health checks
-- **GitHub Actions integration** — label an issue to trigger the full pipeline automatically
+- **GitHub Actions integration** — label an issue to trigger the full pipeline automatically; 15-minute watcher catches pre-labelled issues too
+- **PR feedback loop** — humans post review comments on AI-generated PRs → Engineer + Code Reviewer + QA automatically re-run, push fixes, and update the PR (up to `max_revisions` rounds)
 - **Tool calling built-in** — Code Reviewer runs `ruff`, QA Planner searches GitHub Issues; any agent can call tools via `call_with_tools()`
 - **Fully customisable** — add agents, skills, and tools by editing markdown role files and Python tool functions
 - 🧠 **Agent memory** — tiered SQLite memory (run → monthly → quarterly), conversation history within each run, auto-summariser after every pipeline
@@ -361,6 +362,8 @@ Pipeline:
   --no-resume            Ignore checkpoint and start from scratch
   --stop-on-review       Halt pipeline if Code Reviewer requests changes
   --refactor             Dream mode: analyse workspace code and open a cleanup PR
+  --mode {build,revise}  'build' (default) runs full pipeline; 'revise' processes PR feedback
+  --pr PR_NUMBER         PR number to revise — required when --mode=revise
 ```
 
 ---
@@ -390,6 +393,25 @@ print(result.qa_acceptance_criteria)  # ['AC-01', 'AC-02', ...]
 print(result.pr_url)            # GitHub PR URL
 print(result.tests_passed)      # True / False / None
 ```
+
+### `orchestrator.py` — PR Revision (`run_revision`)
+
+Process human review feedback on an AI-generated PR and push an updated commit.
+
+```python
+from orchestrator import Orchestrator
+
+orch = Orchestrator.from_config("config.yaml")
+result = orch.run_revision(pr_number=42)
+# result["status"] → "approved" | "changes_requested" | "max_revisions_reached" | "error"
+```
+
+**Via CLI:**
+```bash
+python main.py --mode revise --pr 42 --repo owner/target-repo
+```
+
+---
 
 ### `bug_fix_orchestrator.py` — Bug Fix Pipeline
 
@@ -459,6 +481,7 @@ pipeline:
   workspace_dir: "./workspace"
   stop_on_review_issues: false
   max_retries: 2
+  max_revisions: 3        # max automated PR revision rounds (0 = disabled)
 ```
 
 ---
@@ -706,7 +729,7 @@ gh workflow run setup-labels.yml
 
 ### Triggering a Feature Build
 
-Create an issue with the `feature-request` label:
+Create a GitHub Issue, then add the **`ai-feature`** label:
 
 ```markdown
 Title: Patient questionnaire mobile app
@@ -727,7 +750,7 @@ Build iOS and Android apps for rectal cancer patient questionnaires.
 
 ### Triggering a Bug Fix
 
-Create an issue with the `bug` label:
+Create an issue with the **`ai-fix`** label:
 
 ```markdown
 Title: Login fails for users with special characters in email
@@ -740,14 +763,46 @@ Steps to reproduce:
 Expected: Successful login
 ```
 
+### Triggering a PR Revision
+
+After humans post review comments on an AI-generated PR, trigger the revision pipeline:
+
+**Option A — GitHub UI:**  
+Go to **Actions → 🔄 AI PR Feedback Loop → Run workflow**, enter the PR number and target repo.
+
+**Option B — CLI:**
+```bash
+python main.py --mode revise --pr 42 --repo owner/target-repo
+```
+
+**Option C — API (`repository_dispatch`):**
+```bash
+gh api repos/owner/ai-software-house/dispatches \
+  --method POST \
+  -f event_type=ai-pr-revise \
+  -f client_payload[pr_number]=42 \
+  -f client_payload[target_repo]=owner/target-repo
+```
+
+The pipeline reads all non-bot review comments, re-runs Engineer → Code Reviewer → QA, commits the updated code to the same branch, and posts a `✅ Revision N complete` comment on the PR.  
+Maximum revision rounds is controlled by `pipeline.max_revisions` in `config.yaml` (default: 3).
+
+### Issue Watcher (15-minute fallback)
+
+`issue-watcher.yml` runs every 15 minutes and picks up any open issues with `ai-feature` or `ai-fix` labels that haven't been queued yet (lack the `ai-queued` label). This catches issues created programmatically with labels already attached, where the native label-trigger doesn't fire.
+
+**Deduplication:** once an issue is picked up, the watcher adds the `ai-queued` label — preventing double-triggering by both the watcher and the native trigger.
+
 ### Workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `feature-build.yml` | Issue labelled `feature-request` | Full 11-stage pipeline |
-| `bug-fix.yml` | Issue labelled `bug` | Bug fix pipeline (no PM) |
+| `feature-build.yml` | Issue labelled `ai-feature` | Full 11-stage pipeline |
+| `bug-fix.yml` | Issue labelled `ai-fix` | Bug fix pipeline (no PM) |
+| `pr-feedback.yml` | Manual / `repository_dispatch` | Engineer → Code Reviewer → QA revision loop |
+| `issue-watcher.yml` | Cron every 15 min | Finds unqueued issues and triggers the above |
 | `run-tests.yml` | PR opened/updated | Runs pytest + docker smoke tests |
-| `setup-labels.yml` | Manual dispatch | Creates `feature-request` and `bug` labels |
+| `setup-labels.yml` | Manual dispatch | Creates required labels |
 
 ---
 
