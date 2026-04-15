@@ -130,6 +130,11 @@ Setup:
         help="Read the requirement from a text file instead of the command line "
              "(e.g. --file requirements.txt). Overrides the positional argument.",
     )
+    parser.add_argument(
+        "--update-skills",
+        action="store_true",
+        help="Re-fetch marketplace skill index and refresh all cached skills, then exit.",
+    )
 
     return parser.parse_args()
 
@@ -230,6 +235,16 @@ def main() -> int:
     except EnvironmentError as e:
         console.print(f"[red]{e}[/red]")
         return 1
+
+    # ── Handle --update-skills ────────────────────────────────────────────────
+    if args.update_skills:
+        if orch.skill_loader:
+            console.print("[bold cyan]🔄 Updating skills from marketplace...[/bold cyan]")
+            orch.skill_loader.update_marketplace()
+            console.print("[bold green]✅ Skills updated.[/bold green]")
+        else:
+            console.print("[yellow]No skill_loader configured.[/yellow]")
+        return 0
 
     # ── Run the pipeline ──────────────────────────────────────────────────────
     try:
