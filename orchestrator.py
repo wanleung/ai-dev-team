@@ -5,9 +5,11 @@ Manages artifact passing, logging, and optional GitHub integration.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1011,24 +1013,53 @@ class Orchestrator:
         return self.workspace_dir / safe / "checkpoint.json"
 
     def _save_checkpoint(self, result: PipelineResult) -> None:
-        """Persist the current pipeline state to disk."""
+        """Persist the current pipeline state to disk.
+
+        Write is atomic (temp file → rename) to prevent a corrupted checkpoint
+        if the process is interrupted mid-write. We also skip saving when
+        completed_stages is empty — there is nothing useful to preserve and an
+        empty checkpoint would shadow any existing good checkpoint at the same path.
+        """
+        if not result.completed_stages:
+            return  # Nothing worth preserving; don't clobber an existing checkpoint.
+
         path = self._checkpoint_path(result)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(result.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+        content = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
+
+        # Write atomically: write to a sibling tmp file, then rename.
+        fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".ckpt_", suffix=".json")
+        try:
+            os.write(fd, content.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, path)  # atomic on POSIX
 
     def _load_checkpoint(self, requirement: str) -> Optional[PipelineResult]:
-        """Load a checkpoint matching this requirement, if one exists."""
-        # Search all subdirs of workspace for a checkpoint with matching requirement
+        """Load the best checkpoint matching this requirement.
+
+        Searches all workspace subdirectories and picks the checkpoint with the
+        most completed stages (so a partial bad run can never cause a rollback).
+        Silently skips files that are missing, unreadable, or contain invalid JSON.
+        """
         if not self.workspace_dir.exists():
             return None
+        best: Optional[PipelineResult] = None
         for checkpoint_file in self.workspace_dir.glob("*/checkpoint.json"):
             try:
                 data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
-                if data.get("requirement") == requirement and data.get("completed_stages"):
-                    return PipelineResult.from_dict(data)
+                if data.get("requirement") != requirement:
+                    continue
+                stages = data.get("completed_stages") or []
+                if not stages:
+                    continue
+                candidate = PipelineResult.from_dict(data)
+                if best is None or len(candidate.completed_stages) > len(best.completed_stages):
+                    best = candidate
             except Exception:
                 continue
-        return None
+        return best
 
     def _clear_checkpoint(self, result: PipelineResult) -> None:
         """Delete the checkpoint file after a successful pipeline run."""
