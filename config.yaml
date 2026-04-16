@@ -17,6 +17,17 @@ llm:
   #   claude-3-5-haiku-20241022    (fastest, cheapest)
   #   claude-3-opus-20240229       (most capable)
   #
+  # ── Ollama (local server, no API key needed) ───────────────────────────
+  #   ollama/llama3.2, ollama/qwen2.5-coder, ollama/mistral, etc.
+  #   Set ollama_url below to point at your Ollama instance.
+  #
+  # ── OpenCode CLI (opencode must be installed and authenticated) ─────────
+  #   opencode/<provider>/<model>  e.g. opencode/anthropic/claude-sonnet-4-5
+  #                                     opencode/openai/gpt-4o
+  #                                     opencode/google/gemini-2.0-flash
+  #   OpenCode auto-selects the underlying provider from its own auth config.
+  #   Run `opencode auth login` first. Override binary with OPENCODE_BIN env var.
+  #
   # Claude models are auto-detected by name prefix "claude-" and will use
   # the Anthropic API automatically. No extra config needed.
   model: "openai/gpt-4.1"

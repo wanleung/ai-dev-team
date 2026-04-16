@@ -1,9 +1,10 @@
 """
-BaseAgent: supports three LLM backends, selectable per-agent via config.yaml.
+BaseAgent: supports four LLM backends, selectable per-agent via config.yaml.
 
   backend: github_models   — GitHub Models API (OpenAI-compatible, uses GITHUB_TOKEN)
   backend: anthropic       — Anthropic Claude API (uses ANTHROPIC_API_KEY)
   backend: ollama          — Local Ollama server (OpenAI-compatible, model prefix "ollama/")
+  backend: opencode        — OpenCode CLI subprocess (model prefix "opencode/")
 
 Default backend is github_models for backwards compatibility.
 """
@@ -11,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -35,13 +38,19 @@ def _is_ollama_model(model: str) -> bool:
     return model.startswith("ollama/")
 
 
+def _is_opencode_model(model: str) -> bool:
+    """Return True if the model should be run via the opencode CLI subprocess."""
+    return model.startswith("opencode/")
+
+
 class BaseAgent:
     """Base class for all software house agents.
 
-    Supports three backends:
+    Supports four backends:
       - github_models: GitHub Models API via OpenAI SDK (GITHUB_TOKEN)
       - anthropic:     Anthropic Claude API (ANTHROPIC_API_KEY)
       - ollama:        Local Ollama server via OpenAI SDK (model prefix "ollama/")
+      - opencode:      OpenCode CLI subprocess (model prefix "opencode/<provider>/<model>")
 
     Backend is auto-selected from the model name unless overridden.
     """
@@ -53,7 +62,7 @@ class BaseAgent:
         model: str = "gpt-4.1",
         github_token: Optional[str] = None,
         roles_dir: Optional[Path] = None,
-        backend: Optional[str] = None,  # "github_models" | "anthropic" | "ollama" | None (auto)
+        backend: Optional[str] = None,  # "github_models" | "anthropic" | "ollama" | "opencode" | None (auto)
         ollama_url: str = "http://localhost:11434",
     ) -> None:
         self.model = model
@@ -70,8 +79,18 @@ class BaseAgent:
         use_ollama = (backend == "ollama") or (
             backend is None and _is_ollama_model(model)
         )
+        use_opencode = (backend == "opencode") or (
+            backend is None and _is_opencode_model(model)
+        )
 
-        if use_anthropic:
+        if use_opencode:
+            self._backend = "opencode"
+            # Strip "opencode/" prefix → remainder is the provider/model for opencode CLI
+            # e.g. "opencode/anthropic/claude-3-5-sonnet" → "anthropic/claude-3-5-sonnet"
+            self._api_model = model.removeprefix("opencode/")
+            self.client = None
+            self._anthropic_client = None
+        elif use_anthropic:
             api_key = os.environ.get("ANTHROPIC_API_KEY")
             if not api_key:
                 raise EnvironmentError(
@@ -155,6 +174,65 @@ class BaseAgent:
                     raise
         raise RuntimeError("All Anthropic retries exhausted")
 
+    def _call_opencode(self, prompt: str, max_retries: int = 2, timeout: int | None = None) -> str:
+        """Run a prompt via the opencode CLI subprocess.
+
+        Builds a combined prompt (system role + conversation history + task) and
+        passes it as a single message to `opencode run --model <provider/model>`.
+        The OPENCODE_BIN environment variable overrides the binary path.
+        """
+        bin_path = os.environ.get("OPENCODE_BIN", "opencode")
+        _timeout = timeout or getattr(self, "timeout", 600)
+
+        # Build combined prompt: system role + conversation history + task
+        parts: list[str] = []
+        if self.system_prompt:
+            parts.append(f"[SYSTEM ROLE]\n{self.system_prompt}")
+        if self._history:
+            history_lines = []
+            for turn in self._history:
+                label = "USER" if turn["role"] == "user" else "ASSISTANT"
+                history_lines.append(f"{label}: {turn['content'][:2000]}")
+            parts.append("[CONVERSATION HISTORY]\n" + "\n\n".join(history_lines))
+        parts.append(prompt)
+        full_prompt = "\n\n".join(parts)
+
+        cmd = [bin_path, "run", "--model", self._api_model, full_prompt]
+
+        for attempt in range(max_retries + 1):
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=_timeout,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"opencode exited {result.returncode}: {result.stderr[:300]}"
+                    )
+                output = result.stdout.strip()
+                if not output:
+                    raise RuntimeError("Empty response from opencode")
+                # Strip ANSI escape codes from formatted output
+                output = re.sub(r"\x1b\[[0-9;]*[mGKHF]", "", output).strip()
+                if not output:
+                    raise RuntimeError("Empty response from opencode after stripping ANSI codes")
+                # Persist to history
+                self._history.append({"role": "user", "content": prompt})
+                self._history.append({"role": "assistant", "content": output})
+                return output
+            except subprocess.TimeoutExpired:
+                if attempt == max_retries:
+                    raise
+                time.sleep(2 ** attempt)
+            except RuntimeError as exc:
+                if attempt == max_retries:
+                    raise
+                time.sleep(2 ** attempt)
+
+        raise RuntimeError("All opencode retries exhausted")
+
     def call_with_tools(
         self,
         user_message: str,
@@ -182,6 +260,11 @@ class BaseAgent:
         Returns:
             The LLM's final text response.
         """
+        if self._backend in ("opencode", "anthropic"):
+            raise NotImplementedError(
+                f"call_with_tools is not supported for the '{self._backend}' backend. "
+                "Use the 'github_models' or 'ollama' backend for tool-calling."
+            )
         full_message = f"{context}\n\n{user_message}" if context else user_message
 
         messages: list[dict] = []
@@ -264,13 +347,16 @@ class BaseAgent:
 
         Maintains conversation history within the same agent instance so the
         LLM has context of what it said earlier in the same pipeline run.
-        Routes to Anthropic Claude API or GitHub Models API based on backend.
+        Routes to Anthropic, GitHub Models, Ollama, or OpenCode based on backend.
         Retries up to 5 times with exponential backoff on rate-limit errors.
         """
         full_message = f"{context}\n\n{user_message}" if context else user_message
 
         if self._backend == "anthropic":
             return self._call_anthropic(full_message)
+
+        if self._backend == "opencode":
+            return self._call_opencode(full_message)
 
         # OpenAI-compatible backends (GitHub Models + Ollama) — include history
         messages: list[dict] = []
