@@ -28,6 +28,16 @@ llm:
   #   OpenCode auto-selects the underlying provider from its own auth config.
   #   Run `opencode auth login` first. Override binary with OPENCODE_BIN env var.
   #
+  # ── OpenCode Zen API (direct HTTP, OPENCODE_ZEN_API_KEY required) ──────
+  #   opencode-zen/<model-id>  e.g. opencode-zen/claude-sonnet-4-6
+  #                                 opencode-zen/gpt-5.3-codex
+  #                                 opencode-zen/gemini-3-flash
+  #   Sign up at https://opencode.ai/auth to get your API key.
+  #   Set env var: OPENCODE_ZEN_API_KEY=<your-key>
+  #   Claude models use the Anthropic Messages endpoint (/messages).
+  #   All other models use the OpenAI chat/completions endpoint.
+  #   Override base URL with OPENCODE_ZEN_BASE_URL env var (e.g. for OpenCode Go).
+  #
   # Claude models are auto-detected by name prefix "claude-" and will use
   # the Anthropic API automatically. No extra config needed.
   model: "openai/gpt-4.1"
