@@ -20,7 +20,8 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **Fully customisable** — add agents, skills, and tools by editing markdown role files and Python tool functions
 - 🧠 **Agent memory** — tiered SQLite memory (run → monthly → quarterly), conversation history within each run, auto-summariser after every pipeline
 - 🌙 **Refactor / dream mode** — `--refactor` flag analyses and cleans up workspace code, opens a cleanup PR
-- 🤖 **Anthropic Claude API** — `claude-*` models auto-routed to Anthropic API; `ANTHROPIC_API_KEY` required
+- 🤖 **6 LLM backends** — GitHub Models (default), Anthropic Claude, Ollama (local), OpenCode CLI, OpenCode Zen API, and OpenCode Go API; switch per-agent with a model prefix
+- **Resilient checkpoints** — atomic writes prevent corruption on Ctrl+C; best-checkpoint-wins logic survives bad config runs
 
 ---
 
@@ -146,6 +147,13 @@ export GITHUB_TOKEN=ghp_your_classic_pat
 > Model names starting with `claude-` are automatically routed to the Anthropic API.
 > `GITHUB_TOKEN` is still required for all GitHub operations.
 
+> **Using OpenCode Zen or Go models?** Export the OpenCode API key:
+> ```bash
+> export OPENCODE_ZEN_API_KEY=your-opencode-api-key
+> ```
+> Both `opencode-zen/` and `opencode-go/` model prefixes share this key.
+> Get one at <https://opencode.ai/auth>.
+
 Edit `config.yaml`:
 ```yaml
 github:
@@ -176,6 +184,69 @@ To use a local [Ollama](https://ollama.com) server instead of GitHub Models or A
    ollama pull llama3.2
    ```
 
+#### Using OpenCode CLI
+
+Run models through the [OpenCode](https://opencode.ai) CLI instead of a direct API:
+
+1. Install and authenticate OpenCode:
+   ```bash
+   npm install -g opencode-ai   # or follow opencode.ai instructions
+   opencode auth login
+   ```
+
+2. Set model names with the `opencode/<provider>/<model>` prefix:
+   ```yaml
+   llm:
+     model: "opencode/anthropic/claude-sonnet-4-5"
+     overrides:
+       engineer: "opencode/openai/gpt-4o"
+   ```
+
+   OpenCode resolves the provider from its own auth config.
+   Override the binary path with `OPENCODE_BIN` if needed.
+
+> ⚠️ OpenCode CLI does **not** support tool-calling. The Code Reviewer agent will fail if assigned an `opencode/` model. Use `opencode-go/` or `opencode-zen/` for tool-calling agents.
+
+#### Using OpenCode Zen API
+
+Direct HTTP access to OpenCode Zen (Claude, GPT, Gemini, and more):
+
+1. Get an API key at <https://opencode.ai/auth> and export it:
+   ```bash
+   export OPENCODE_ZEN_API_KEY=your-key-here
+   ```
+
+2. Use the `opencode-zen/<model-id>` prefix:
+   ```yaml
+   llm:
+     model: "opencode-zen/claude-sonnet-4-6"
+     overrides:
+       engineer: "opencode-zen/gpt-5.3-codex"
+   ```
+
+   Claude models route to the Anthropic Messages endpoint; all others use the OpenAI-compatible endpoint and **support tool-calling**.
+
+#### Using OpenCode Go API
+
+Access the OpenCode Go plan models (Kimi, Qwen, GLM, MiMo, MiniMax):
+
+1. Same API key as Zen — `OPENCODE_ZEN_API_KEY`.
+
+2. Use the `opencode-go/<model-id>` prefix:
+   ```yaml
+   llm:
+     model: "opencode-go/kimi-k2.5"
+     overrides:
+       engineer: "opencode-go/qwen3.6-plus"
+   ```
+
+   | Model ID | Endpoint | Tool-calling |
+   |---|---|---|
+   | `kimi-k2.5`, `qwen3.6-plus`, `qwen3.5-plus`, `glm-5.1`, `glm-5`, `mimo-v2-pro`, `mimo-v2-omni` | `/chat/completions` | ✅ |
+   | `minimax-m2.7`, `minimax-m2.5` | Anthropic `/messages` | ❌ |
+
+   Override the base URL with `OPENCODE_GO_BASE_URL` if needed.
+
 ### 4. Run
 
 ```bash
@@ -185,12 +256,14 @@ python main.py --file requirements/my-app.txt --repo owner/target-repo
 # From a string
 python main.py --requirement "Build a REST API for a todo app" --repo owner/target-repo
 
-# Resume an interrupted run
+# Resume an interrupted run (default — checkpoint auto-detected)
 python main.py --file requirements/my-app.txt --repo owner/target-repo
 
 # Start fresh (ignore checkpoint)
 python main.py --file requirements/my-app.txt --repo owner/target-repo --no-resume
 ```
+
+> **Resume behaviour:** checkpoints are written atomically after each stage completes, so a Ctrl+C or crash mid-stage never corrupts the saved state. If the same requirement has been run before with different config (e.g. a wrong model name), the pipeline automatically picks up the checkpoint with the **most completed stages** — a failed partial run can never roll back progress.
 
 ---
 
@@ -443,10 +516,34 @@ python fix_issue.py --issue 42 --repo owner/ai-software-house --target owner/my-
 ```yaml
 llm:
   # Default model for all agents
-  # Available: gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o4-mini, o3
-  #            claude-3.5-sonnet, claude-3.7-sonnet, claude-3-haiku
-  #            meta-llama-3.3-70b-instruct, mistral-large-2411
-  #            deepseek-r1, deepseek-v3, cohere-command-r-plus
+  # ── GitHub Models (default) ─────────────────────────────────────────────
+  #   gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o4-mini, o3
+  #   claude-3.5-sonnet, claude-3.7-sonnet, claude-3-haiku
+  #   meta-llama-3.3-70b-instruct, mistral-large-2411
+  #   deepseek-r1, deepseek-v3, cohere-command-r-plus
+  #
+  # ── Anthropic Claude API (ANTHROPIC_API_KEY required) ──────────────────
+  #   claude-sonnet-4-6, claude-opus-4-5, claude-3-5-sonnet-20241022, ...
+  #   Any model starting with "claude-" is auto-routed to Anthropic.
+  #
+  # ── Ollama (local, ollama_url below) ───────────────────────────────────
+  #   ollama/llama3.2, ollama/qwen2.5-coder, ollama/mistral, ...
+  #
+  # ── OpenCode CLI (opencode must be installed + authenticated) ───────────
+  #   opencode/<provider>/<model>
+  #     e.g. opencode/anthropic/claude-sonnet-4-5
+  #          opencode/openai/gpt-4o
+  #   ⚠️  Does NOT support tool-calling (Code Reviewer will fail).
+  #
+  # ── OpenCode Zen API (OPENCODE_ZEN_API_KEY required) ───────────────────
+  #   opencode-zen/<model-id>
+  #     e.g. opencode-zen/claude-sonnet-4-6   → Anthropic endpoint
+  #          opencode-zen/gpt-5.3-codex        → OpenAI endpoint (tool-calling ✅)
+  #
+  # ── OpenCode Go API (OPENCODE_ZEN_API_KEY required) ────────────────────
+  #   opencode-go/<model-id>
+  #     e.g. opencode-go/kimi-k2.5, opencode-go/qwen3.6-plus (tool-calling ✅)
+  #          opencode-go/minimax-m2.7           → Anthropic endpoint (no tool-calling)
   model: "gpt-4.1"
 
   # Per-agent model overrides
