@@ -1,5 +1,5 @@
 """
-BaseAgent: supports five LLM backends, selectable per-agent via config.yaml.
+BaseAgent: supports six LLM backends, selectable per-agent via config.yaml.
 
   backend: github_models   — GitHub Models API (OpenAI-compatible, uses GITHUB_TOKEN)
   backend: anthropic       — Anthropic Claude API (uses ANTHROPIC_API_KEY)
@@ -7,6 +7,9 @@ BaseAgent: supports five LLM backends, selectable per-agent via config.yaml.
   backend: opencode        — OpenCode CLI subprocess (model prefix "opencode/")
   backend: opencode_zen    — OpenCode Zen API (direct HTTP, model prefix "opencode-zen/",
                              uses OPENCODE_ZEN_API_KEY; Claude models use the Anthropic
+                             Messages endpoint, all others use chat/completions)
+  backend: opencode_go     — OpenCode Go plan API (direct HTTP, model prefix "opencode-go/",
+                             uses OPENCODE_ZEN_API_KEY; MiniMax models use the Anthropic
                              Messages endpoint, all others use chat/completions)
 
 Default backend is github_models for backwards compatibility.
@@ -51,10 +54,19 @@ def _is_opencode_zen_model(model: str) -> bool:
     return model.startswith("opencode-zen/")
 
 
+# Models on the Go plan that use the Anthropic /messages endpoint instead of chat/completions.
+_OPENCODE_GO_ANTHROPIC_MODELS = {"minimax-m2.7", "minimax-m2.5"}
+
+
+def _is_opencode_go_model(model: str) -> bool:
+    """Return True if the model should use the OpenCode Go plan direct API."""
+    return model.startswith("opencode-go/")
+
+
 class BaseAgent:
     """Base class for all software house agents.
 
-    Supports five backends:
+    Supports six backends:
       - github_models:  GitHub Models API via OpenAI SDK (GITHUB_TOKEN)
       - anthropic:      Anthropic Claude API (ANTHROPIC_API_KEY)
       - ollama:         Local Ollama server via OpenAI SDK (model prefix "ollama/")
@@ -62,6 +74,9 @@ class BaseAgent:
       - opencode_zen:   OpenCode Zen direct API (model prefix "opencode-zen/<model-id>",
                         OPENCODE_ZEN_API_KEY; Claude models route to /messages,
                         others to /chat/completions)
+      - opencode_go:    OpenCode Go plan direct API (model prefix "opencode-go/<model-id>",
+                        OPENCODE_ZEN_API_KEY; MiniMax models route to /messages,
+                        others to /chat/completions — supports tool-calling)
 
     Backend is auto-selected from the model name unless overridden.
     """
@@ -73,10 +88,11 @@ class BaseAgent:
         model: str = "gpt-4.1",
         github_token: Optional[str] = None,
         roles_dir: Optional[Path] = None,
-        backend: Optional[str] = None,  # "github_models" | "anthropic" | "ollama" | "opencode" | "opencode_zen" | None (auto)
+        backend: Optional[str] = None,  # "github_models" | "anthropic" | "ollama" | "opencode" | "opencode_zen" | "opencode_go" | None (auto)
         ollama_url: str = "http://localhost:11434",
         opencode_zen_api_key: Optional[str] = None,
         opencode_zen_base_url: Optional[str] = None,
+        opencode_go_base_url: Optional[str] = None,
     ) -> None:
         self.model = model
         self.system_prompt = self._load_system_prompt(roles_dir)
@@ -89,8 +105,12 @@ class BaseAgent:
         use_opencode_zen = (backend == "opencode_zen") or (
             backend is None and _is_opencode_zen_model(model)
         )
+        use_opencode_go = (backend == "opencode_go") or (
+            backend is None and _is_opencode_go_model(model)
+        )
         use_anthropic = (backend == "anthropic") or (
-            backend is None and not use_opencode_zen and _is_anthropic_model(model)
+            backend is None and not use_opencode_zen and not use_opencode_go
+            and _is_anthropic_model(model)
         )
         use_ollama = (backend == "ollama") or (
             backend is None and _is_ollama_model(model)
@@ -99,7 +119,41 @@ class BaseAgent:
             backend is None and _is_opencode_model(model)
         )
 
-        if use_opencode_zen:
+        if use_opencode_go:
+            self._backend = "opencode_go"
+            # Strip "opencode-go/" prefix → remainder is the model ID for the Go plan API
+            # e.g. "opencode-go/kimi-k2.5" → "kimi-k2.5"
+            self._api_model = model.removeprefix("opencode-go/")
+            go_key = (
+                opencode_zen_api_key
+                or os.environ.get("OPENCODE_ZEN_API_KEY")
+                or os.environ.get("OPENCODE_API_KEY")
+            )
+            if not go_key:
+                raise EnvironmentError(
+                    "OPENCODE_ZEN_API_KEY environment variable is required for the opencode_go backend. "
+                    "Get your key at https://opencode.ai/auth"
+                )
+            go_base = (
+                opencode_go_base_url
+                or os.environ.get("OPENCODE_GO_BASE_URL")
+                or "https://opencode.ai/zen/go/v1"
+            ).rstrip("/")
+
+            if self._api_model in _OPENCODE_GO_ANTHROPIC_MODELS:
+                # MiniMax models: use Anthropic Messages API via Go plan proxy
+                import anthropic as _anthropic
+                self._anthropic_client = _anthropic.Anthropic(
+                    api_key=go_key,
+                    base_url=go_base,
+                )
+                self.client = None
+            else:
+                # All other Go plan models: OpenAI-compatible chat/completions
+                # (supports tool-calling — solves call_with_tools for code_reviewer)
+                self.client = OpenAI(base_url=go_base, api_key=go_key)
+                self._anthropic_client = None
+        elif use_opencode_zen:
             self._backend = "opencode_zen"
             # Strip "opencode-zen/" prefix → remainder is the model ID for the Zen API
             # e.g. "opencode-zen/claude-sonnet-4-6" → "claude-sonnet-4-6"
@@ -310,12 +364,14 @@ class BaseAgent:
             The LLM's final text response.
         """
         if self._backend in ("opencode", "anthropic") or (
-            self._backend == "opencode_zen" and self._anthropic_client is not None
+            self._backend in ("opencode_zen", "opencode_go") and self._anthropic_client is not None
         ):
             raise NotImplementedError(
                 f"call_with_tools is not supported for the '{self._backend}' backend "
-                + ("(Claude models)" if self._backend == "opencode_zen" else "")
-                + ". Use the 'github_models', 'ollama', or 'opencode_zen' (non-Claude) backend for tool-calling."
+                + ("(MiniMax models use Anthropic endpoint)" if self._backend == "opencode_go" else
+                   "(Claude models)" if self._backend == "opencode_zen" else "")
+                + ". Use the 'github_models', 'ollama', 'opencode_zen' (non-Claude), "
+                  "or 'opencode_go' (non-MiniMax) backend for tool-calling."
             )
         full_message = f"{context}\n\n{user_message}" if context else user_message
 
@@ -410,11 +466,11 @@ class BaseAgent:
         if self._backend == "opencode":
             return self._call_opencode(full_message)
 
-        if self._backend == "opencode_zen" and self._anthropic_client is not None:
-            # Claude model routed through Zen's Anthropic-compatible endpoint
+        if self._backend in ("opencode_zen", "opencode_go") and self._anthropic_client is not None:
+            # Claude (zen) or MiniMax (go) routed through Anthropic-compatible endpoint
             return self._call_anthropic(full_message)
 
-        # OpenAI-compatible backends (GitHub Models, Ollama, opencode_zen non-Claude) — include history
+        # OpenAI-compatible backends (GitHub Models, Ollama, opencode_zen/opencode_go non-Anthropic)
         messages: list[dict] = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})

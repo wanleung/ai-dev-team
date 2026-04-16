@@ -35,8 +35,18 @@ llm:
   #   Sign up at https://opencode.ai/auth to get your API key.
   #   Set env var: OPENCODE_ZEN_API_KEY=<your-key>
   #   Claude models use the Anthropic Messages endpoint (/messages).
-  #   All other models use the OpenAI chat/completions endpoint.
-  #   Override base URL with OPENCODE_ZEN_BASE_URL env var (e.g. for OpenCode Go).
+  #   All other models use the OpenAI chat/completions endpoint (supports tool-calling).
+  #   Override base URL with OPENCODE_ZEN_BASE_URL env var.
+  #
+  # ── OpenCode Go plan API (direct HTTP, OPENCODE_ZEN_API_KEY required) ──
+  #   opencode-go/<model-id>   e.g. opencode-go/kimi-k2.5
+  #                                 opencode-go/qwen3.6-plus
+  #                                 opencode-go/glm-5.1
+  #                                 opencode-go/minimax-m2.7
+  #   Same API key as Zen (OPENCODE_ZEN_API_KEY). Get it at https://opencode.ai/auth
+  #   MiniMax models use the Anthropic Messages endpoint (no tool-calling).
+  #   All other Go models use chat/completions — supports tool-calling (fixes Code Reviewer).
+  #   Override base URL with OPENCODE_GO_BASE_URL env var.
   #
   # Claude models are auto-detected by name prefix "claude-" and will use
   # the Anthropic API automatically. No extra config needed.
