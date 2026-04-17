@@ -1022,29 +1022,41 @@ def check_dependencies(package: str) -> str:
 response = agent.call_with_tools("Check if fastapi exists", tools=my_tools)
 ```
 
-### MCP migration path (Option B)
+### Using MCP Servers
 
-The `ToolRegistry` is an abstract base class. To switch to MCP:
+Configure MCP servers in `config.yaml` under the `mcp.servers` key. Tools from all configured servers are automatically merged with the built-in tools and passed to the Code Reviewer and QA Planner agents.
 
-```python
-# tools/mcp_registry.py
-from tools.registry import ToolRegistry
+```yaml
+mcp:
+  servers:
+    - name: github
+      type: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-github"]
+      env:
+        GITHUB_TOKEN: "${GITHUB_TOKEN}"   # expanded from env at runtime
 
-class MCPToolRegistry(ToolRegistry):
-    def __init__(self, server_url: str):
-        self._client = MCPClient(server_url)   # any MCP client library
-
-    @property
-    def schemas(self) -> list[dict]:
-        return self._client.list_tools()       # fetched from MCP server
-
-    def call(self, name: str, arguments: str) -> str:
-        import json
-        return str(self._client.call_tool(name, json.loads(arguments)))
+    - name: my-search
+      type: sse
+      url: "https://mcp.example.com/sse"
+      headers:
+        Authorization: "Bearer ${MCP_API_KEY}"
 ```
 
-Then pass `MCPToolRegistry(server_url)` anywhere `builtin_tools` is used today.  
-**All agent code stays identical** — only the registry implementation changes.
+**Server types:**
+
+| Type | Key fields | Notes |
+|---|---|---|
+| `stdio` | `command`, `args`, `env` | Spawns a local subprocess (e.g. `npx`, `python`) |
+| `sse` | `url`, `headers` | Connects to a remote HTTP/SSE endpoint |
+
+**`${VAR}` expansion** — any value in `env` or `headers` can reference an environment variable as `${MY_VAR}`. Unknown variables are left unexpanded.
+
+**Name collisions** — if two servers expose a tool with the same name, the second is prefixed: `servername__toolname`.
+
+**Install:** `pip install mcp` (or add `mcp>=1.0.0` to `requirements.txt` — already included).
+
+> ⚠️ MCP tool-calling requires a tool-calling-capable backend. The `opencode` CLI backend does **not** support tool calls. Use `github_models`, `anthropic`, `opencode-zen/` (non-Claude), or `opencode-go/` (non-MiniMax) backends.
 
 ---
 
