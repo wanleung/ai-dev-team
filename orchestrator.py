@@ -39,6 +39,7 @@ from agents.memory_consolidator import MemoryConsolidatorAgent
 from github_client import GitHubClient, parse_target_repo
 from memory_store import MemoryStore
 from skills_loader import SkillContext, SkillLoader
+from tools import builtin_tools, CombinedToolRegistry, MCPToolRegistry
 
 console = Console()
 
@@ -172,6 +173,7 @@ class Orchestrator:
         ollama_url: str = "http://localhost:11434",
         max_revisions: int = 3,
         skill_loader: Optional["SkillLoader"] = None,
+        mcp_servers: list[dict] | None = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -184,6 +186,14 @@ class Orchestrator:
         self.ollama_url = ollama_url
         self.max_revisions = max_revisions
         self.skill_loader: Optional[SkillLoader] = skill_loader
+
+        # Build combined tool registry (builtin + optional MCP servers)
+        if mcp_servers:
+            mcp_registry = MCPToolRegistry(mcp_servers)
+            tool_registry = CombinedToolRegistry(builtin_tools, mcp_registry)
+        else:
+            tool_registry = builtin_tools
+        self._tool_registry = tool_registry
 
         # Shared kwargs for all agents
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url}
@@ -198,8 +208,8 @@ class Orchestrator:
         self.architect = ArchitectAgent(model=_model("architect"), **agent_kwargs)
         self.architect_reviewer = ArchitectReviewerAgent(model=_model("architect_reviewer"), **agent_kwargs)
         self.engineer = EngineerAgent(model=_model("engineer"), **agent_kwargs)
-        self.reviewer = CodeReviewerAgent(model=_model("code_reviewer"), **agent_kwargs)
-        self.qa_planner = QAPlannerAgent(model=_model("qa_planner"), **agent_kwargs)
+        self.reviewer = CodeReviewerAgent(model=_model("code_reviewer"), tool_registry=tool_registry, **agent_kwargs)
+        self.qa_planner = QAPlannerAgent(model=_model("qa_planner"), tool_registry=tool_registry, **agent_kwargs)
         self.qa = QAEngineerAgent(model=_model("qa_engineer"), **agent_kwargs)
         self.deployment_tester = DeploymentTesterAgent(model=_model("deployment_tester"), **agent_kwargs)
 
@@ -251,6 +261,8 @@ class Orchestrator:
         gh = cfg.get("github", {})
         team = cfg.get("team", {})
         pipeline = cfg.get("pipeline", {})
+        mcp_cfg = cfg.get("mcp", {})
+        mcp_servers = mcp_cfg.get("servers") or []
 
         skill_loader = SkillLoader(config=cfg)
         skill_loader.init()
@@ -271,6 +283,7 @@ class Orchestrator:
             ollama_url=llm.get("ollama_url", "http://localhost:11434"),
             max_revisions=pipeline.get("max_revisions", 3),
             skill_loader=skill_loader,
+            mcp_servers=mcp_servers,
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
