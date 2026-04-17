@@ -106,3 +106,25 @@ class LocalToolRegistry(ToolRegistry):
     def __repr__(self) -> str:
         names = list(self._functions)
         return f"LocalToolRegistry(tools={names})"
+
+
+class CombinedToolRegistry(ToolRegistry):
+    """Merge two ToolRegistry instances into one.
+
+    Schemas from both are exposed. ``call()`` tries ``primary`` first;
+    if the tool is unknown there it tries ``secondary``.
+    """
+
+    def __init__(self, primary: ToolRegistry, secondary: ToolRegistry) -> None:
+        self._primary = primary
+        self._secondary = secondary
+
+    @property
+    def schemas(self) -> list[dict]:
+        return self._primary.schemas + self._secondary.schemas
+
+    def call(self, name: str, arguments: str) -> str:
+        primary_names = {s["function"]["name"] for s in self._primary.schemas}
+        if name in primary_names:
+            return self._primary.call(name, arguments)
+        return self._secondary.call(name, arguments)
