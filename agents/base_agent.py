@@ -93,9 +93,13 @@ class BaseAgent:
         opencode_zen_api_key: Optional[str] = None,
         opencode_zen_base_url: Optional[str] = None,
         opencode_go_base_url: Optional[str] = None,
+        retry_delay: int = 15,
+        max_api_retries: int = 5,
     ) -> None:
         self.model = model
         self.system_prompt = self._load_system_prompt(roles_dir)
+        self._retry_delay = retry_delay
+        self._max_api_retries = max_api_retries
 
         # Short-term conversation history — persists within a pipeline run.
         # Call agent.reset_history() between unrelated tasks.
@@ -247,8 +251,10 @@ class BaseAgent:
 
         return prompt_file.read_text(encoding="utf-8")
 
-    def _call_anthropic(self, full_message: str, max_retries: int = 5, delay: int = 15) -> str:
+    def _call_anthropic(self, full_message: str, max_retries: int | None = None, delay: int | None = None) -> str:
         """Call the Anthropic Claude API with history and retry on rate limits."""
+        max_retries = max_retries if max_retries is not None else self._max_api_retries
+        delay = delay if delay is not None else self._retry_delay
         # Build messages including history
         messages = list(self._history) + [{"role": "user", "content": full_message}]
         kwargs = dict(
@@ -382,8 +388,8 @@ class BaseAgent:
             messages.append({"role": "system", "content": self.system_prompt})
         messages.append({"role": "user", "content": full_message})
 
-        max_retries = 5
-        delay = 15
+        max_retries = self._max_api_retries
+        delay = self._retry_delay
 
         for turn in range(max_turns):
             # Call the API with tool schemas
@@ -481,8 +487,8 @@ class BaseAgent:
         messages.extend(self._history)
         messages.append({"role": "user", "content": full_message})
 
-        max_retries = 5
-        delay = 15
+        max_retries = self._max_api_retries
+        delay = self._retry_delay
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
