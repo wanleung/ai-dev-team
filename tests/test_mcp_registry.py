@@ -135,6 +135,8 @@ def _build_stdio_registry(monkeypatch, tools_list: list, call_return: str = "ok"
     cm_transport.__aexit__ = AsyncMock(return_value=None)
 
     import tools.mcp_registry as mod
+    monkeypatch.setattr(mod, "_MCP_AVAILABLE", True)
+    monkeypatch.setattr(mod, "_StdioServerParameters", MagicMock)
     monkeypatch.setattr(mod, "_stdio_client", lambda params: cm_transport)
     monkeypatch.setattr(mod, "_ClientSession", lambda r, w: cm_session)
 
@@ -184,6 +186,8 @@ def test_mcp_registry_name_collision_prefixed(monkeypatch):
     cm_transport.__aexit__ = AsyncMock(return_value=None)
 
     import tools.mcp_registry as mod
+    monkeypatch.setattr(mod, "_MCP_AVAILABLE", True)
+    monkeypatch.setattr(mod, "_StdioServerParameters", MagicMock)
     monkeypatch.setattr(mod, "_stdio_client", lambda params: cm_transport)
     monkeypatch.setattr(mod, "_ClientSession", lambda r, w: cm_session)
 
@@ -199,12 +203,14 @@ def test_mcp_registry_name_collision_prefixed(monkeypatch):
 
 def test_mcp_registry_server_connect_failure_skipped(monkeypatch, capsys):
     """A server that fails to connect is skipped; no exception raised."""
-    import tools.mcp_registry as mod
 
     class _FailCM:
         async def __aenter__(self): raise ConnectionError("refused")
         async def __aexit__(self, *a): pass
 
+    import tools.mcp_registry as mod
+    monkeypatch.setattr(mod, "_MCP_AVAILABLE", True)
+    monkeypatch.setattr(mod, "_StdioServerParameters", MagicMock)
     monkeypatch.setattr(mod, "_stdio_client", lambda params: _FailCM())
 
     servers = [{"name": "bad", "type": "stdio", "command": "bad", "args": []}]
