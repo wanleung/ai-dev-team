@@ -3,7 +3,7 @@ CodeReviewerAgent: reviews generated code and provides structured feedback.
 """
 from __future__ import annotations
 
-from tools import builtin_tools
+from tools import builtin_tools, ToolRegistry
 
 from .base_agent import BaseAgent
 
@@ -24,6 +24,10 @@ class CodeReviewerAgent(BaseAgent):
     VERDICT_APPROVE = "APPROVED"
     VERDICT_MINOR = "APPROVED WITH MINOR COMMENTS"
     VERDICT_CHANGES = "CHANGES REQUESTED"
+
+    def __init__(self, *args, tool_registry: "ToolRegistry | None" = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._tool_registry = tool_registry if tool_registry is not None else builtin_tools
 
     def run(self, files: dict[str, str], prd: str, project_name: str = "Project") -> dict:
         """Review all generated code files.
@@ -53,7 +57,7 @@ class CodeReviewerAgent(BaseAgent):
             f"then provide a thorough code review following your role instructions."
         )
 
-        review = self.call_with_tools(prompt, tools=builtin_tools)
+        review = self.call_with_tools(prompt, tools=self._tool_registry)
         verdict = self._extract_verdict(review)
 
         return {
