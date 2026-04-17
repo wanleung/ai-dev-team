@@ -106,6 +106,14 @@ pipeline:
   # Maximum automated revision rounds per PR (0 = disabled)
   max_revisions: 3
 
+  # API retry settings — increase retry_delay if using a rate-limited backend
+  # (e.g. opencode-go plan which throttles frequent calls)
+  # retry_delay: base wait in seconds before first retry; doubles each attempt
+  #   e.g. retry_delay: 30  →  waits 30s, 60s, 120s, 240s
+  # max_api_retries: total attempts per call (including the first)
+  retry_delay: 15
+  max_api_retries: 5
+
 # ── Skills System ────────────────────────────────────────────────────────────
 skills:
   # Skills that are always loaded regardless of project context
@@ -144,5 +152,9 @@ skills:
 #         headers:
 #           Authorization: "Bearer ${MCP_API_KEY}"
 mcp:
-  servers: []
+  servers: 
+   - name: google_search
+     type: sse
+     url: "https://10.100.1.8:8000/mcp"
+
 

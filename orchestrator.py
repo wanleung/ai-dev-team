@@ -174,6 +174,8 @@ class Orchestrator:
         max_revisions: int = 3,
         skill_loader: Optional["SkillLoader"] = None,
         mcp_servers: list[dict] | None = None,
+        retry_delay: int = 15,
+        max_api_retries: int = 5,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -196,7 +198,8 @@ class Orchestrator:
         self._tool_registry = tool_registry
 
         # Shared kwargs for all agents
-        agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url}
+        agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
+                              "retry_delay": retry_delay, "max_api_retries": max_api_retries}
         self.agent_kwargs = agent_kwargs
 
         def _model(agent_name: str) -> str:
@@ -284,6 +287,8 @@ class Orchestrator:
             max_revisions=pipeline.get("max_revisions", 3),
             skill_loader=skill_loader,
             mcp_servers=mcp_servers,
+            retry_delay=pipeline.get("retry_delay", 15),
+            max_api_retries=pipeline.get("max_api_retries", 5),
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
