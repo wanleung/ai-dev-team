@@ -120,3 +120,29 @@ skills:
   # Timeout in seconds for marketplace HTTP requests
   fetch_timeout: 5
 
+# ── MCP Servers ────────────────────────────────────────────────────────────────
+# Configure external MCP servers whose tools will be available to all agents
+# that support tool-calling (Code Reviewer, QA Planner).
+# Leave servers as an empty list (default) to disable MCP.
+#
+# Supported types: stdio (local process) and sse (remote HTTP/SSE URL).
+# Env vars in values are expanded: ${GITHUB_TOKEN} → value of $GITHUB_TOKEN.
+#
+# Example:
+#   mcp:
+#     servers:
+#       - name: github
+#         type: stdio
+#         command: npx
+#         args: ["-y", "@modelcontextprotocol/server-github"]
+#         env:
+#           GITHUB_TOKEN: "${GITHUB_TOKEN}"
+#
+#       - name: search
+#         type: sse
+#         url: "https://mcp.example.com/sse"
+#         headers:
+#           Authorization: "Bearer ${MCP_API_KEY}"
+mcp:
+  servers: []
+
