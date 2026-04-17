@@ -269,9 +269,11 @@ class BaseAgent:
                 return reply
             except Exception as exc:
                 is_rate_limit = "429" in str(exc) or "rate_limit" in str(exc).lower()
-                if is_rate_limit and attempt < max_retries - 1:
+                is_server_error = "500" in str(exc) or "502" in str(exc) or "503" in str(exc) or "504" in str(exc) or "DOCTYPE" in str(exc)
+                if (is_rate_limit or is_server_error) and attempt < max_retries - 1:
                     wait = delay * (2 ** attempt)
-                    print(f"    ⏳ Rate limited (Anthropic) — waiting {wait}s…")
+                    reason = "Rate limited (Anthropic)" if is_rate_limit else "Server error (Anthropic)"
+                    print(f"    ⏳ {reason} — waiting {wait}s… (retry {attempt + 2}/{max_retries})")
                     time.sleep(wait)
                 else:
                     raise
@@ -397,9 +399,11 @@ class BaseAgent:
                     break
                 except Exception as exc:
                     is_rate_limit = "429" in str(exc) or "RateLimitReached" in str(exc)
-                    if is_rate_limit and attempt < max_retries - 1:
+                    is_server_error = "500" in str(exc) or "502" in str(exc) or "503" in str(exc) or "504" in str(exc) or "DOCTYPE" in str(exc)
+                    if (is_rate_limit or is_server_error) and attempt < max_retries - 1:
                         wait = delay * (2 ** attempt)
-                        print(f"    ⏳ Rate limited — waiting {wait}s (turn {turn + 1})…")
+                        reason = "Rate limited" if is_rate_limit else "Server error"
+                        print(f"    ⏳ {reason} — waiting {wait}s (turn {turn + 1}, retry {attempt + 2}/{max_retries})…")
                         time.sleep(wait)
                     else:
                         raise
@@ -493,9 +497,11 @@ class BaseAgent:
                 return reply
             except Exception as exc:
                 is_rate_limit = "429" in str(exc) or "RateLimitReached" in str(exc)
-                if is_rate_limit and attempt < max_retries - 1:
+                is_server_error = "500" in str(exc) or "502" in str(exc) or "503" in str(exc) or "504" in str(exc) or "DOCTYPE" in str(exc)
+                if (is_rate_limit or is_server_error) and attempt < max_retries - 1:
                     wait = delay * (2 ** attempt)
-                    print(f"    ⏳ Rate limited — waiting {wait}s before retry {attempt + 2}/{max_retries}…")
+                    reason = "Rate limited" if is_rate_limit else "Server error"
+                    print(f"    ⏳ {reason} — waiting {wait}s before retry {attempt + 2}/{max_retries}…")
                     time.sleep(wait)
                 else:
                     raise
