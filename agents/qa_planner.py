@@ -4,7 +4,7 @@ module scenarios) that guides the QA Engineer's implementation.
 """
 from __future__ import annotations
 
-from tools import builtin_tools
+from tools import builtin_tools, ToolRegistry
 
 from .base_agent import BaseAgent
 
@@ -21,6 +21,10 @@ class QAPlannerAgent(BaseAgent):
     """
 
     role_name = "qa_planner"
+
+    def __init__(self, *args, tool_registry: "ToolRegistry | None" = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._tool_registry = tool_registry if tool_registry is not None else builtin_tools
 
     def run(
         self,
@@ -65,7 +69,7 @@ class QAPlannerAgent(BaseAgent):
             "Please produce the full Test Plan following your role instructions."
         )
 
-        response = self.call_with_tools(prompt, tools=builtin_tools)
+        response = self.call_with_tools(prompt, tools=self._tool_registry)
         acceptance_criteria = self._extract_ac_ids(response)
 
         return {
