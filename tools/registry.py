@@ -118,13 +118,25 @@ class CombinedToolRegistry(ToolRegistry):
     def __init__(self, primary: ToolRegistry, secondary: ToolRegistry) -> None:
         self._primary = primary
         self._secondary = secondary
+        self._primary_names = {s["function"]["name"] for s in primary.schemas}
 
     @property
     def schemas(self) -> list[dict]:
-        return self._primary.schemas + self._secondary.schemas
+        primary = self._primary.schemas
+        secondary = self._secondary.schemas
+        overlap = [s["function"]["name"] for s in secondary if s["function"]["name"] in self._primary_names]
+        if overlap:
+            import warnings
+            warnings.warn(
+                f"CombinedToolRegistry: name collision in secondary registry: {overlap}",
+                stacklevel=2,
+            )
+        return primary + [s for s in secondary if s["function"]["name"] not in self._primary_names]
 
     def call(self, name: str, arguments: str) -> str:
-        primary_names = {s["function"]["name"] for s in self._primary.schemas}
-        if name in primary_names:
+        if name in self._primary_names:
             return self._primary.call(name, arguments)
         return self._secondary.call(name, arguments)
+
+    def __repr__(self) -> str:
+        return f"CombinedToolRegistry(primary={self._primary!r}, secondary={self._secondary!r})"
