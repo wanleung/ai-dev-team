@@ -178,6 +178,9 @@ class MCPToolRegistry(ToolRegistry):
         try:
             kwargs = json.loads(arguments) if arguments else {}
             server = self._tool_to_server[name]
+            # NOTE: asyncio.run() requires no running event loop. Do NOT call
+            # this from an async context. If agents become async, replace with
+            # `await self._call_tool(...)` directly.
             return asyncio.run(self._call_tool(server, name, kwargs))
         except Exception as exc:
             return f"[ToolError] {name} raised: {exc}"

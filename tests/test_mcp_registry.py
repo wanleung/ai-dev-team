@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from tools.registry import LocalToolRegistry, CombinedToolRegistry
 
@@ -201,18 +201,88 @@ def test_mcp_registry_name_collision_prefixed(monkeypatch):
     assert "srv2__search" in names
 
 
-def test_mcp_registry_server_connect_failure_skipped(monkeypatch, capsys):
+def test_mcp_registry_server_connect_failure_skipped(monkeypatch):
     """A server that fails to connect is skipped; no exception raised."""
+    import warnings
+    import tools.mcp_registry as mod
 
     class _FailCM:
         async def __aenter__(self): raise ConnectionError("refused")
         async def __aexit__(self, *a): pass
 
-    import tools.mcp_registry as mod
     monkeypatch.setattr(mod, "_MCP_AVAILABLE", True)
     monkeypatch.setattr(mod, "_StdioServerParameters", MagicMock)
     monkeypatch.setattr(mod, "_stdio_client", lambda params: _FailCM())
 
     servers = [{"name": "bad", "type": "stdio", "command": "bad", "args": []}]
-    reg = MCPToolRegistry(servers)   # must not raise
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        reg = MCPToolRegistry(servers)
     assert reg.schemas == []
+    assert any("bad" in str(warning.message) for warning in w)
+
+
+def test_mcp_registry_call_returns_tool_error_on_server_error(monkeypatch):
+    """When server returns isError=True, call() returns a [ToolError] string."""
+    call_result = MagicMock()
+    call_result.isError = True
+    call_result.content = []
+
+    list_result = MagicMock()
+    list_result.tools = [_fake_tool("my_tool")]
+
+    session = AsyncMock()
+    session.initialize = AsyncMock(return_value=None)
+    session.list_tools = AsyncMock(return_value=list_result)
+    session.call_tool = AsyncMock(return_value=call_result)
+
+    cm_session = MagicMock()
+    cm_session.__aenter__ = AsyncMock(return_value=session)
+    cm_session.__aexit__ = AsyncMock(return_value=None)
+
+    read_mock = MagicMock()
+    write_mock = MagicMock()
+    cm_transport = MagicMock()
+    cm_transport.__aenter__ = AsyncMock(return_value=(read_mock, write_mock))
+    cm_transport.__aexit__ = AsyncMock(return_value=None)
+
+    import tools.mcp_registry as mod
+    monkeypatch.setattr(mod, "_MCP_AVAILABLE", True)
+    monkeypatch.setattr(mod, "_StdioServerParameters", MagicMock)
+    monkeypatch.setattr(mod, "_stdio_client", lambda params: cm_transport)
+    monkeypatch.setattr(mod, "_ClientSession", lambda r, w: cm_session)
+
+    servers = [{"name": "srv", "type": "stdio", "command": "npx", "args": []}]
+    reg = MCPToolRegistry(servers)
+    result = reg.call("my_tool", "{}")
+    assert "[ToolError]" in result
+
+
+def test_mcp_registry_sse_schemas(monkeypatch):
+    """SSE transport: schemas are fetched via _sse_client."""
+    list_result = MagicMock()
+    list_result.tools = [_fake_tool("sse_tool")]
+
+    session = AsyncMock()
+    session.initialize = AsyncMock(return_value=None)
+    session.list_tools = AsyncMock(return_value=list_result)
+
+    cm_session = MagicMock()
+    cm_session.__aenter__ = AsyncMock(return_value=session)
+    cm_session.__aexit__ = AsyncMock(return_value=None)
+
+    read_mock = MagicMock()
+    write_mock = MagicMock()
+    cm_transport = MagicMock()
+    cm_transport.__aenter__ = AsyncMock(return_value=(read_mock, write_mock))
+    cm_transport.__aexit__ = AsyncMock(return_value=None)
+
+    import tools.mcp_registry as mod
+    monkeypatch.setattr(mod, "_MCP_AVAILABLE", True)
+    monkeypatch.setattr(mod, "_sse_client", lambda url, headers=None: cm_transport)
+    monkeypatch.setattr(mod, "_ClientSession", lambda r, w: cm_session)
+
+    servers = [{"name": "remote", "type": "sse", "url": "https://mcp.example.com/sse"}]
+    reg = MCPToolRegistry(servers)
+    names = [s["function"]["name"] for s in reg.schemas]
+    assert "sse_tool" in names
