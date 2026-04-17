@@ -17,6 +17,8 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **GitHub Actions integration** — label an issue to trigger the full pipeline automatically; 15-minute watcher catches pre-labelled issues too
 - **PR feedback loop** — humans post review comments on AI-generated PRs → Engineer + Code Reviewer + QA automatically re-run, push fixes, and update the PR (up to `max_revisions` rounds)
 - **Tool calling built-in** — Code Reviewer runs `ruff`, QA Planner searches GitHub Issues; any agent can call tools via `call_with_tools()`
+- **MCP server support** — connect any MCP-compatible server (stdio or SSE); tools are automatically merged and injected into tool-calling agents
+- **Pluggable skill system** — skills are markdown files in `skills/` that inject domain-specific guidance into agent prompts; auto-detected from project context (issue body, repo languages) or always-loaded from config
 - **Fully customisable** — add agents, skills, and tools by editing markdown role files and Python tool functions
 - 🧠 **Agent memory** — tiered SQLite memory (run → monthly → quarterly), conversation history within each run, auto-summariser after every pipeline
 - 🌙 **Refactor / dream mode** — `--refactor` flag analyses and cleans up workspace code, opens a cleanup PR
@@ -579,6 +581,15 @@ pipeline:
   stop_on_review_issues: false
   max_retries: 2
   max_revisions: 3        # max automated PR revision rounds (0 = disabled)
+
+skills:
+  always_load: []          # e.g. [security-audit] to always apply
+  marketplace_repo: ""     # e.g. "myorg/ai-software-house-skills"
+  cache_dir: ""            # defaults to ~/.ai-software-house/skills/
+  fetch_timeout: 5
+
+mcp:
+  servers: []              # see "Using MCP Servers" section below
 ```
 
 ---
@@ -968,6 +979,93 @@ ai-software-house/
         ├── memory.md          # Human-readable memory log
         ├── src/               # Generated source files
         └── tests/             # Generated test files
+```
+
+---
+
+## 🎯 Skills System
+
+Skills are markdown files in `skills/` that inject domain-specific guidance into agent prompts at runtime. Each skill targets specific roles (e.g. Architect gets architecture guidance, Engineer gets implementation rules) and is auto-detected from context or always-loaded from config.
+
+### How it works
+
+1. **Detection** — At the start of each run, `SkillLoader` scans the issue body and repo languages for tag matches (e.g. issue mentions "flutter" → `skills/flutter.md` is loaded)
+2. **Role scoping** — Each skill file has a section per role: `## For Engineers`, `## For Architects`, etc. Only the relevant section is injected per agent
+3. **Injection** — Matched skill blocks are prepended to each agent's system prompt as a `## Skills Loaded` block
+
+### Bundled starter skills
+
+| Skill | File | Auto-detects on |
+|---|---|---|
+| Flutter | `skills/flutter.md` | `flutter`, `dart`, `mobile`, `riverpod`, `drift` |
+| FastAPI | `skills/fastapi.md` | `fastapi`, `python`, `api`, `pydantic`, `sqlalchemy` |
+| React | `skills/react.md` | `react`, `typescript`, `frontend`, `nextjs`, `vite` |
+| Security Audit | `skills/security-audit.md` | `security`, `auth`, `jwt`, `oauth` |
+| Docker | `skills/docker.md` | `docker`, `container`, `kubernetes`, `helm` |
+
+### Writing a custom skill
+
+```markdown
+---
+name: my-skill
+description: Brief description
+version: 1.0.0
+roles:
+  architect: true
+  engineer: true
+  code_reviewer: true
+  qa_engineer: true
+  product_manager: false
+  architect_reviewer: false
+  pm_reviewer: false
+tags: [my-tag, another-tag]   # matched against issue body + repo languages
+source: local
+---
+
+# My Skill
+
+## For Architects
+Architecture-level guidance here.
+
+## For Engineers
+Implementation rules here.
+
+## For Code Reviewers
+What to look for in code reviews.
+
+## For QA Engineers
+What to test.
+```
+
+Save it as `skills/my-skill.md`. It will be auto-detected whenever `my-tag` appears in the issue body.
+
+### Configuration
+
+```yaml
+skills:
+  # Always load these skills regardless of project context
+  always_load: [security-audit]
+
+  # Remote marketplace repo (leave empty to use local only)
+  marketplace_repo: ""
+
+  # Marketplace cache dir (defaults to ~/.ai-software-house/skills/)
+  cache_dir: ""
+
+  fetch_timeout: 5
+```
+
+### Force-load a skill from the issue body
+
+Add a line in the GitHub issue:
+```
+skills: docker, security-audit
+```
+
+### Update marketplace skills
+
+```bash
+python main.py --update-skills
 ```
 
 ---
