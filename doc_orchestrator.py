@@ -142,6 +142,13 @@ class DocOrchestrator:
         else:
             target_gh = self.github
 
+        # ── Detect default branch ────────────────────────────────────────────
+        try:
+            repo_info = target_gh._request("GET", f"/repos/{target_gh.repo}")
+            default_branch = repo_info.get("default_branch", "main")
+        except Exception:
+            default_branch = "main"
+
         # ── Create branch ────────────────────────────────────────────────────
         branch = None
         try:
@@ -181,7 +188,7 @@ class DocOrchestrator:
             "🔀 Pull Request",
             "Opening pull request...",
             result,
-            lambda: self._stage_pr(result, target_gh, branch),
+            lambda: self._stage_pr(result, target_gh, branch, default_branch),
         )
 
         # ── Close issue ──────────────────────────────────────────────────────
@@ -229,7 +236,7 @@ class DocOrchestrator:
                 result.errors.append(error_msg)
                 console.print(f"    [red]✗[/red] {error_msg}")
 
-    def _stage_pr(self, result: DocResult, target_gh: GitHubClient, branch: str) -> None:
+    def _stage_pr(self, result: DocResult, target_gh: GitHubClient, branch: str, base: str = "main") -> None:
         """Open a pull request for the committed documentation files."""
         files_list = "\n".join(f"- `{p}`" for p in result.committed_files)
         pr_body = (
@@ -242,7 +249,7 @@ class DocOrchestrator:
             title=f"docs: {result.issue_title}",
             body=pr_body,
             head=branch,
-            base="main",
+            base=base,
         )
         result.pr_number = pr.get("number")
         result.pr_url = pr.get("html_url")
