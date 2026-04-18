@@ -173,6 +173,7 @@ class TestDispatchDocumentation:
         call_kwargs = mock_orch_class.call_args.kwargs
         assert call_kwargs.get("model") == "gpt-4o"
         assert call_kwargs.get("github_repo") == "myorg/myrepo"
+        assert "github_token" in call_kwargs
 
 
 # ── watch(): queuing logic ────────────────────────────────────────────────────
