@@ -78,21 +78,31 @@ def remove_label(repo: str, issue_number: int, label: str) -> None:
     requests.delete(url, headers=_gh_headers(), timeout=10)
 
 
-def get_open_issues(repo: str, label: str) -> list[dict]:
-    """Return open issues with the given label that haven't been processed."""
-    url = f"https://api.github.com/repos/{repo}/issues"
-    params = {"state": "open", "labels": label, "per_page": 50}
-    resp = requests.get(url, headers=_gh_headers(), params=params, timeout=10)
-    if not resp.ok:
-        raise RuntimeError(f"GitHub API error {resp.status_code}: {resp.text[:200]}")
-    issues = []
-    for issue in resp.json():
-        if "pull_request" in issue:
-            continue  # skip PRs
-        issue_labels = {l["name"] for l in issue.get("labels", [])}
-        if issue_labels & SKIP_LABELS:
-            continue  # already processed or in progress
-        issues.append(issue)
+def get_open_issues(repo: str, label: str | list[str]) -> list[dict]:
+    """Return open issues with the given label(s) that haven't been processed.
+
+    label may be a single string or a list; issues matching ANY label are returned
+    (deduped by issue number).
+    """
+    labels = [label] if isinstance(label, str) else list(label)
+    seen: set[int] = set()
+    issues: list[dict] = []
+    for lbl in labels:
+        url = f"https://api.github.com/repos/{repo}/issues"
+        params = {"state": "open", "labels": lbl, "per_page": 50}
+        resp = requests.get(url, headers=_gh_headers(), params=params, timeout=10)
+        if not resp.ok:
+            raise RuntimeError(f"GitHub API error {resp.status_code}: {resp.text[:200]}")
+        for issue in resp.json():
+            if "pull_request" in issue:
+                continue  # skip PRs
+            if issue["number"] in seen:
+                continue  # already added via another label
+            issue_labels = {l["name"] for l in issue.get("labels", [])}
+            if issue_labels & SKIP_LABELS:
+                continue  # already processed or in progress
+            seen.add(issue["number"])
+            issues.append(issue)
     return issues
 
 
