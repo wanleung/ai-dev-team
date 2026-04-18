@@ -95,11 +95,13 @@ class BaseAgent:
         opencode_go_base_url: Optional[str] = None,
         retry_delay: int = 15,
         max_api_retries: int = 5,
+        inter_call_delay: int = 0,
     ) -> None:
         self.model = model
         self.system_prompt = self._load_system_prompt(roles_dir)
         self._retry_delay = retry_delay
         self._max_api_retries = max_api_retries
+        self._inter_call_delay = inter_call_delay
 
         # Short-term conversation history — persists within a pipeline run.
         # Call agent.reset_history() between unrelated tasks.
@@ -267,6 +269,8 @@ class BaseAgent:
 
         for attempt in range(max_retries):
             try:
+                if self._inter_call_delay > 0 and attempt == 0:
+                    time.sleep(self._inter_call_delay)
                 response = self._anthropic_client.messages.create(**kwargs)
                 reply = response.content[0].text
                 # Update history
@@ -395,6 +399,8 @@ class BaseAgent:
             # Call the API with tool schemas
             for attempt in range(max_retries):
                 try:
+                    if self._inter_call_delay > 0 and attempt == 0:
+                        time.sleep(self._inter_call_delay)
                     response = self.client.chat.completions.create(
                         model=self._api_model,
                         messages=messages,
@@ -491,6 +497,8 @@ class BaseAgent:
         delay = self._retry_delay
         for attempt in range(max_retries):
             try:
+                if self._inter_call_delay > 0 and attempt == 0:
+                    time.sleep(self._inter_call_delay)
                 response = self.client.chat.completions.create(
                     model=self._api_model,
                     messages=messages,

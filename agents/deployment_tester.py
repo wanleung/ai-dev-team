@@ -112,6 +112,7 @@ class DeploymentTesterAgent(BaseAgent):
             }
 
     def _run_via_script(self, script: Path, project_dir: Path) -> dict:
+        script = script.resolve()
         script.chmod(0o755)
         proc = subprocess.run(
             ["bash", str(script)],
