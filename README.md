@@ -778,9 +778,9 @@ settings:
 
 Label an issue `documentation` (configurable via `doc_label` in `repos.yaml`) to trigger a lightweight doc-update pipeline — no PM, Architect, or Engineers involved:
 
-1. **DocumentationAgent** reads existing docs and source files from the target repo via GitHub API tools
-2. Agent writes/updates files and commits them to a branch `doc/<issue-number>-<slug>`
-3. A PR is opened automatically, referencing and closing the issue
+1. **DocumentationAgent** pre-reads existing docs and source files from the target repo via GitHub API (auto-detects default branch — works with `main`, `master`, etc.)
+2. File content is injected directly into the prompt; the agent writes/updates files and returns a JSON list of changes
+3. Files are committed to a branch `doc/<issue-number>-<slug>` and a PR is opened automatically, referencing and closing the issue
 
 **Issue body format:**
 ```
@@ -790,7 +790,8 @@ Update the README installation section and add a troubleshooting guide.
 **Target repo:** owner/my-app
 ```
 
-`**Docs:**` is optional — if omitted, the agent discovers relevant files itself via `list_files` and `search_files`.
+- `**Docs:**` is optional — if omitted, the agent auto-discovers `.md` files in the repo (up to 5)
+- `**Target repo:**` is optional — if omitted, the watcher's repo is used
 
 ### Install cron job (runs every hour at :00)
 
