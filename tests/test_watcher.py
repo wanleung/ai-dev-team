@@ -15,6 +15,14 @@ import watcher
 from watcher import _dispatch, watch
 
 
+# ── Shared fixture — prevent _dispatch from reading real config.yaml ──────────
+
+@pytest.fixture(autouse=True)
+def _no_pipeline_config(monkeypatch):
+    """Prevent _dispatch from loading config.yaml so tests control model/settings."""
+    monkeypatch.setattr("watcher._load_pipeline_config", lambda: {})
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_logger() -> logging.Logger:

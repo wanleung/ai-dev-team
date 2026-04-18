@@ -179,6 +179,27 @@ def run_pipeline(
         return False
 
 
+def _load_pipeline_config() -> dict:
+    """Load config.yaml + config.local.yaml from the script directory.
+
+    Returns the merged config dict with llm and pipeline sections.
+    """
+    script_dir = Path(__file__).parent
+    cfg: dict = {}
+    for name in ("config.yaml", "config.local.yaml"):
+        p = script_dir / name
+        if p.exists():
+            with open(p, encoding="utf-8") as f:
+                local = yaml.safe_load(f) or {}
+            # Deep merge: local overrides base
+            for section, val in local.items():
+                if isinstance(val, dict) and isinstance(cfg.get(section), dict):
+                    cfg[section] = {**cfg.get(section, {}), **val}
+                else:
+                    cfg[section] = val
+    return cfg
+
+
 def _dispatch(
     pipeline_type: str,
     tracker_repo: str,
@@ -191,6 +212,21 @@ def _dispatch(
 ) -> None:
     """Import and run the correct orchestrator."""
     token = os.environ.get("GITHUB_TOKEN")
+
+    # Load config.yaml (+ config.local.yaml) to pick up model overrides and
+    # pipeline tuning — these are NOT in repos.yaml.
+    pipeline_cfg = _load_pipeline_config()
+    llm_cfg = pipeline_cfg.get("llm", {})
+    pipe_cfg = pipeline_cfg.get("pipeline", {})
+    # Use config model if set (and not the placeholder default); else fall back
+    # to the model passed from repos.yaml settings.
+    cfg_model = llm_cfg.get("model", "") or ""
+    effective_model = cfg_model if cfg_model and cfg_model != "gpt-4.1" else model
+    model_overrides = llm_cfg.get("overrides", {})
+    ollama_url = llm_cfg.get("ollama_url", "http://localhost:11434")
+    retry_delay = pipe_cfg.get("retry_delay", 15)
+    max_api_retries = pipe_cfg.get("max_api_retries", 5)
+    inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
 
     # Redirect stdout/stderr to the issue log file for this run
     with open(log_file, "w", encoding="utf-8") as fh:
@@ -207,12 +243,17 @@ def _dispatch(
                 requirement = (issue_body or issue.get("title") or "").strip()
 
                 orch = Orchestrator(
-                    model=model,
+                    model=effective_model,
+                    model_overrides=model_overrides,
                     github_token=token,
                     github_repo=tracker_repo,
                     target_repo=target_repo,
                     num_engineers=num_engineers,
                     use_github=True,
+                    ollama_url=ollama_url,
+                    retry_delay=retry_delay,
+                    max_api_retries=max_api_retries,
+                    inter_call_delay=inter_call_delay,
                 )
                 orch.run(requirement, trigger_issue_body=issue_body)
 
@@ -220,7 +261,7 @@ def _dispatch(
                 from bug_fix_orchestrator import BugFixOrchestrator
 
                 orch = BugFixOrchestrator(
-                    model=model,
+                    model=effective_model,
                     github_token=token,
                     github_repo=tracker_repo,
                 )
@@ -230,7 +271,7 @@ def _dispatch(
                 from doc_orchestrator import DocOrchestrator
 
                 orch = DocOrchestrator(
-                    model=model,
+                    model=effective_model,
                     github_token=token,
                     github_repo=tracker_repo,
                 )
