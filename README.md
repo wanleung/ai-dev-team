@@ -803,8 +803,8 @@ chmod +x setup_cron.sh
 Or manually:
 ```bash
 crontab -e
-# Add this line:
-0 * * * * cd /home/you/ai-software-house && source venv/bin/activate && python watcher.py >> logs/watcher/cron.log 2>&1
+# Add this line (use the venv python directly — 'source activate' breaks in cron's /bin/sh):
+0 * * * * cd /home/you/ai-software-house && venv/bin/python watcher.py >> logs/watcher/cron.log 2>&1
 ```
 
 ### Manual / test runs

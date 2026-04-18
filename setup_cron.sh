@@ -11,14 +11,14 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV="$SCRIPT_DIR/venv/bin/activate"
+VENV_PYTHON="$SCRIPT_DIR/venv/bin/python"
 WATCHER="$SCRIPT_DIR/watcher.py"
 LOG_DIR="$SCRIPT_DIR/logs/watcher"
 
 mkdir -p "$LOG_DIR"
 
-# The cron command
-CRON_CMD="0 * * * * cd $SCRIPT_DIR && source $VENV && python $WATCHER >> $LOG_DIR/cron.log 2>&1"
+# Use the venv python directly — 'source activate' is bash-specific and breaks in cron's /bin/sh
+CRON_CMD="0 * * * * cd $SCRIPT_DIR && $VENV_PYTHON $WATCHER >> $LOG_DIR/cron.log 2>&1"
 
 # Add only if not already present
 if crontab -l 2>/dev/null | grep -qF "ai-software-house.*watcher.py"; then
@@ -34,6 +34,6 @@ echo ""
 echo "Useful commands:"
 echo "  View cron jobs:          crontab -l"
 echo "  View today's log:        tail -f $LOG_DIR/cron.log"
-echo "  Run manually now:        cd $SCRIPT_DIR && source venv/bin/activate && python watcher.py"
-echo "  Dry run (no changes):    cd $SCRIPT_DIR && source venv/bin/activate && python watcher.py --dry-run"
+echo "  Run manually now:        cd $SCRIPT_DIR && venv/bin/python watcher.py"
+echo "  Dry run (no changes):    cd $SCRIPT_DIR && venv/bin/python watcher.py --dry-run"
 echo "  Remove cron job:         crontab -e  (delete the watcher.py line)"
