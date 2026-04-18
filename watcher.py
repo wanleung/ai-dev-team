@@ -208,7 +208,7 @@ def _dispatch(
                 orch = Orchestrator(
                     model=model,
                     github_token=token,
-                    tracker_repo=tracker_repo,
+                    github_repo=tracker_repo,
                     target_repo=target_repo,
                     num_engineers=num_engineers,
                 )
@@ -220,8 +220,7 @@ def _dispatch(
                 orch = BugFixOrchestrator(
                     model=model,
                     github_token=token,
-                    tracker_repo=tracker_repo,
-                    target_repo=target_repo,
+                    github_repo=tracker_repo,
                 )
                 orch.run(issue_number=issue_number)
         finally:
