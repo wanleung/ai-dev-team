@@ -193,3 +193,12 @@ def test_search_files_specific_name():
     with patch.object(client, "_request", return_value=tree):
         result = client.search_files("README.md", ref="main")
     assert result == ["README.md"]
+
+
+def test_list_files_single_file_response():
+    """GitHub returns a single dict when path points directly to a file."""
+    client = GitHubClient("owner/repo", github_token="tok")
+    file_response = {"name": "README.md", "type": "file", "path": "docs/README.md"}
+    with patch.object(client, "_request", return_value=file_response):
+        result = client.list_files("docs/README.md", ref="main")
+    assert result == [{"name": "README.md", "type": "file", "path": "docs/README.md"}]
