@@ -203,7 +203,8 @@ def _dispatch(
 
                 tracker_gh = GitHubClient(tracker_repo, token)
                 issue = tracker_gh.get_issue(issue_number)
-                requirement = (issue.get("body") or issue.get("title") or "").strip()
+                issue_body = issue.get("body") or ""
+                requirement = (issue_body or issue.get("title") or "").strip()
 
                 orch = Orchestrator(
                     model=model,
@@ -212,7 +213,7 @@ def _dispatch(
                     target_repo=target_repo,
                     num_engineers=num_engineers,
                 )
-                orch.run(requirement, issue_number=issue_number)
+                orch.run(requirement, trigger_issue_body=issue_body)
 
             elif pipeline_type == "bug":
                 from bug_fix_orchestrator import BugFixOrchestrator
