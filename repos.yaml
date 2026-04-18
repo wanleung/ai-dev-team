@@ -19,7 +19,7 @@ watchers:
     # Multiple trigger labels: "feature-request" OR "ai-build" both work.
     # Target repo is read from the issue body ("**Target repo:** owner/repo").
   - tracker_repo: wanleung/ai-software-house
-    default_target: wanleung/test-mobile-01
+    default_target: ~
     feature_label:
       - feature-request
       - ai-build
@@ -27,6 +27,7 @@ watchers:
     bug_label:
       - bug
       - ai-fix
+    doc_label: documentation
     enabled: true
 
     # ── Watcher 2: Project repo watches itself ─────────────────────────────
@@ -35,6 +36,7 @@ watchers:
     default_target: ~                    # null = same repo as tracker
     feature_label: feature-request       # single label is fine too
     bug_label: bug
+    doc_label: documentation
     enabled: false                       # set to true to activate
 
     # ── Watcher 3: Separate tracker + fixed target ─────────────────────────
@@ -48,7 +50,18 @@ watchers:
   #   bug_label: bug
   #   enabled: true
 
-# ── Global watcher settings ────────────────────────────────────────────────
+  - tracker_repo: wanleung/mcp-tfl
+    default_target: ~
+    feature_label:
+      - feature-request
+      - ai-build
+      - enhancement
+      - ai-feautre
+    bug_label:
+      - bug
+      - ai-fix
+    doc_label: documentation
+    enabled: true ────────────────────────────────────────────────
 settings:
   # Maximum parallel pipeline runs (one per issue)
   max_parallel: 3
@@ -57,7 +70,7 @@ settings:
   log_dir: ./logs/watcher
 
   # Number of engineer agents per pipeline run
-  num_engineers: 2
+  num_engineers: 1
 
   # Default LLM model (overridden by config.yaml per-agent settings)
   model: "gpt-4.1"
