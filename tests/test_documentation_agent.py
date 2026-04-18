@@ -104,3 +104,27 @@ def test_system_prompt_set():
     assert "read_file" in agent.system_prompt
     assert "search_files" in agent.system_prompt
     assert "JSON array" in agent.system_prompt
+
+
+def test_target_hint_injected_into_prompt():
+    """Verify that doc targets parsed from issue body appear in the prompt passed to call_with_tools."""
+    file_writes = [{"path": "README.md", "content": "# Updated\n", "action": "update"}]
+    mock_gh = _make_mock_gh()
+    with patch("agents.documentation_agent.LocalToolRegistry"), \
+         patch.object(
+             DocumentationAgent,
+             "call_with_tools",
+             return_value=json.dumps(file_writes),
+         ) as mock_call:
+        agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
+        agent.run(
+            issue_title="T",
+            issue_body="Body\n\n**Docs:** README.md",
+            github_client=mock_gh,
+        )
+
+    # The first positional argument to call_with_tools is the user_message
+    _, call_kwargs = mock_call.call_args
+    user_message = mock_call.call_args[1].get("user_message") or mock_call.call_args[0][0]
+    assert "Explicit documentation targets" in user_message
+    assert "README.md" in user_message

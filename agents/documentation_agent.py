@@ -18,7 +18,7 @@ class DocumentationAgent(BaseAgent):
 
     def _parse_doc_targets(self, body: str) -> list[str]:
         """Extract file targets from 'Docs: file1, file2' or '**Docs:** file1, file2' in issue body."""
-        m = re.search(r"\*{0,2}Docs:\*{0,2}\s*(.+)", body)
+        m = re.search(r"(?<!\w)\*{0,2}Docs:\*{0,2}\s*(.+)", body)
         if not m:
             return []
         return [p.strip() for p in m.group(1).split(",") if p.strip()]
@@ -110,7 +110,10 @@ class DocumentationAgent(BaseAgent):
         except json.JSONDecodeError:
             m = re.search(r"\[.*?\]", raw, re.DOTALL)
             if m:
-                file_writes = json.loads(m.group(0))
+                try:
+                    file_writes = json.loads(m.group(0))
+                except json.JSONDecodeError:
+                    return []
             else:
                 return []
 
