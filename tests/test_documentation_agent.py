@@ -13,7 +13,12 @@ def _make_agent():
 
 def _make_mock_gh():
     """Return a MagicMock standing in for a GitHubClient."""
-    return MagicMock()
+    mock = MagicMock()
+    mock._request.return_value = {"default_branch": "master"}
+    mock.list_files.return_value = []
+    mock.search_files.return_value = []
+    mock.get_file_content.return_value = None
+    return mock
 
 
 def test_parse_doc_targets_from_body():
@@ -42,8 +47,7 @@ def test_run_returns_file_writes():
         {"path": "README.md", "content": "# Updated\n", "action": "update"}
     ]
     mock_gh = _make_mock_gh()
-    with patch("agents.documentation_agent.LocalToolRegistry"), \
-         patch.object(DocumentationAgent, "call_with_tools", return_value=json.dumps(file_writes)):
+    with patch.object(DocumentationAgent, "call", return_value=json.dumps(file_writes)):
         agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
         result = agent.run(
             issue_title="Update README",
@@ -57,8 +61,7 @@ def test_run_returns_file_writes():
 
 def test_run_raises_on_empty_writes():
     mock_gh = _make_mock_gh()
-    with patch("agents.documentation_agent.LocalToolRegistry"), \
-         patch.object(DocumentationAgent, "call_with_tools", return_value="[]"):
+    with patch.object(DocumentationAgent, "call", return_value="[]"):
         agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
         with pytest.raises(ValueError, match="no file writes"):
             agent.run(
@@ -73,8 +76,7 @@ def test_run_parses_json_embedded_in_text():
     file_writes = [{"path": "docs/guide.md", "content": "# Guide\n", "action": "create"}]
     raw = f"Here are the updates:\n\n{json.dumps(file_writes)}\n\nDone!"
     mock_gh = _make_mock_gh()
-    with patch("agents.documentation_agent.LocalToolRegistry"), \
-         patch.object(DocumentationAgent, "call_with_tools", return_value=raw):
+    with patch.object(DocumentationAgent, "call", return_value=raw):
         agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
         result = agent.run(
             issue_title="Add guide",
@@ -85,10 +87,9 @@ def test_run_parses_json_embedded_in_text():
 
 
 def test_run_returns_empty_on_unparseable_response():
-    """When call_with_tools returns garbage, run() should return []."""
+    """When call() returns garbage, run() should return []."""
     mock_gh = _make_mock_gh()
-    with patch("agents.documentation_agent.LocalToolRegistry"), \
-         patch.object(DocumentationAgent, "call_with_tools", return_value="totally unparseable garbage!!!"):
+    with patch.object(DocumentationAgent, "call", return_value="totally unparseable garbage!!!"):
         agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
         result = agent.run(
             issue_title="Some issue",
@@ -111,12 +112,7 @@ def test_target_hint_injected_into_prompt():
     file_writes = [{"path": "README.md", "content": "# Updated\n", "action": "update"}]
     mock_gh = _make_mock_gh()
     mock_gh.get_file_content.return_value = "# Existing README content"
-    with patch("agents.documentation_agent.LocalToolRegistry"), \
-         patch.object(
-             DocumentationAgent,
-             "call_with_tools",
-             return_value=json.dumps(file_writes),
-         ) as mock_call:
+    with patch.object(DocumentationAgent, "call", return_value=json.dumps(file_writes)) as mock_call:
         agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
         agent.run(
             issue_title="T",
@@ -125,6 +121,5 @@ def test_target_hint_injected_into_prompt():
         )
 
     user_message = mock_call.call_args[1].get("user_message") or mock_call.call_args[0][0]
-    # The file path and its content should appear in the injected context
     assert "README.md" in user_message
     assert "File: README.md" in user_message
