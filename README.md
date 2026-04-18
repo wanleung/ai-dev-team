@@ -758,6 +758,7 @@ watchers:
     default_target: wanleung/my-app            # default target repo for code
     feature_label: feature-request
     bug_label: bug
+    doc_label: documentation
     enabled: true
 
   - tracker_repo: wanleung/another-project     # watch a second repo
@@ -772,6 +773,24 @@ settings:
 ```
 
 > Use `**Target repo:** owner/repo` in the issue body to route code to a different repo than `default_target`.
+
+### `doc_label` — Documentation-only pipeline
+
+Label an issue `documentation` (configurable via `doc_label` in `repos.yaml`) to trigger a lightweight doc-update pipeline — no PM, Architect, or Engineers involved:
+
+1. **DocumentationAgent** reads existing docs and source files from the target repo via GitHub API tools
+2. Agent writes/updates files and commits them to a branch `doc/<issue-number>-<slug>`
+3. A PR is opened automatically, referencing and closing the issue
+
+**Issue body format:**
+```
+Update the README installation section and add a troubleshooting guide.
+
+**Docs:** README.md, docs/troubleshooting.md
+**Target repo:** owner/my-app
+```
+
+`**Docs:**` is optional — if omitted, the agent discovers relevant files itself via `list_files` and `search_files`.
 
 ### Install cron job (runs every hour at :00)
 
