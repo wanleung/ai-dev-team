@@ -300,6 +300,48 @@ class GitHubClient:
         except Exception:
             return None
 
+    def list_files(self, path: str = "", ref: Optional[str] = None) -> list[dict]:
+        """List files and directories at `path` in the repo.
+
+        Returns a list of dicts with keys: name, type ('file'|'dir'), path.
+        """
+        params: dict = {}
+        if ref:
+            params["ref"] = ref
+        url_path = f"/repos/{self.repo}/contents/{path}".rstrip("/")
+        result = self._request("GET", url_path, params=params or None)
+        if isinstance(result, list):
+            return [{"name": e["name"], "type": e["type"] if e["type"] != "dir" else "dir", "path": e["path"]} for e in result]
+        # Single file returned (happens when path points to a file, not dir)
+        return [{"name": result["name"], "type": "file", "path": result["path"]}]
+
+    def search_files(self, pattern: str, ref: Optional[str] = None) -> list[str]:
+        """Return all file paths in the repo matching a glob pattern.
+
+        Uses the git tree API (recursive) — pattern matched with fnmatch.
+        Returns list of file paths (blobs only, no trees).
+        """
+        from pathlib import PurePath
+        
+        sha = ref or self.get_default_branch()
+        tree_data = self._request(
+            "GET", f"/repos/{self.repo}/git/trees/{sha}", params={"recursive": "1"}
+        )
+        blobs = [e["path"] for e in tree_data.get("tree", []) if e["type"] == "blob"]
+        
+        # Match paths against glob pattern
+        # Handle ** which should match zero or more path segments
+        def match_glob(path: str, pattern: str) -> bool:
+            if PurePath(path).match(pattern):
+                return True
+            # If pattern starts with **, also try without it (zero directories)
+            if pattern.startswith('**/'):
+                if PurePath(path).match(pattern[3:]):
+                    return True
+            return False
+        
+        return [p for p in blobs if match_glob(p, pattern)]
+
     def get_issue_comments(self, issue_number: int) -> list:
         """Return all comments on an issue (or PR timeline)."""
         return self._request("GET", f"/repos/{self.repo}/issues/{issue_number}/comments")
