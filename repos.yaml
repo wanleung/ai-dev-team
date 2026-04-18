@@ -56,12 +56,12 @@ watchers:
       - feature-request
       - ai-build
       - enhancement
-      - ai-feautre
+      - ai-feature
     bug_label:
       - bug
       - ai-fix
     doc_label: documentation
-    enabled: true ────────────────────────────────────────────────
+    enabled: true
 settings:
   # Maximum parallel pipeline runs (one per issue)
   max_parallel: 3

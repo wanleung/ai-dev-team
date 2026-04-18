@@ -234,6 +234,12 @@ def _dispatch(
                     github_repo=tracker_repo,
                 )
                 orch.run(issue_number=issue_number)
+            else:
+                logger.error(
+                    "Unknown pipeline_type=%r — skipping issue #%d",
+                    pipeline_type,
+                    issue_number,
+                )
         finally:
             sys.stdout, sys.stderr = old_stdout, old_stderr
 
