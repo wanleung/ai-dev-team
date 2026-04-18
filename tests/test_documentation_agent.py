@@ -7,9 +7,13 @@ from agents.documentation_agent import DocumentationAgent
 
 def _make_agent():
     """Create a DocumentationAgent with mocked internals (no real API calls)."""
-    with patch("agents.documentation_agent.GitHubClient"):
-        agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
+    agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
     return agent
+
+
+def _make_mock_gh():
+    """Return a MagicMock standing in for a GitHubClient."""
+    return MagicMock()
 
 
 def test_parse_doc_targets_from_body():
@@ -25,19 +29,26 @@ def test_parse_doc_targets_missing():
     assert result == []
 
 
+def test_parse_doc_targets_plain_format():
+    """Plain 'Docs: file1, file2' format (no asterisks) should be parsed."""
+    agent = _make_agent()
+    body = "Please update the docs.\n\nDocs: README.md, docs/api.md"
+    result = agent._parse_doc_targets(body)
+    assert result == ["README.md", "docs/api.md"]
+
+
 def test_run_returns_file_writes():
     file_writes = [
         {"path": "README.md", "content": "# Updated\n", "action": "update"}
     ]
-    with patch("agents.documentation_agent.GitHubClient"), \
-         patch("agents.documentation_agent.LocalToolRegistry"), \
+    mock_gh = _make_mock_gh()
+    with patch("agents.documentation_agent.LocalToolRegistry"), \
          patch.object(DocumentationAgent, "call_with_tools", return_value=json.dumps(file_writes)):
         agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
         result = agent.run(
             issue_title="Update README",
             issue_body="Please update the README.\n\n**Docs:** README.md",
-            target_repo="owner/repo",
-            github_token="tok",
+            github_client=mock_gh,
         )
     assert isinstance(result, list)
     assert result[0]["path"] == "README.md"
@@ -45,16 +56,15 @@ def test_run_returns_file_writes():
 
 
 def test_run_raises_on_empty_writes():
-    with patch("agents.documentation_agent.GitHubClient"), \
-         patch("agents.documentation_agent.LocalToolRegistry"), \
+    mock_gh = _make_mock_gh()
+    with patch("agents.documentation_agent.LocalToolRegistry"), \
          patch.object(DocumentationAgent, "call_with_tools", return_value="[]"):
         agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
         with pytest.raises(ValueError, match="no file writes"):
             agent.run(
                 issue_title="Update README",
                 issue_body="Please update the README.",
-                target_repo="owner/repo",
-                github_token="tok",
+                github_client=mock_gh,
             )
 
 
@@ -62,17 +72,30 @@ def test_run_parses_json_embedded_in_text():
     """Agent sometimes wraps JSON in text — verify extraction still works."""
     file_writes = [{"path": "docs/guide.md", "content": "# Guide\n", "action": "create"}]
     raw = f"Here are the updates:\n\n{json.dumps(file_writes)}\n\nDone!"
-    with patch("agents.documentation_agent.GitHubClient"), \
-         patch("agents.documentation_agent.LocalToolRegistry"), \
+    mock_gh = _make_mock_gh()
+    with patch("agents.documentation_agent.LocalToolRegistry"), \
          patch.object(DocumentationAgent, "call_with_tools", return_value=raw):
         agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
         result = agent.run(
             issue_title="Add guide",
             issue_body="Add a new guide.",
-            target_repo="owner/repo",
-            github_token="tok",
+            github_client=mock_gh,
         )
     assert result[0]["path"] == "docs/guide.md"
+
+
+def test_run_returns_empty_on_unparseable_response():
+    """When call_with_tools returns garbage, run() should return []."""
+    mock_gh = _make_mock_gh()
+    with patch("agents.documentation_agent.LocalToolRegistry"), \
+         patch.object(DocumentationAgent, "call_with_tools", return_value="totally unparseable garbage!!!"):
+        agent = DocumentationAgent(model="gpt-4.1", github_token="tok")
+        result = agent.run(
+            issue_title="Some issue",
+            issue_body="Some body.",
+            github_client=mock_gh,
+        )
+    assert result == []
 
 
 def test_system_prompt_set():

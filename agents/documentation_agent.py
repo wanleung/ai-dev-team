@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Optional
 
 from agents.base_agent import BaseAgent
 from github_client import GitHubClient
@@ -18,8 +17,8 @@ class DocumentationAgent(BaseAgent):
         super().__init__(roles_dir=roles_dir, **kwargs)
 
     def _parse_doc_targets(self, body: str) -> list[str]:
-        """Extract file targets from '**Docs:** file1, file2' in issue body."""
-        m = re.search(r"\*\*Docs:\*\*\s*(.+)", body)
+        """Extract file targets from 'Docs: file1, file2' or '**Docs:** file1, file2' in issue body."""
+        m = re.search(r"\*{0,2}Docs:\*{0,2}\s*(.+)", body)
         if not m:
             return []
         return [p.strip() for p in m.group(1).split(",") if p.strip()]
@@ -28,16 +27,21 @@ class DocumentationAgent(BaseAgent):
         self,
         issue_title: str,
         issue_body: str,
-        target_repo: str,
-        github_token: Optional[str] = None,
+        github_client: GitHubClient,
         ref: str = "main",
     ) -> list[dict]:
         """Run the documentation agent.
 
+        Args:
+            issue_title: Title of the GitHub issue.
+            issue_body: Body text of the GitHub issue.
+            github_client: Pre-built GitHubClient for the target repo.
+            ref: Git ref (branch/tag/SHA) to read files from.
+
         Returns a list of {"path", "content", "action"} dicts to commit.
         Raises ValueError if the agent produces no file writes.
         """
-        gh = GitHubClient(target_repo, token=github_token)
+        gh = github_client
 
         # Build LocalToolRegistry wiring the three tools to the GitHub client
         registry = LocalToolRegistry()
@@ -88,8 +92,13 @@ class DocumentationAgent(BaseAgent):
             matches = gh.search_files(pattern, ref=ref)
             return "\n".join(matches) if matches else "(no matches)"
 
+        doc_targets = self._parse_doc_targets(issue_body)
+        target_hint = (
+            f"\n\nExplicit documentation targets: {', '.join(doc_targets)}"
+            if doc_targets else ""
+        )
         user_message = (
-            f"## Issue: {issue_title}\n\n{issue_body}\n\n"
+            f"## Issue: {issue_title}\n\n{issue_body}{target_hint}\n\n"
             "Please read the relevant files and produce the documentation updates."
         )
 
@@ -99,11 +108,11 @@ class DocumentationAgent(BaseAgent):
         try:
             file_writes = json.loads(raw)
         except json.JSONDecodeError:
-            m = re.search(r"\[.*\]", raw, re.DOTALL)
+            m = re.search(r"\[.*?\]", raw, re.DOTALL)
             if m:
                 file_writes = json.loads(m.group(0))
             else:
-                raise ValueError(f"Agent returned non-JSON response: {raw[:200]}")
+                return []
 
         if not isinstance(file_writes, list) or len(file_writes) == 0:
             raise ValueError(
