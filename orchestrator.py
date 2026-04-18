@@ -176,6 +176,7 @@ class Orchestrator:
         mcp_servers: list[dict] | None = None,
         retry_delay: int = 15,
         max_api_retries: int = 5,
+        inter_call_delay: int = 0,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -199,7 +200,8 @@ class Orchestrator:
 
         # Shared kwargs for all agents
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
-                              "retry_delay": retry_delay, "max_api_retries": max_api_retries}
+                              "retry_delay": retry_delay, "max_api_retries": max_api_retries,
+                              "inter_call_delay": inter_call_delay}
         self.agent_kwargs = agent_kwargs
 
         def _model(agent_name: str) -> str:
@@ -289,6 +291,7 @@ class Orchestrator:
             mcp_servers=mcp_servers,
             retry_delay=pipeline.get("retry_delay", 15),
             max_api_retries=pipeline.get("max_api_retries", 5),
+            inter_call_delay=pipeline.get("inter_call_delay", 0),
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
