@@ -210,6 +210,9 @@ class DocOrchestrator:
         for write in result.file_writes:
             path = write.get("path", "")
             content = write.get("content", "")
+            if not path:
+                result.errors.append("Skipped file write with empty path")
+                continue
             action = write.get("action", "update")
             commit_msg = f"docs: {action} {path} (issue #{result.issue_number})"
             try:
@@ -243,6 +246,8 @@ class DocOrchestrator:
         )
         result.pr_number = pr.get("number")
         result.pr_url = pr.get("html_url")
+        if not result.pr_number:
+            raise ValueError(f"create_pull_request returned unexpected payload: {pr!r}")
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -263,6 +268,8 @@ class DocOrchestrator:
         prefix = f"{self.branch_prefix}/{issue_number}-"
         max_slug_len = 60 - len(prefix)
         slug = slug[:max_slug_len].rstrip("-")
+        if not slug:
+            slug = "untitled"
 
         return f"{prefix}{slug}"
 

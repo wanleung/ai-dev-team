@@ -1,6 +1,7 @@
 """Unit tests for DocOrchestrator."""
 from __future__ import annotations
 
+import unittest.mock
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -124,6 +125,10 @@ def test_run_uses_target_repo():
     assert call_kwargs[1]["github_client"] is target_gh_instance or \
            call_kwargs[0][2] is target_gh_instance
 
+    # Tracker issue must be closed via tracker client, not target repo client
+    orch.github.close_issue.assert_called_once_with(5, comment=unittest.mock.ANY)
+    target_gh_instance.close_issue.assert_not_called()
+
 
 def test_run_no_file_writes():
     """When agent returns [], no files committed, no PR, error recorded."""
@@ -146,7 +151,6 @@ def test_run_handles_stage_error():
     orch.github.get_issue.return_value = _mock_issue()
     orch.github.create_branch.return_value = "doc/3-update-readme"
     orch.github.commit_file.side_effect = RuntimeError("Network error")
-    orch.github.create_pull_request.return_value = {"number": 55, "html_url": "http://pr/55"}
 
     with patch("doc_orchestrator.DocumentationAgent") as MockAgent:
         MockAgent.return_value.run.return_value = _file_writes()
