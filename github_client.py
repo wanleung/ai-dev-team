@@ -311,14 +311,15 @@ class GitHubClient:
         url_path = f"/repos/{self.repo}/contents/{path}".rstrip("/")
         result = self._request("GET", url_path, params=params or None)
         if isinstance(result, list):
-            return [{"name": e["name"], "type": e["type"] if e["type"] != "dir" else "dir", "path": e["path"]} for e in result]
+            return [{"name": e["name"], "type": e["type"], "path": e["path"]} for e in result]
         # Single file returned (happens when path points to a file, not dir)
-        return [{"name": result["name"], "type": "file", "path": result["path"]}]
+        return [{"name": result["name"], "type": result["type"], "path": result["path"]}]
 
     def search_files(self, pattern: str, ref: Optional[str] = None) -> list[str]:
         """Return all file paths in the repo matching a glob pattern.
 
-        Uses the git tree API (recursive) — pattern matched with fnmatch.
+        Uses the git tree API (recursive). Pattern is matched using pathlib.PurePath.match()
+        which is right-anchored (e.g., 'README.md' matches 'docs/README.md').
         Returns list of file paths (blobs only, no trees).
         """
         from pathlib import PurePath
