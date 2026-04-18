@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Optional
 
 from agents.base_agent import BaseAgent
 from github_client import GitHubClient
-from tools.registry import LocalToolRegistry
 
 
 class DocumentationAgent(BaseAgent):
@@ -22,6 +22,14 @@ class DocumentationAgent(BaseAgent):
         if not m:
             return []
         return [p.strip() for p in m.group(1).split(",") if p.strip()]
+
+    def _detect_ref(self, gh: GitHubClient) -> str:
+        """Return the repo's default branch (e.g. 'main' or 'master')."""
+        try:
+            info = gh._request("GET", f"/repos/{gh.repo}")
+            return info.get("default_branch", "main")
+        except Exception:
+            return "main"
 
     def _build_file_context(
         self, gh: GitHubClient, doc_targets: list[str], ref: str
@@ -71,7 +79,7 @@ class DocumentationAgent(BaseAgent):
         issue_title: str,
         issue_body: str,
         github_client: GitHubClient,
-        ref: str = "main",
+        ref: Optional[str] = None,
     ) -> list[dict]:
         """Run the documentation agent.
 
@@ -79,65 +87,20 @@ class DocumentationAgent(BaseAgent):
             issue_title: Title of the GitHub issue.
             issue_body: Body text of the GitHub issue.
             github_client: Pre-built GitHubClient for the target repo.
-            ref: Git ref (branch/tag/SHA) to read files from.
+            ref: Git ref to read files from. Auto-detected from repo if None.
 
         Returns a list of {"path", "content", "action"} dicts to commit.
         Raises ValueError if the agent produces no file writes.
         """
         gh = github_client
 
-        # Build LocalToolRegistry wiring the three tools to the GitHub client
-        registry = LocalToolRegistry()
-
-        @registry.tool(
-            name="list_files",
-            description="List files and directories at a path in the target repo.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Directory path (empty string for root)"}
-                },
-                "required": ["path"],
-            },
-        )
-        def _list_files(path: str) -> str:
-            entries = gh.list_files(path, ref=ref)
-            lines = [f"[{e['type']}] {e['path']}" for e in entries]
-            return "\n".join(lines) if lines else "(empty directory)"
-
-        @registry.tool(
-            name="read_file",
-            description="Read the full text content of a file in the target repo.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File path relative to repo root"}
-                },
-                "required": ["path"],
-            },
-        )
-        def _read_file(path: str) -> str:
-            content = gh.get_file_content(path, ref=ref)
-            return content if content is not None else f"(file not found: {path})"
-
-        @registry.tool(
-            name="search_files",
-            description="Find file paths matching a glob pattern (e.g. '**/*.md', '**/*.py').",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Glob pattern to match file paths"}
-                },
-                "required": ["pattern"],
-            },
-        )
-        def _search_files(pattern: str) -> str:
-            matches = gh.search_files(pattern, ref=ref)
-            return "\n".join(matches) if matches else "(no matches)"
+        # Auto-detect the default branch (handles repos using master, main, etc.)
+        if ref is None:
+            ref = self._detect_ref(gh)
 
         doc_targets = self._parse_doc_targets(issue_body)
 
-        # Pre-fetch file context so the LLM has content without needing read_file calls
+        # Pre-fetch file content and inject directly into the prompt
         file_context = self._build_file_context(gh, doc_targets, ref)
 
         user_message = (
@@ -146,7 +109,8 @@ class DocumentationAgent(BaseAgent):
             "Now produce the documentation updates as a JSON array."
         )
 
-        raw = self.call_with_tools(user_message=user_message, tools=registry)
+        # Use plain call() — file content is already in the prompt, no tools needed
+        raw = self.call(user_message=user_message)
 
         # Parse JSON array from response
         try:
