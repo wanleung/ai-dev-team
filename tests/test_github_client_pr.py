@@ -136,3 +136,60 @@ def test_get_repo_languages_returns_empty_on_empty_response(client):
     with patch.object(client, '_request', return_value={}):
         result = client.get_repo_languages("owner/repo")
     assert result == []
+
+
+# ── list_files ────────────────────────────────────────────────────────────────
+
+
+def test_list_files_returns_names():
+    client = GitHubClient("owner/repo", github_token="tok")
+    mock_resp = [
+        {"name": "README.md", "type": "file", "path": "README.md"},
+        {"name": "docs", "type": "dir", "path": "docs"},
+    ]
+    with patch.object(client, "_request", return_value=mock_resp):
+        result = client.list_files("", ref="main")
+    assert result == [
+        {"name": "README.md", "type": "file", "path": "README.md"},
+        {"name": "docs", "type": "dir", "path": "docs"},
+    ]
+
+
+def test_list_files_with_path():
+    client = GitHubClient("owner/repo", github_token="tok")
+    with patch.object(client, "_request", return_value=[]) as mock_req:
+        client.list_files("docs", ref="main")
+    mock_req.assert_called_once_with(
+        "GET", "/repos/owner/repo/contents/docs", params={"ref": "main"}
+    )
+
+
+# ── search_files ──────────────────────────────────────────────────────────────
+
+
+def test_search_files_glob_md():
+    client = GitHubClient("owner/repo", github_token="tok")
+    tree = {
+        "tree": [
+            {"path": "README.md", "type": "blob"},
+            {"path": "docs/api.md", "type": "blob"},
+            {"path": "src/main.py", "type": "blob"},
+            {"path": "docs/images", "type": "tree"},
+        ]
+    }
+    with patch.object(client, "_request", return_value=tree):
+        result = client.search_files("**/*.md", ref="main")
+    assert set(result) == {"README.md", "docs/api.md"}
+
+
+def test_search_files_specific_name():
+    client = GitHubClient("owner/repo", github_token="tok")
+    tree = {
+        "tree": [
+            {"path": "README.md", "type": "blob"},
+            {"path": "CONTRIBUTING.md", "type": "blob"},
+        ]
+    }
+    with patch.object(client, "_request", return_value=tree):
+        result = client.search_files("README.md", ref="main")
+    assert result == ["README.md"]
