@@ -897,12 +897,14 @@ class Orchestrator:
         req_file = project_dir / "requirements-test.txt"
         if not req_file.exists():
             # Fallback: write a minimal one
-            req_file.write_text("pytest\npytest-cov\nhttpx\n", encoding="utf-8")
+            req_file.write_text("pytest\npytest-cov\npytest-timeout\nhttpx\n", encoding="utf-8")
 
         console.print("    📦 Installing test dependencies…")
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q"],
+            [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q",
+             "pytest-timeout"],  # always ensure timeout plugin is available
             check=False,
+            timeout=120,
         )
 
         tests_dir = project_dir / "tests"
@@ -912,13 +914,21 @@ class Orchestrator:
             return
 
         console.print(f"    🏃 Running pytest in {tests_dir}…")
-        proc = subprocess.run(
-            [sys.executable, "-m", "pytest", str(tests_dir), "-v", "--tb=short",
-             f"--rootdir={project_dir}", "-p", "no:cacheprovider"],
-            capture_output=True,
-            text=True,
-            cwd=str(project_dir),
-        )
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", str(tests_dir), "-v", "--tb=short",
+                 f"--rootdir={project_dir}", "-p", "no:cacheprovider",
+                 "--timeout=30"],  # 30s per test to prevent hanging integration tests
+                capture_output=True,
+                text=True,
+                cwd=str(project_dir),
+                timeout=300,  # 5 min total cap
+            )
+        except subprocess.TimeoutExpired:
+            console.print("    ⚠️  Tests timed out after 5 minutes — skipping results.")
+            result.test_results = "Tests timed out after 5 minutes."
+            result.tests_passed = False
+            return
 
         output = proc.stdout + proc.stderr
         passed = proc.returncode == 0
@@ -963,7 +973,7 @@ class Orchestrator:
         project_dir = self.workspace_dir / safe
 
         # Check if docker is available
-        docker_check = subprocess.run(["docker", "info"], capture_output=True)
+        docker_check = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
         if docker_check.returncode != 0:
             console.print("    ⚠️  Docker not available — skipping deployment tests.")
             result.deploy_test_results = "Docker not available in this environment."
