@@ -224,6 +224,16 @@ def _dispatch(
                     github_repo=tracker_repo,
                 )
                 orch.run(issue_number=issue_number)
+
+            elif pipeline_type == "documentation":
+                from doc_orchestrator import DocOrchestrator
+
+                orch = DocOrchestrator(
+                    model=model,
+                    github_token=token,
+                    github_repo=tracker_repo,
+                )
+                orch.run(issue_number=issue_number)
         finally:
             sys.stdout, sys.stderr = old_stdout, old_stderr
 
@@ -262,6 +272,7 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
         default_target  = w.get("default_target") or None
         feature_label   = w.get("feature_label", "feature-request")
         bug_label       = w.get("bug_label", "bug")
+        doc_label       = w.get("doc_label", "documentation")
 
         # Ensure state labels exist
         for name, colour in LABEL_COLOURS.items():
@@ -284,6 +295,14 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
                     default_target=default_target, pipeline_type="bug",
                 ))
                 logger.info("  Queued bug issue #%d: %s", issue["number"], issue["title"])
+
+            for issue in get_open_issues(tracker_repo, doc_label):
+                add_label(tracker_repo, issue["number"], LABEL_QUEUED)
+                tasks.append(dict(
+                    issue=issue, tracker_repo=tracker_repo,
+                    default_target=default_target, pipeline_type="documentation",
+                ))
+                logger.info("  Queued documentation issue #%d: %s", issue["number"], issue["title"])
 
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to fetch issues from %s: %s", tracker_repo, exc)
