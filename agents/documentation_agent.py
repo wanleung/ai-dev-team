@@ -23,6 +23,49 @@ class DocumentationAgent(BaseAgent):
             return []
         return [p.strip() for p in m.group(1).split(",") if p.strip()]
 
+    def _build_file_context(
+        self, gh: GitHubClient, doc_targets: list[str], ref: str
+    ) -> str:
+        """Pre-fetch file content and return as a formatted context block.
+
+        If doc_targets are specified, read those files.
+        Otherwise, discover .md files plus repo root listing and read up to 5 files.
+        """
+        sections: list[str] = []
+
+        # Always include root listing
+        try:
+            entries = gh.list_files("", ref=ref)
+            listing = "\n".join(f"[{e['type']}] {e['path']}" for e in entries)
+            sections.append(f"## Repository root\n{listing}")
+        except Exception:
+            pass
+
+        # Determine which files to read
+        if doc_targets:
+            paths_to_read = doc_targets
+        else:
+            # Auto-discover markdown files (cap at 5)
+            try:
+                paths_to_read = gh.search_files("**/*.md", ref=ref)[:5]
+            except Exception:
+                paths_to_read = []
+
+        # Read each file and include content
+        for path in paths_to_read:
+            try:
+                content = gh.get_file_content(path, ref=ref)
+                if content is not None:
+                    sections.append(f"## File: {path}\n```\n{content}\n```")
+                else:
+                    sections.append(f"## File: {path}\n(does not exist yet — create it)")
+            except Exception:
+                pass
+
+        if not sections:
+            return "No existing files found."
+        return "\n\n".join(sections)
+
     def run(
         self,
         issue_title: str,
@@ -93,13 +136,14 @@ class DocumentationAgent(BaseAgent):
             return "\n".join(matches) if matches else "(no matches)"
 
         doc_targets = self._parse_doc_targets(issue_body)
-        target_hint = (
-            f"\n\nExplicit documentation targets: {', '.join(doc_targets)}"
-            if doc_targets else ""
-        )
+
+        # Pre-fetch file context so the LLM has content without needing read_file calls
+        file_context = self._build_file_context(gh, doc_targets, ref)
+
         user_message = (
-            f"## Issue: {issue_title}\n\n{issue_body}{target_hint}\n\n"
-            "Please read the relevant files and produce the documentation updates."
+            f"## Issue: {issue_title}\n\n{issue_body}\n\n"
+            f"{file_context}\n\n"
+            "Now produce the documentation updates as a JSON array."
         )
 
         raw = self.call_with_tools(user_message=user_message, tools=registry)

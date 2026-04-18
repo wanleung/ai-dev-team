@@ -107,9 +107,10 @@ def test_system_prompt_set():
 
 
 def test_target_hint_injected_into_prompt():
-    """Verify that doc targets parsed from issue body appear in the prompt passed to call_with_tools."""
+    """Verify that doc targets from issue body cause the file to be pre-read into the prompt."""
     file_writes = [{"path": "README.md", "content": "# Updated\n", "action": "update"}]
     mock_gh = _make_mock_gh()
+    mock_gh.get_file_content.return_value = "# Existing README content"
     with patch("agents.documentation_agent.LocalToolRegistry"), \
          patch.object(
              DocumentationAgent,
@@ -123,8 +124,7 @@ def test_target_hint_injected_into_prompt():
             github_client=mock_gh,
         )
 
-    # The first positional argument to call_with_tools is the user_message
-    _, call_kwargs = mock_call.call_args
     user_message = mock_call.call_args[1].get("user_message") or mock_call.call_args[0][0]
-    assert "Explicit documentation targets" in user_message
+    # The file path and its content should appear in the injected context
     assert "README.md" in user_message
+    assert "File: README.md" in user_message
