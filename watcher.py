@@ -212,6 +212,7 @@ def _dispatch(
                     github_repo=tracker_repo,
                     target_repo=target_repo,
                     num_engineers=num_engineers,
+                    use_github=True,
                 )
                 orch.run(requirement, trigger_issue_body=issue_body)
 
