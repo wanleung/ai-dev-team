@@ -489,16 +489,12 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
         try:
             with open(trigger_path) as f:
                 trigger = json.load(f)
-            os.remove(trigger_path)
             issue_number = trigger["issue_number"]
             requirement = trigger.get("requirement", trigger.get("issue_title", ""))
             logger.info(f"[Watcher] Resuming pipeline for issue #{issue_number}")
-            
-            # Create a task dict for the issue - we'll need to find which tracker repo it belongs to
-            # For simplicity, we'll create a minimal task that can be dispatched
-            # The actual dispatch will happen in the main watch loop
+
+            task_created = False
             for tracker_repo in tracker_repos:
-                # Fetch the issue to create a proper task
                 try:
                     token = os.environ.get("GITHUB_TOKEN", "")
                     headers = {
@@ -517,10 +513,20 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
                             pipeline_type="feature",
                         ))
                         logger.info(f"  Queued resumed issue #{issue_number}: {issue.get('title', '')}")
+                        task_created = True
                         break
                 except Exception as exc:
                     logger.debug(f"Could not fetch issue #{issue_number} from {tracker_repo}: {exc}")
                     continue
+
+            # Only delete trigger after task successfully created; keep for retry otherwise
+            if task_created:
+                os.remove(trigger_path)
+            else:
+                logger.warning(
+                    f"[Watcher] Could not fetch issue #{issue_number} from any repo — "
+                    f"keeping trigger for retry"
+                )
         except Exception as exc:
             logger.warning(f"[Watcher] Could not process resume trigger {trigger_path}: {exc}")
     
