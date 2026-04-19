@@ -130,6 +130,7 @@ class PipelineResult:
             "modules": self.modules,
             "all_files": self.all_files,
             "test_files": self.test_files,
+            "deploy_files": self.deploy_files,
             "review": self.review,
             "verdict": self.verdict,
             "qa_plan": self.qa_plan,
