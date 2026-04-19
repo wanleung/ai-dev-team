@@ -18,6 +18,8 @@ Cron setup (hourly):
 from __future__ import annotations
 
 import argparse
+import glob
+import json
 import logging
 import os
 import sys
@@ -25,6 +27,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import yaml
 import requests
@@ -34,14 +37,16 @@ LABEL_QUEUED   = "agent-queued"
 LABEL_RUNNING  = "agent-running"
 LABEL_COMPLETE = "agent-complete"
 LABEL_FAILED   = "agent-failed"
+LABEL_WAITING  = "agent-waiting"
 
-SKIP_LABELS = {LABEL_QUEUED, LABEL_RUNNING, LABEL_COMPLETE, LABEL_FAILED}
+SKIP_LABELS = {LABEL_QUEUED, LABEL_RUNNING, LABEL_COMPLETE, LABEL_FAILED, LABEL_WAITING}
 
 LABEL_COLOURS = {
     LABEL_QUEUED:   "e4e669",
     LABEL_RUNNING:  "0075ca",
     LABEL_COMPLETE: "0e8a16",
     LABEL_FAILED:   "d73a4a",
+    LABEL_WAITING:  "fbca04",
 }
 
 # ── Lock file prevents overlapping cron runs ─────────────────────────────────
@@ -297,6 +302,231 @@ def _parse_target_repo(body: str) -> str | None:
     return m.group(1) if m else None
 
 
+# ── Q&A / Clarification helpers ──────────────────────────────────────────────
+
+def extract_answers_from_comments(
+    comments: list[dict],
+    question_comment_id: int,
+    bot_login: str,
+) -> list[str]:
+    """Return text of comments posted AFTER the question comment by non-bot users.
+
+    These are the human answers to the Q&A questions.
+    """
+    answers = []
+    found_question = False
+    for c in comments:
+        if c["id"] == question_comment_id:
+            found_question = True
+            continue
+        if found_question and c.get("user", {}).get("login") != bot_login:
+            answers.append(c["body"])
+    return answers
+
+
+def _find_checkpoint_for_issue(workspace_dir: str, issue_number: int) -> Optional[str]:
+    """Scan workspace_dir for a checkpoint JSON containing the given issue_number."""
+    pattern = os.path.join(workspace_dir, "**", "checkpoint_*.json")
+    for path in glob.glob(pattern, recursive=True):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            if data.get("issue_number") == issue_number:
+                return path
+        except Exception:
+            continue
+    return None
+
+
+def _utcnow_iso() -> str:
+    """Return current UTC time in ISO 8601 format."""
+    import datetime as _dt
+    return _dt.datetime.utcnow().isoformat() + "Z"
+
+
+def _trigger_resume(issue_number: int, issue_title: str, requirement: str, workspace_dir: str) -> None:
+    """Write a resume trigger file so the main watch() loop picks up the issue next cycle."""
+    trigger_dir = os.path.join(workspace_dir, "resume_queue")
+    os.makedirs(trigger_dir, exist_ok=True)
+    trigger_path = os.path.join(trigger_dir, f"resume_{issue_number}.json")
+    with open(trigger_path, "w") as f:
+        json.dump({
+            "issue_number": issue_number,
+            "issue_title": issue_title,
+            "requirement": requirement,
+        }, f, indent=2)
+    logging.getLogger("watcher").info(f"[Watcher] Resume trigger written: {trigger_path}")
+
+
+def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_dir: str, bot_login: str) -> None:
+    """Check all issues labelled agent-waiting for human replies.
+
+    For each waiting issue that has a checkpoint with pending_clarification:
+    1. Fetch comments after the question comment
+    2. If human has replied, inject answers into checkpoint and re-label
+    3. Re-dispatch pipeline (by removing agent-waiting and calling dispatch logic)
+    """
+    from orchestrator import PipelineResult
+
+    logger = logging.getLogger("watcher")
+
+    for tracker_repo in tracker_repos:
+        try:
+            waiting_issues = _get_issues_by_label(tracker_repo, LABEL_WAITING, github_token)
+        except Exception as exc:
+            logger.warning(f"[Watcher] Could not list agent-waiting issues for {tracker_repo}: {exc}")
+            continue
+
+        for issue in waiting_issues:
+            issue_number = issue["number"]
+            issue_title = issue.get("title", "")
+
+            # Find checkpoint for this issue
+            checkpoint_path = _find_checkpoint_for_issue(workspace_dir, issue_number)
+            if not checkpoint_path:
+                logger.info(f"[Watcher] Issue #{issue_number}: no checkpoint found, skipping")
+                continue
+
+            try:
+                with open(checkpoint_path) as f:
+                    data = json.load(f)
+                result = PipelineResult.from_dict(data)
+            except Exception as exc:
+                logger.warning(f"[Watcher] Issue #{issue_number}: could not load checkpoint: {exc}")
+                continue
+
+            if not result.pending_clarification:
+                logger.info(f"[Watcher] Issue #{issue_number}: no pending_clarification in checkpoint")
+                continue
+
+            pending = result.pending_clarification
+            question_comment_id = pending.get("question_comment_id")
+            if not question_comment_id:
+                logger.info(f"[Watcher] Issue #{issue_number}: no question_comment_id, skipping")
+                continue
+
+            # Fetch comments and check for answers
+            try:
+                comments = _get_issue_comments(tracker_repo, issue_number, github_token)
+            except Exception as exc:
+                logger.warning(f"[Watcher] Issue #{issue_number}: could not fetch comments: {exc}")
+                continue
+
+            answers = extract_answers_from_comments(comments, question_comment_id, bot_login)
+            if not answers:
+                logger.info(f"[Watcher] Issue #{issue_number}: no human reply yet")
+                continue
+
+            logger.info(f"[Watcher] Issue #{issue_number}: human replied ({len(answers)} answer(s)), resuming pipeline")
+
+            # Inject answers into clarification_history
+            stage = pending.get("stage", "unknown")
+            qa_round = pending.get("qa_rounds", 1)
+            result.clarification_history.append({
+                "stage": stage,
+                "round": qa_round,
+                "questions": pending.get("questions", []),
+                "answers": answers,
+                "answered_at": _utcnow_iso(),
+            })
+            result.pending_clarification = None
+
+            # Save updated checkpoint
+            with open(checkpoint_path, "w") as f:
+                json.dump(result.to_dict(), f, indent=2)
+
+            # Switch labels: remove agent-waiting, add agent-running
+            try:
+                remove_label(tracker_repo, issue_number, LABEL_WAITING)
+                add_label(tracker_repo, issue_number, LABEL_RUNNING)
+            except Exception as exc:
+                logger.warning(f"[Watcher] Issue #{issue_number}: could not update labels: {exc}")
+
+            # Trigger re-dispatch by appending to a simple queue file (watcher picks it up next cycle)
+            _trigger_resume(issue_number, issue_title, result.requirement, workspace_dir)
+
+
+def _get_issues_by_label(repo: str, label: str, token: str) -> list[dict]:
+    """Return all open issues with the given label."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    url = f"https://api.github.com/repos/{repo}/issues"
+    params = {"labels": label, "state": "open"}
+    resp = requests.get(url, headers=headers, params=params, timeout=10)
+    if not resp.ok:
+        raise RuntimeError(f"GitHub API error {resp.status_code}: {resp.text[:200]}")
+    return [issue for issue in resp.json() if "pull_request" not in issue]
+
+
+def _get_issue_comments(repo: str, issue_number: int, token: str) -> list[dict]:
+    """Return all comments for an issue."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
+    resp = requests.get(url, headers=headers, timeout=10)
+    if not resp.ok:
+        raise RuntimeError(f"GitHub API error {resp.status_code}: {resp.text[:200]}")
+    return resp.json()
+
+
+def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_targets: dict[str, str], model: str, num_engineers: int, log_dir: Path, dry_run: bool, logger: logging.Logger) -> list[dict]:
+    """Process any resume triggers left by check_waiting_issues().
+    
+    Returns a list of task dicts to be dispatched.
+    """
+    trigger_dir = os.path.join(workspace_dir, "resume_queue")
+    if not os.path.isdir(trigger_dir):
+        return []
+
+    tasks = []
+    for trigger_path in glob.glob(os.path.join(trigger_dir, "resume_*.json")):
+        try:
+            with open(trigger_path) as f:
+                trigger = json.load(f)
+            os.remove(trigger_path)
+            issue_number = trigger["issue_number"]
+            requirement = trigger.get("requirement", trigger.get("issue_title", ""))
+            logger.info(f"[Watcher] Resuming pipeline for issue #{issue_number}")
+            
+            # Create a task dict for the issue - we'll need to find which tracker repo it belongs to
+            # For simplicity, we'll create a minimal task that can be dispatched
+            # The actual dispatch will happen in the main watch loop
+            for tracker_repo in tracker_repos:
+                # Fetch the issue to create a proper task
+                try:
+                    token = os.environ.get("GITHUB_TOKEN", "")
+                    headers = {
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    }
+                    url = f"https://api.github.com/repos/{tracker_repo}/issues/{issue_number}"
+                    resp = requests.get(url, headers=headers, timeout=10)
+                    if resp.ok:
+                        issue = resp.json()
+                        tasks.append(dict(
+                            issue=issue,
+                            tracker_repo=tracker_repo,
+                            default_target=default_targets.get(tracker_repo),
+                            pipeline_type="feature",
+                        ))
+                        logger.info(f"  Queued resumed issue #{issue_number}: {issue.get('title', '')}")
+                        break
+                except Exception as exc:
+                    logger.debug(f"Could not fetch issue #{issue_number} from {tracker_repo}: {exc}")
+                    continue
+        except Exception as exc:
+            logger.warning(f"[Watcher] Could not process resume trigger {trigger_path}: {exc}")
+    
+    return tasks
+
+
 # ── Watcher loop ──────────────────────────────────────────────────────────────
 
 def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
@@ -312,8 +542,29 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
     watchers = config.get("watchers", [])
     logger.info("Loaded %d watcher(s) from %s", len(watchers), config_path)
 
+    # Load pipeline config to get workspace_dir and bot_login
+    pipeline_cfg = _load_pipeline_config()
+    workspace_dir = pipeline_cfg.get("pipeline", {}).get("workspace_dir", "./workspace")
+    github_cfg = pipeline_cfg.get("github", {})
+    bot_login = github_cfg.get("bot_login", "github-actions[bot]")
+    github_token = os.environ.get("GITHUB_TOKEN", "")
+
+    # Build list of tracker repos for checking waiting issues
+    tracker_repos = [w["tracker_repo"] for w in watchers if w.get("enabled", True)]
+    default_targets = {w["tracker_repo"]: w.get("default_target") for w in watchers if w.get("enabled", True)}
+
+    # Check issues waiting for human clarification
+    if not dry_run:
+        check_waiting_issues(github_token, tracker_repos, workspace_dir, bot_login)
+
     # Collect all issues across all watchers
     tasks: list[dict] = []
+    
+    # Process any resume triggers (issues answered by human)
+    if not dry_run:
+        resumed_tasks = _process_resume_queue(workspace_dir, tracker_repos, default_targets, model, num_engineers, log_dir, dry_run, logger)
+        tasks.extend(resumed_tasks)
+    
     for w in watchers:
         if not w.get("enabled", True):
             continue
