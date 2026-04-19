@@ -260,7 +260,7 @@ def _dispatch(
                     max_api_retries=max_api_retries,
                     inter_call_delay=inter_call_delay,
                 )
-                orch.run(requirement, trigger_issue_body=issue_body)
+                orch.run(requirement, trigger_issue_body=issue_body, issue_number=issue_number)
 
             elif pipeline_type == "bug":
                 from bug_fix_orchestrator import BugFixOrchestrator
