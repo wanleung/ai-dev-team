@@ -50,7 +50,7 @@ llm:
   #
   # Claude models are auto-detected by name prefix "claude-" and will use
   # the Anthropic API automatically. No extra config needed.
-  model: "openai/gpt-4.1"
+  model: "ollama/llama4"
 
   # Per-agent model overrides — mix backends freely per agent.
   # Example: use Claude for reasoning-heavy roles, GPT-4.1-mini for repetitive ones.
@@ -158,7 +158,7 @@ skills:
 mcp:
   servers: 
    - name: google_search
-     type: sse
-     url: "https://10.100.1.8:8000/mcp"
+     type: http
+     url: "http://10.100.1.8:8000/mcp"
 
 
