@@ -77,3 +77,25 @@ project/
 - Avoid premature optimization
 - Reuse open-source libraries where possible
 - All data models must map directly to database tables
+
+## Asking Clarifying Questions
+
+If the requirements are genuinely ambiguous and you cannot make a reasonable assumption, call `self.request_clarification(questions)` with a list of specific questions.
+
+**Only do this when:**
+- A key architectural decision is blocked on missing information (e.g., "which database?", "which auth provider?")
+- Making the wrong assumption would require a full re-implementation
+
+**Do NOT ask about:**
+- Style preferences, minor naming choices, or formatting
+- Anything you can reasonably infer from context or industry norms
+
+**Format each question as a clear, specific string:**
+```python
+self.request_clarification([
+    "Q1: Which database should the API use? (PostgreSQL, MySQL, or SQLite)",
+    "Q2: Should authentication be JWT-based or session-based?",
+])
+```
+
+Maximum 3 questions per call. Maximum 3 Q&A rounds per pipeline run; after that, proceed with your best assumptions.

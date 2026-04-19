@@ -236,6 +236,19 @@ class BaseAgent:
         """Clear conversation history (call between unrelated pipeline tasks)."""
         self._history = []
 
+    def request_clarification(self, questions: list[str]) -> None:
+        """Pause the pipeline and ask the human clarifying questions.
+
+        Raises ClarificationNeeded which the orchestrator catches at the stage
+        boundary. The orchestrator posts the questions to the GitHub issue and
+        sets the agent-waiting label.
+
+        Args:
+            questions: List of question strings, e.g. ["Q1: What DB?", "Q2: Async?"]
+        """
+        from orchestrator import ClarificationNeeded
+        raise ClarificationNeeded(questions)
+
     def _history_messages(self) -> list[dict]:
         """Return history formatted for OpenAI-compatible API."""
         return list(self._history)
