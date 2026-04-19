@@ -75,3 +75,47 @@ def test_base_agent_request_clarification_single_question():
     with pytest.raises(ClarificationNeeded) as exc_info:
         agent.request_clarification(["Q1: only one question"])
     assert len(exc_info.value.questions) == 1
+
+
+def test_run_stage_reraises_clarification_needed():
+    """_run_stage must re-raise ClarificationNeeded, not swallow it."""
+    from orchestrator import ClarificationNeeded, Orchestrator, PipelineResult
+    orch = Orchestrator(model="gpt-4.1")
+    result = PipelineResult(requirement="test")
+
+    def bad_stage():
+        raise ClarificationNeeded(["Q1: colour?"])
+
+    with pytest.raises(ClarificationNeeded):
+        orch._run_stage("Test Stage", "doing stuff", result, bad_stage)
+
+
+def test_build_clarification_context_empty_history():
+    from orchestrator import Orchestrator
+    orch = Orchestrator(model="gpt-4.1")
+    ctx = orch._build_clarification_context([], stage="pm")
+    assert ctx == ""
+
+
+def test_build_clarification_context_with_history():
+    from orchestrator import Orchestrator
+    orch = Orchestrator(model="gpt-4.1")
+    history = [
+        {"stage": "pm", "round": 1, "questions": ["Q1: DB?"], "answers": ["A1: PostgreSQL"], "answered_at": "2026-01-01T01:00:00Z"},
+    ]
+    ctx = orch._build_clarification_context(history, stage="pm")
+    assert "Q1: DB?" in ctx
+    assert "A1: PostgreSQL" in ctx
+    assert "Clarification Answers" in ctx
+
+
+def test_build_clarification_context_filters_by_stage():
+    from orchestrator import Orchestrator
+    orch = Orchestrator(model="gpt-4.1")
+    history = [
+        {"stage": "pm", "round": 1, "questions": ["Q1: DB?"], "answers": ["A1: PG"], "answered_at": ""},
+        {"stage": "architect", "round": 1, "questions": ["Q2: API?"], "answers": ["A2: REST"], "answered_at": ""},
+    ]
+    ctx = orch._build_clarification_context(history, stage="pm")
+    assert "Q1: DB?" in ctx
+    assert "Q2: API?" not in ctx

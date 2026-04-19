@@ -565,7 +565,7 @@ class Orchestrator:
 
         return {"status": "ok", "revision": new_revision, "files_updated": len(revised_files)}
 
-    def run(self, requirement: str, trigger_issue_body: Optional[str] = None, resume: bool = True) -> PipelineResult:
+    def run(self, requirement: str, trigger_issue_body: Optional[str] = None, resume: bool = True, issue_number: Optional[int] = None) -> PipelineResult:
         """Execute the full pipeline for a given requirement.
 
         Args:
@@ -646,6 +646,10 @@ class Orchestrator:
         else:
             result = PipelineResult(requirement=requirement)
 
+        # Pre-set issue_number if provided by caller (allows pause before PM creates it)
+        if issue_number is not None and not result.issue_number:
+            result.issue_number = issue_number
+
         console.print(Panel.fit(
             f"[bold cyan]🏢 AI Software House Pipeline[/bold cyan]\n"
             f"[dim]{requirement[:120]}{'...' if len(requirement) > 120 else ''}[/dim]",
@@ -654,7 +658,11 @@ class Orchestrator:
 
         # ── Stage 1: Product Manager ─────────────────────────────────────────
         if "pm" not in result.completed_stages:
-            self._run_stage("📋 Product Manager", "Analyzing requirements & writing PRD...", result, lambda: self._stage_pm(result, requirement))
+            try:
+                self._run_stage("📋 Product Manager", "Analyzing requirements & writing PRD...", result, lambda: self._stage_pm(result, requirement))
+            except ClarificationNeeded as exc:
+                self._pause_for_clarification(result, "pm", exc.questions)
+                return self._finish(result, start_time)
             if result.errors:
                 self._save_checkpoint(result)
                 return self._finish(result, start_time)
@@ -676,7 +684,11 @@ class Orchestrator:
 
         # ── Stage 2: Architect ────────────────────────────────────────────────
         if "architect" not in result.completed_stages:
-            self._run_stage("🏗️  Architect", "Designing system architecture...", result, lambda: self._stage_architect(result))
+            try:
+                self._run_stage("🏗️  Architect", "Designing system architecture...", result, lambda: self._stage_architect(result))
+            except ClarificationNeeded as exc:
+                self._pause_for_clarification(result, "architect", exc.questions)
+                return self._finish(result, start_time)
             if result.errors:
                 self._save_checkpoint(result)
                 return self._finish(result, start_time)
@@ -771,22 +783,26 @@ class Orchestrator:
     # ── Stage implementations ────────────────────────────────────────────────
 
     def _stage_pm(self, result: PipelineResult, requirement: str) -> None:
+        ctx = self._build_clarification_context(result.clarification_history, stage="pm")
+        effective_req = f"{ctx}\n\n---\n\n{requirement}" if ctx else requirement
         if self.github:
-            pm_result = self.pm.run_with_github(requirement, self.github)
+            pm_result = self.pm.run_with_github(effective_req, self.github)
             result.issue_number = pm_result["issue_number"]
             result.issue_url = pm_result["issue_url"]
         else:
-            pm_result = self.pm.run(requirement)
+            pm_result = self.pm.run(effective_req)
         result.prd = pm_result["prd"]
         result.project_name = pm_result["project_name"]
 
     def _stage_architect(self, result: PipelineResult) -> None:
+        ctx = self._build_clarification_context(result.clarification_history, stage="architect")
+        effective_prd = f"{ctx}\n\n---\n\n{result.prd}" if ctx else result.prd
         if self.github and result.issue_number:
             arch_result = self.architect.run_with_github(
-                result.prd, result.project_name, self.github, result.issue_number
+                effective_prd, result.project_name, self.github, result.issue_number
             )
         else:
-            arch_result = self.architect.run(result.prd, result.project_name)
+            arch_result = self.architect.run(effective_prd, result.project_name)
         result.design = arch_result["design"]
         result.modules = arch_result["modules"]
 
@@ -1041,10 +1057,92 @@ class Orchestrator:
             try:
                 fn()
                 console.print(f"  ✅ [green]{name}[/green] complete")
+            except ClarificationNeeded:
+                raise  # handled by run() — do not log as error
             except Exception as exc:
                 error_msg = f"{name} failed: {exc}"
                 result.errors.append(error_msg)
                 console.print(f"  ❌ [red]{error_msg}[/red]")
+
+    def _build_clarification_context(self, history: list[dict], stage: str) -> str:
+        """Build an answer-injection block for a specific stage from Q&A history.
+
+        Returns an empty string if there are no completed rounds for this stage.
+        The returned block is prepended to the agent's main input so the agent
+        treats the answers as authoritative requirements.
+        """
+        rounds = [r for r in history if r.get("stage") == stage]
+        if not rounds:
+            return ""
+        lines = ["## Clarification Answers (from repository owner)\n"]
+        for r in rounds:
+            lines.append(f"### Round {r['round']}")
+            for q, a in zip(r["questions"], r["answers"]):
+                lines.append(f"{q}")
+                lines.append(f"→ {a}\n")
+        return "\n".join(lines)
+
+    def _pause_for_clarification(
+        self,
+        result: PipelineResult,
+        stage_key: str,
+        questions: list[str],
+    ) -> None:
+        """Post Q&A comment to GitHub, save checkpoint, switch to agent-waiting.
+
+        Called from run() when ClarificationNeeded is caught at stage boundary.
+        Does nothing if GitHub integration is not configured.
+        If qa_rounds >= 3, logs a warning and returns WITHOUT pausing (proceed
+        with assumptions on next run).
+        """
+        qa_rounds = sum(1 for r in result.clarification_history if r.get("stage") == stage_key) + 1
+
+        # Enforce max 3 Q&A rounds
+        if qa_rounds > 3:
+            console.print(
+                f"  ⚠️  [yellow]Max Q&A rounds reached for stage '{stage_key}' "
+                f"— proceeding with assumptions[/yellow]"
+            )
+            return
+
+        console.print(f"  🤔 [yellow]Clarification needed (round {qa_rounds})[/yellow]")
+
+        comment_id: Optional[int] = None
+        if self.github and result.issue_number:
+            q_lines = "\n".join(f"**{q}**" for q in questions)
+            comment_body = (
+                f"<!-- ai-question:{stage_key}:round-{qa_rounds} -->\n"
+                f"🤖 **AI needs clarification before proceeding**\n\n"
+                f"Please answer the following questions by replying to this comment:\n\n"
+                f"{q_lines}\n\n"
+                f"_Pipeline paused. It will resume automatically when you reply. "
+                f"If no answer is received within 24 hours, the pipeline will proceed "
+                f"with its best assumptions._"
+            )
+            try:
+                resp = self.github.add_issue_comment(result.issue_number, comment_body)
+                comment_id = resp.get("id") if isinstance(resp, dict) else None
+            except Exception as exc:
+                console.print(f"  ⚠️  [yellow]Could not post comment: {exc}[/yellow]")
+
+            # Switch labels: remove agent-running, add agent-waiting
+            try:
+                from watcher import LABEL_RUNNING, LABEL_WAITING
+                self.github.remove_pr_label(result.issue_number, LABEL_RUNNING)
+                self.github.add_pr_label(result.issue_number, LABEL_WAITING)
+            except Exception as exc:
+                console.print(f"  ⚠️  [yellow]Could not update labels: {exc}[/yellow]")
+
+        import datetime as _dt
+        result.pending_clarification = {
+            "stage": stage_key,
+            "questions": questions,
+            "question_comment_id": comment_id,
+            "asked_at": _dt.datetime.utcnow().isoformat() + "Z",
+            "qa_rounds": qa_rounds,
+        }
+        self._save_checkpoint(result)
+        console.print(f"  ⏸️  [yellow]Pipeline paused — waiting for human reply[/yellow]")
 
     def _save_files_locally(self, files: dict[str, str], project_name: str) -> None:
         """Save generated files to the local workspace directory."""
