@@ -33,6 +33,10 @@ try:
     from mcp import StdioServerParameters as _StdioServerParameters
     from mcp.client.stdio import stdio_client as _stdio_client
     from mcp.client.sse import sse_client as _sse_client
+    try:
+        from mcp.client.streamable_http import streamablehttp_client as _streamablehttp_client
+    except ImportError:
+        _streamablehttp_client = None  # type: ignore[assignment]
     _MCP_AVAILABLE = True
 except ImportError:
     _MCP_AVAILABLE = False
@@ -40,6 +44,7 @@ except ImportError:
     _StdioServerParameters = None  # type: ignore[assignment]
     _stdio_client = None  # type: ignore[assignment]
     _sse_client = None  # type: ignore[assignment]
+    _streamablehttp_client = None  # type: ignore[assignment]
 
 _ENV_RE = re.compile(r"\$\{([^}]+)\}")
 
@@ -118,7 +123,8 @@ class MCPToolRegistry(ToolRegistry):
 
     async def _list_tools(self, server: dict) -> list:
         """Open a transport connection, initialize the session, and list tools."""
-        async with self._open_transport(server) as (read, write):
+        async with self._open_transport(server) as transport:
+            read, write = transport[0], transport[1]  # normalise 2- or 3-tuple
             async with _ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.list_tools()
@@ -128,7 +134,8 @@ class MCPToolRegistry(ToolRegistry):
         """Open a transport connection and call a named tool with given arguments."""
         # Strip prefix if the tool was registered with one.
         bare_name = name.split("__", 1)[-1]
-        async with self._open_transport(server) as (read, write):
+        async with self._open_transport(server) as transport:
+            read, write = transport[0], transport[1]  # normalise 2- or 3-tuple
             async with _ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.call_tool(bare_name, arguments)
@@ -152,7 +159,14 @@ class MCPToolRegistry(ToolRegistry):
                 env={**os.environ, **_expand_env_dict(server.get("env", {}))},
             )
             return _stdio_client(params)
-        elif stype in ("sse", "http"):
+        elif stype == "http":
+            # Streamable HTTP transport (MCP spec 2025-03-26+)
+            if _streamablehttp_client is None:
+                raise ImportError("streamablehttp_client not available — upgrade mcp package")
+            headers = _expand_env_dict(server.get("headers", {}))
+            return _streamablehttp_client(server["url"], headers=headers or None)
+        elif stype == "sse":
+            # Legacy SSE transport
             headers = _expand_env_dict(server.get("headers", {}))
             return _sse_client(server["url"], headers=headers or None)
         else:
