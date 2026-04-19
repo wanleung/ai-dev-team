@@ -62,8 +62,9 @@ class DocOrchestrator:
         self.model = model
         self.branch_prefix = branch_prefix
         self._github_token = github_token
-        # model_overrides reserved for future use
         self._model_overrides = model_overrides or {}
+        # Resolve model for documentation_agent role (fall back to base model)
+        self._doc_model = self._model_overrides.get("documentation_agent", model)
 
         self.github: Optional[GitHubClient] = None
         if github_repo:
@@ -205,7 +206,7 @@ class DocOrchestrator:
 
     def _stage_generate(self, result: DocResult, target_gh: GitHubClient) -> None:
         """Run DocumentationAgent to produce file writes."""
-        agent = DocumentationAgent(model=self.model, github_token=self._github_token)
+        agent = DocumentationAgent(model=self._doc_model, github_token=self._github_token)
         result.file_writes = agent.run(
             issue_title=result.issue_title,
             issue_body=result.issue_body,
