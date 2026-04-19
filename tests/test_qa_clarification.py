@@ -119,3 +119,40 @@ def test_build_clarification_context_filters_by_stage():
     ctx = orch._build_clarification_context(history, stage="pm")
     assert "Q1: DB?" in ctx
     assert "Q2: API?" not in ctx
+
+
+# ── Task 4: Watcher agent-waiting polling ──────────────────────────────────
+
+def test_extract_answers_from_comments():
+    """extract_answers_from_comments returns answers after the question comment."""
+    from watcher import extract_answers_from_comments
+    comments = [
+        {"id": 10, "body": "<!-- ai-question:pm:round-1 -->\n**Q1: colour?**", "user": {"login": "bot"}},
+        {"id": 20, "body": "Blue please", "user": {"login": "owner"}},
+        {"id": 30, "body": "Also dark mode", "user": {"login": "owner"}},
+    ]
+    answers = extract_answers_from_comments(comments, question_comment_id=10, bot_login="bot")
+    assert "Blue please" in answers
+    assert "Also dark mode" in answers
+
+
+def test_extract_answers_empty_when_no_reply():
+    """extract_answers_from_comments returns empty list when no human reply yet."""
+    from watcher import extract_answers_from_comments
+    comments = [
+        {"id": 10, "body": "<!-- ai-question:pm:round-1 -->\n**Q1?**", "user": {"login": "bot"}},
+    ]
+    answers = extract_answers_from_comments(comments, question_comment_id=10, bot_login="bot")
+    assert answers == []
+
+
+def test_label_waiting_in_skip_labels():
+    """LABEL_WAITING must be in SKIP_LABELS so the main dispatch loop ignores it."""
+    from watcher import LABEL_WAITING, SKIP_LABELS
+    assert LABEL_WAITING in SKIP_LABELS
+
+
+def test_label_waiting_value():
+    """LABEL_WAITING must equal 'agent-waiting'."""
+    from watcher import LABEL_WAITING
+    assert LABEL_WAITING == "agent-waiting"
