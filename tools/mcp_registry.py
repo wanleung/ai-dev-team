@@ -152,11 +152,11 @@ class MCPToolRegistry(ToolRegistry):
                 env={**os.environ, **_expand_env_dict(server.get("env", {}))},
             )
             return _stdio_client(params)
-        elif stype == "sse":
+        elif stype in ("sse", "http"):
             headers = _expand_env_dict(server.get("headers", {}))
             return _sse_client(server["url"], headers=headers or None)
         else:
-            raise ValueError(f"Unknown MCP server type: {stype!r}. Use 'stdio' or 'sse'.")
+            raise ValueError(f"Unknown MCP server type: {stype!r}. Use 'stdio', 'sse', or 'http'.")
 
     @property
     def schemas(self) -> list[dict]:
