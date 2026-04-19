@@ -48,6 +48,13 @@ llm:
   #   All other Go models use chat/completions — supports tool-calling (fixes Code Reviewer).
   #   Override base URL with OPENCODE_GO_BASE_URL env var.
   #
+  # ── NVIDIA NIM API (OpenAI-compatible, NVIDIA_API_KEY required) ──────────
+  #   nvidia-nim/<model-id>    e.g. nvidia-nim/nvidia/glm-4.1-9b-ea
+  #                                 nvidia-nim/meta/llama-3.3-70b-instruct
+  #                                 nvidia-nim/mistralai/mistral-7b-instruct-v0.3
+  #   Set NVIDIA_API_KEY env var. Get your key at https://build.nvidia.com/
+  #   Override base URL with NVIDIA_NIM_BASE_URL env var (default: https://integrate.api.nvidia.com/v1)
+  #
   # Claude models are auto-detected by name prefix "claude-" and will use
   # the Anthropic API automatically. No extra config needed.
   model: "ollama/llama4"

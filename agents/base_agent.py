@@ -1,5 +1,5 @@
 """
-BaseAgent: supports six LLM backends, selectable per-agent via config.yaml.
+BaseAgent: supports seven LLM backends, selectable per-agent via config.yaml.
 
   backend: github_models   — GitHub Models API (OpenAI-compatible, uses GITHUB_TOKEN)
   backend: anthropic       — Anthropic Claude API (uses ANTHROPIC_API_KEY)
@@ -11,6 +11,8 @@ BaseAgent: supports six LLM backends, selectable per-agent via config.yaml.
   backend: opencode_go     — OpenCode Go plan API (direct HTTP, model prefix "opencode-go/",
                              uses OPENCODE_ZEN_API_KEY; MiniMax models use the Anthropic
                              Messages endpoint, all others use chat/completions)
+  backend: nvidia_nim      — NVIDIA NIM API (OpenAI-compatible, model prefix "nvidia-nim/",
+                             uses NVIDIA_API_KEY; base URL https://integrate.api.nvidia.com/v1)
 
 Default backend is github_models for backwards compatibility.
 """
@@ -63,6 +65,11 @@ def _is_opencode_go_model(model: str) -> bool:
     return model.startswith("opencode-go/")
 
 
+def _is_nvidia_nim_model(model: str) -> bool:
+    """Return True if the model should use the NVIDIA NIM API."""
+    return model.startswith("nvidia-nim/")
+
+
 class BaseAgent:
     """Base class for all software house agents.
 
@@ -77,6 +84,8 @@ class BaseAgent:
       - opencode_go:    OpenCode Go plan direct API (model prefix "opencode-go/<model-id>",
                         OPENCODE_ZEN_API_KEY; MiniMax models route to /messages,
                         others to /chat/completions — supports tool-calling)
+      - nvidia_nim:     NVIDIA NIM API (model prefix "nvidia-nim/<model-id>",
+                        NVIDIA_API_KEY; OpenAI-compatible chat/completions)
 
     Backend is auto-selected from the model name unless overridden.
     """
@@ -88,11 +97,13 @@ class BaseAgent:
         model: str = "gpt-4.1",
         github_token: Optional[str] = None,
         roles_dir: Optional[Path] = None,
-        backend: Optional[str] = None,  # "github_models" | "anthropic" | "ollama" | "opencode" | "opencode_zen" | "opencode_go" | None (auto)
+        backend: Optional[str] = None,  # "github_models" | "anthropic" | "ollama" | "opencode" | "opencode_zen" | "opencode_go" | "nvidia_nim" | None (auto)
         ollama_url: str = "http://localhost:11434",
         opencode_zen_api_key: Optional[str] = None,
         opencode_zen_base_url: Optional[str] = None,
         opencode_go_base_url: Optional[str] = None,
+        nvidia_nim_api_key: Optional[str] = None,
+        nvidia_nim_base_url: Optional[str] = None,
         retry_delay: int = 15,
         max_api_retries: int = 5,
         inter_call_delay: int = 0,
@@ -114,9 +125,12 @@ class BaseAgent:
         use_opencode_go = (backend == "opencode_go") or (
             backend is None and _is_opencode_go_model(model)
         )
+        use_nvidia_nim = (backend == "nvidia_nim") or (
+            backend is None and _is_nvidia_nim_model(model)
+        )
         use_anthropic = (backend == "anthropic") or (
             backend is None and not use_opencode_zen and not use_opencode_go
-            and _is_anthropic_model(model)
+            and not use_nvidia_nim and _is_anthropic_model(model)
         )
         use_ollama = (backend == "ollama") or (
             backend is None and _is_ollama_model(model)
@@ -126,6 +140,7 @@ class BaseAgent:
         )
 
         if use_opencode_go:
+            self._backend = "opencode_go"
             self._backend = "opencode_go"
             # Strip "opencode-go/" prefix → remainder is the model ID for the Go plan API
             # e.g. "opencode-go/kimi-k2.5" → "kimi-k2.5"
@@ -192,6 +207,27 @@ class BaseAgent:
                 # All other models: use OpenAI-compatible chat/completions endpoint
                 self.client = OpenAI(base_url=zen_base, api_key=zen_key)
                 self._anthropic_client = None
+        elif use_nvidia_nim:
+            self._backend = "nvidia_nim"
+            # Strip "nvidia-nim/" prefix → remainder is the model ID for NVIDIA NIM
+            # e.g. "nvidia-nim/nvidia/glm-4.1-9b-ea" → "nvidia/glm-4.1-9b-ea"
+            self._api_model = model.removeprefix("nvidia-nim/")
+            nim_key = (
+                nvidia_nim_api_key
+                or os.environ.get("NVIDIA_API_KEY")
+            )
+            if not nim_key:
+                raise EnvironmentError(
+                    "NVIDIA_API_KEY environment variable is required for the nvidia_nim backend. "
+                    "Get your key at https://build.nvidia.com/"
+                )
+            nim_base = (
+                nvidia_nim_base_url
+                or os.environ.get("NVIDIA_NIM_BASE_URL")
+                or "https://integrate.api.nvidia.com/v1"
+            ).rstrip("/")
+            self.client = OpenAI(base_url=nim_base, api_key=nim_key)
+            self._anthropic_client = None
         elif use_opencode:
             self._backend = "opencode"
             # Strip "opencode/" prefix → remainder is the provider/model for opencode CLI

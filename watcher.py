@@ -229,6 +229,8 @@ def _dispatch(
     effective_model = cfg_model if cfg_model and cfg_model != "gpt-4.1" else model
     model_overrides = llm_cfg.get("overrides", {})
     ollama_url = llm_cfg.get("ollama_url", "http://localhost:11434")
+    nvidia_nim_api_key = llm_cfg.get("nvidia_nim_api_key") or os.environ.get("NVIDIA_API_KEY")
+    nvidia_nim_base_url = llm_cfg.get("nvidia_nim_base_url") or os.environ.get("NVIDIA_NIM_BASE_URL")
     retry_delay = pipe_cfg.get("retry_delay", 15)
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
@@ -256,6 +258,8 @@ def _dispatch(
                     num_engineers=num_engineers,
                     use_github=True,
                     ollama_url=ollama_url,
+                    nvidia_nim_api_key=nvidia_nim_api_key,
+                    nvidia_nim_base_url=nvidia_nim_base_url,
                     retry_delay=retry_delay,
                     max_api_retries=max_api_retries,
                     inter_call_delay=inter_call_delay,

@@ -190,6 +190,8 @@ class Orchestrator:
         use_github: bool = False,
         target_repo: Optional[str] = None,
         ollama_url: str = "http://localhost:11434",
+        nvidia_nim_api_key: Optional[str] = None,
+        nvidia_nim_base_url: Optional[str] = None,
         max_revisions: int = 3,
         skill_loader: Optional["SkillLoader"] = None,
         mcp_servers: list[dict] | None = None,
@@ -219,6 +221,8 @@ class Orchestrator:
 
         # Shared kwargs for all agents
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
+                              "nvidia_nim_api_key": nvidia_nim_api_key,
+                              "nvidia_nim_base_url": nvidia_nim_base_url,
                               "retry_delay": retry_delay, "max_api_retries": max_api_retries,
                               "inter_call_delay": inter_call_delay}
         self.agent_kwargs = agent_kwargs
