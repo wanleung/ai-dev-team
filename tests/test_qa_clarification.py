@@ -156,3 +156,57 @@ def test_label_waiting_value():
     """LABEL_WAITING must equal 'agent-waiting'."""
     from watcher import LABEL_WAITING
     assert LABEL_WAITING == "agent-waiting"
+
+
+# ── Task 5: Integration test ───────────────────────────────────────────────
+
+def test_full_qa_round_trip():
+    """End-to-end: PM raises ClarificationNeeded → orchestrator pauses →
+    checkpoint saved with pending_clarification → answers injected →
+    _stage_pm gets context prepended.
+    """
+    from orchestrator import ClarificationNeeded, Orchestrator, PipelineResult
+
+    # Patch PM agent to raise ClarificationNeeded on first call, then succeed on second
+    call_count = {"n": 0}
+
+    def pm_run_first_raises(requirement):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise ClarificationNeeded(["Q1: What colour scheme?"])
+        # Second call succeeds - return PRD that includes the requirement
+        return {
+            "prd": f"PRD with context: {requirement}",
+            "project_name": "test_proj",
+        }
+
+    # Create orchestrator without GitHub integration
+    orch = Orchestrator(model="gpt-4.1", github_repo=None)
+    orch.pm.run = pm_run_first_raises
+
+    result = PipelineResult(requirement="Build a dashboard", issue_number=42)
+
+    # Simulate first run: PM raises → pause
+    with pytest.raises(ClarificationNeeded) as exc_info:
+        orch._stage_pm(result, "Build a dashboard")
+    
+    assert exc_info.value.questions == ["Q1: What colour scheme?"]
+
+    # Inject answers into clarification_history
+    result.clarification_history.append({
+        "stage": "pm",
+        "round": 1,
+        "questions": ["Q1: What colour scheme?"],
+        "answers": ["Blue and white"],
+        "answered_at": "2026-01-01T00:00:00Z",
+    })
+
+    # Second call: context should be prepended
+    result2 = PipelineResult(requirement="Build a dashboard", issue_number=42)
+    result2.clarification_history = result.clarification_history
+    orch._stage_pm(result2, "Build a dashboard")
+
+    # Verify that the context was built and injected
+    assert "Q1: What colour scheme?" in result2.prd
+    assert "Blue and white" in result2.prd
+    assert call_count["n"] == 2

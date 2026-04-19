@@ -107,6 +107,10 @@ class GitHubClient:
             json={"state": "closed"},
         )
 
+    def list_issues_by_label(self, label: str) -> list[dict]:
+        """Return all open issues with the given label."""
+        return self._request("GET", f"/repos/{self.repo}/issues", params={"labels": label, "state": "open"})
+
     # ── Branches & Files ────────────────────────────────────────────────────
 
     def get_default_branch(self) -> str:
