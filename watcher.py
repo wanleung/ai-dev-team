@@ -272,6 +272,7 @@ def _dispatch(
 
                 orch = DocOrchestrator(
                     model=effective_model,
+                    model_overrides=model_overrides,
                     github_token=token,
                     github_repo=tracker_repo,
                 )
