@@ -67,6 +67,18 @@ def _parse_explicit_skills(text: str) -> list[str]:
     return [s.strip() for s in m.group(1).split(",") if s.strip()]
 
 
+class ClarificationNeeded(Exception):
+    """Raised by PM or Architect agents when requirements are ambiguous.
+
+    The orchestrator catches this, posts a GitHub comment with the questions,
+    saves a checkpoint, and pauses the pipeline (agent-waiting label).
+    """
+
+    def __init__(self, questions: list[str]) -> None:
+        self.questions = questions
+        super().__init__(f"Clarification needed: {len(questions)} question(s)")
+
+
 @dataclass
 class PipelineResult:
     """Holds the full output of a completed pipeline run."""
@@ -101,6 +113,9 @@ class PipelineResult:
     duration_seconds: float = 0.0
     errors: list[str] = field(default_factory=list)
     completed_stages: list[str] = field(default_factory=list)  # stages that finished OK
+    # Q&A clarification fields
+    pending_clarification: Optional[dict] = None  # set while waiting for human reply
+    clarification_history: list[dict] = field(default_factory=list)  # completed Q&A rounds
 
     def to_dict(self) -> dict:
         return {
@@ -131,6 +146,8 @@ class PipelineResult:
             "pr_url": self.pr_url,
             "branch": self.branch,
             "completed_stages": self.completed_stages,
+            "pending_clarification": self.pending_clarification,
+            "clarification_history": self.clarification_history,
         }
 
     @classmethod
@@ -142,7 +159,8 @@ class PipelineResult:
                     "test_plan", "deploy_plan",
                     "test_results", "deploy_test_results", "tests_passed", "deploy_tests_passed",
                     "issue_number", "issue_url",
-                    "pr_number", "pr_url", "branch", "completed_stages"]:
+                    "pr_number", "pr_url", "branch", "completed_stages",
+                    "pending_clarification", "clarification_history"]:
             setattr(r, key, data.get(key, getattr(r, key)))
         return r
 
