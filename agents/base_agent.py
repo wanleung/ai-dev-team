@@ -231,9 +231,12 @@ class BaseAgent:
         use_nvidia_nim = (backend == "nvidia_nim") or (
             backend is None and _is_nvidia_nim_model(model)
         )
+        use_copilot = (backend == "copilot") or (
+            backend is None and _is_copilot_model(model)
+        )
         use_anthropic = (backend == "anthropic") or (
             backend is None and not use_opencode_zen and not use_opencode_go
-            and not use_nvidia_nim and _is_anthropic_model(model)
+            and not use_nvidia_nim and not use_copilot and _is_anthropic_model(model)
         )
         use_ollama = (backend == "ollama") or (
             backend is None and _is_ollama_model(model)
@@ -241,26 +244,15 @@ class BaseAgent:
         use_opencode = (backend == "opencode") or (
             backend is None and _is_opencode_model(model)
         )
-        use_copilot = (backend == "copilot") or (
-            backend is None and _is_copilot_model(model)
-        )
 
         if use_copilot:
             self._backend = "copilot"
             self._api_model = model.removeprefix("copilot/")
             self._copilot_oauth_token = _discover_copilot_oauth_token()
             session_token = _fetch_copilot_session_token(self._copilot_oauth_token)
-            self.client = OpenAI(
-                base_url=_COPILOT_API_BASE,
-                api_key=session_token,
-                default_headers={
-                    "Editor-Version": "vscode/1.90.0",
-                    "Copilot-Integration-Id": "vscode-chat",
-                },
-            )
+            self.client = self._build_copilot_client(session_token)
             self._anthropic_client = None
         elif use_opencode_go:
-            self._backend = "opencode_go"
             self._backend = "opencode_go"
             # Strip "opencode-go/" prefix → remainder is the model ID for the Go plan API
             # e.g. "opencode-go/kimi-k2.5" → "kimi-k2.5"
@@ -392,6 +384,17 @@ class BaseAgent:
         """Clear conversation history (call between unrelated pipeline tasks)."""
         self._history = []
 
+    def _build_copilot_client(self, token: str) -> "OpenAI":
+        """Build an OpenAI client configured for the GitHub Copilot Chat API."""
+        return OpenAI(
+            base_url=_COPILOT_API_BASE,
+            api_key=token,
+            default_headers={
+                "Editor-Version": "vscode/1.90.0",
+                "Copilot-Integration-Id": "vscode-chat",
+            },
+        )
+
     def _ensure_copilot_session(self) -> None:
         """Refresh the Copilot session token if it is within 60s of expiry.
 
@@ -403,14 +406,7 @@ class BaseAgent:
         if time.time() < _COPILOT_SESSION["expires_at"] - 60:
             return
         new_token = _fetch_copilot_session_token(self._copilot_oauth_token)
-        self.client = OpenAI(
-            base_url=_COPILOT_API_BASE,
-            api_key=new_token,
-            default_headers={
-                "Editor-Version": "vscode/1.90.0",
-                "Copilot-Integration-Id": "vscode-chat",
-            },
-        )
+        self.client = self._build_copilot_client(new_token)
 
     def request_clarification(self, questions: list[str]) -> None:
         """Pause the pipeline and ask the human clarifying questions.
@@ -584,6 +580,12 @@ class BaseAgent:
         max_retries = self._max_api_retries
         delay = self._retry_delay
 
+        # Refresh Copilot session token if near expiry
+        try:
+            self._ensure_copilot_session()
+        except RuntimeError as exc:
+            raise RuntimeError(f"Copilot session refresh failed before tool call: {exc}") from exc
+
         for turn in range(max_turns):
             # Call the API with tool schemas
             for attempt in range(max_retries):
@@ -677,7 +679,10 @@ class BaseAgent:
 
         # OpenAI-compatible backends (GitHub Models, Ollama, opencode_zen/opencode_go non-Anthropic, Copilot)
         # Refresh Copilot session token if near expiry
-        self._ensure_copilot_session()
+        try:
+            self._ensure_copilot_session()
+        except RuntimeError as exc:
+            raise RuntimeError(f"Copilot session refresh failed before API call: {exc}") from exc
         messages: list[dict] = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
