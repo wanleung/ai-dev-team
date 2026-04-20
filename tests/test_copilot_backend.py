@@ -1,4 +1,5 @@
 """Unit tests for GitHub Copilot backend in ai-software-house."""
+import io
 import json
 import os
 import time
@@ -76,14 +77,16 @@ def test_fetch_session_token_success():
 def test_fetch_session_token_raises_on_http_error():
     from agents.base_agent import _fetch_copilot_session_token
     import urllib.error
+    mock_body = b'{"message":"Bad credentials"}'
     with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
-        url="", code=401, msg="Unauthorized", hdrs={}, fp=None
+        url="", code=401, msg="Unauthorized", hdrs={}, fp=io.BytesIO(mock_body)
     )):
         try:
             _fetch_copilot_session_token("gho_bad")
             assert False, "Should have raised RuntimeError"
         except RuntimeError as exc:
             assert "401" in str(exc)
+            assert "Bad credentials" in str(exc)
 
 
 def test_fetch_session_token_raises_on_url_error():
