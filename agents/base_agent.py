@@ -162,7 +162,7 @@ def _fetch_copilot_session_token(oauth_token: str) -> str:
         expires_str: str = data["expires_at"]
         # Parse ISO 8601 expiry ("2026-04-20T15:00:00Z") to a Unix timestamp
         dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-    except (KeyError, ValueError) as exc:
+    except (KeyError, ValueError, AttributeError) as exc:
         raise RuntimeError(
             f"Copilot token exchange failed: unexpected response format — {exc}"
         ) from exc
