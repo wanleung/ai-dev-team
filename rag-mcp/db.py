@@ -15,6 +15,11 @@ _DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 def _get_conn():
     """Return a new psycopg2 connection with pgvector registered."""
+    if not _DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL environment variable is not set. "
+            "Example: postgresql://user:pass@localhost:5432/ragdb"
+        )
     conn = psycopg2.connect(_DATABASE_URL)
     register_vector(conn)
     return conn
@@ -30,6 +35,7 @@ def apply_migration(sql_path: str) -> None:
             cur.execute(sql)
         conn.commit()
     finally:
+        conn.rollback()  # no-op on success; rolls back aborted transaction on failure
         conn.close()
 
 
@@ -70,7 +76,7 @@ def search_chunks(
             content=row[0],
             source_id=row[1],
             chunk_index=row[2],
-            score=float(row[3]),
+            score=max(0.0, min(1.0, float(row[3]))),
             metadata=row[4] if isinstance(row[4], dict) else json.loads(row[4] or "{}"),
         )
         for row in rows
@@ -111,6 +117,7 @@ def upsert_chunk(
             )
         conn.commit()
     finally:
+        conn.rollback()  # no-op on success; rolls back aborted transaction on failure
         conn.close()
 
 
@@ -136,5 +143,6 @@ def delete_stale_chunks(source_type: str, live_source_ids: list[str]) -> int:
             deleted = cur.rowcount
         conn.commit()
     finally:
+        conn.rollback()  # no-op on success; rolls back aborted transaction on failure
         conn.close()
     return deleted
