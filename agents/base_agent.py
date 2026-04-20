@@ -146,7 +146,7 @@ def _fetch_copilot_session_token(oauth_token: str) -> str:
         with urllib.request.urlopen(req) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors="replace")
+        body = exc.read().decode(errors="replace")[:500]
         raise RuntimeError(
             f"Copilot token exchange failed: HTTP {exc.code} — {exc.reason}\n{body}"
         ) from exc
@@ -249,8 +249,9 @@ class BaseAgent:
             self._backend = "copilot"
             self._api_model = model.removeprefix("copilot/")
             self._copilot_oauth_token = _discover_copilot_oauth_token()
-            session_token = _fetch_copilot_session_token(self._copilot_oauth_token)
-            self.client = self._build_copilot_client(session_token)
+            if time.time() >= _COPILOT_SESSION["expires_at"] - 60:
+                _fetch_copilot_session_token(self._copilot_oauth_token)
+            self.client = self._build_copilot_client(_COPILOT_SESSION["token"])
             self._anthropic_client = None
         elif use_opencode_go:
             self._backend = "opencode_go"
