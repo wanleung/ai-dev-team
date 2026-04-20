@@ -31,6 +31,8 @@ _CHUNK_OVERLAP_TEXT = int(os.environ.get("CHUNK_OVERLAP_TEXT", "50"))
 
 def chunk_code(text: str, chunk_size: int = _CHUNK_SIZE_CODE, overlap: int = _CHUNK_OVERLAP_CODE) -> list[str]:
     """Split text into chunks of chunk_size lines with overlap lines of overlap."""
+    if overlap >= chunk_size:
+        raise ValueError(f"overlap ({overlap}) must be less than chunk_size ({chunk_size})")
     lines = text.splitlines()
     if len(lines) <= chunk_size:
         return [text]
@@ -51,6 +53,8 @@ def chunk_text(text: str, chunk_size: int = _CHUNK_SIZE_TEXT, overlap: int = _CH
 
     Uses words as a proxy for tokens (1 word ≈ 1.3 tokens on average).
     """
+    if overlap >= chunk_size:
+        raise ValueError(f"overlap ({overlap}) must be less than chunk_size ({chunk_size})")
     words = text.split()
     if len(words) <= chunk_size:
         return [text]
@@ -82,7 +86,12 @@ def index_codebase(
             continue
         source_id = str(fpath)
         live_ids.append(source_id)
-        text = fpath.read_text(errors="replace")
+        try:
+            text = fpath.read_text(errors="replace")
+        except OSError as exc:
+            log.warning("Skipping unreadable file %s: %s", fpath, exc)
+            live_ids.pop()  # don't count unreadable file as live
+            continue
         chunks = chunk_code(text)
         for i, chunk in enumerate(chunks):
             try:
@@ -101,8 +110,11 @@ def index_codebase(
             log.info("Indexed codebase %s chunk %d", source_id, i)
 
     if clean:
-        deleted = delete_stale_chunks("codebase", live_ids)
-        log.info("Cleaned %d stale codebase chunks", deleted)
+        try:
+            deleted = delete_stale_chunks("codebase", live_ids)
+            log.info("Cleaned %d stale codebase chunks", deleted)
+        except Exception as exc:
+            log.error("Failed to delete stale chunks (indexing itself succeeded): %s", exc)
 
 
 def index_docs(
@@ -121,7 +133,12 @@ def index_docs(
             continue
         source_id = str(fpath)
         live_ids.append(source_id)
-        text = fpath.read_text(errors="replace")
+        try:
+            text = fpath.read_text(errors="replace")
+        except OSError as exc:
+            log.warning("Skipping unreadable file %s: %s", fpath, exc)
+            live_ids.pop()  # don't count unreadable file as live
+            continue
         chunks = chunk_text(text)
         for i, chunk in enumerate(chunks):
             try:
@@ -140,8 +157,11 @@ def index_docs(
             log.info("Indexed docs %s chunk %d", source_id, i)
 
     if clean:
-        deleted = delete_stale_chunks("docs", live_ids)
-        log.info("Cleaned %d stale docs chunks", deleted)
+        try:
+            deleted = delete_stale_chunks("docs", live_ids)
+            log.info("Cleaned %d stale docs chunks", deleted)
+        except Exception as exc:
+            log.error("Failed to delete stale chunks (indexing itself succeeded): %s", exc)
 
 
 def index_memory(db_path: str, embedder: Embedder) -> None:
@@ -172,6 +192,7 @@ def index_memory(db_path: str, embedder: Embedder) -> None:
                         embedding = embedder.embed(chunk)
                     except EmbedderError as exc:
                         log.warning("Skipping memory run=%s part=%s: %s", run_id, part_name, exc)
+                        chunk_index += 1  # advance so subsequent chunks keep correct positions
                         continue
                     upsert_chunk(
                         source_type="memory",
@@ -181,8 +202,8 @@ def index_memory(db_path: str, embedder: Embedder) -> None:
                         embedding=embedding,
                         metadata={"part": part_name, "ts": created_at},
                     )
-                    chunk_index += 1
                     log.info("Indexed memory run=%s chunk %d", run_id, chunk_index)
+                    chunk_index += 1
     finally:
         conn.close()
 

@@ -39,7 +39,7 @@ def test_chunk_text_produces_correct_token_count():
     assert len(chunks) >= 2
     # Each chunk is at most chunk_size words
     for c in chunks:
-        assert len(c.split()) <= 560  # 500 + small tolerance
+        assert len(c.split()) <= 500
 
 
 def test_chunk_code_single_chunk_when_file_is_small():
@@ -49,6 +49,26 @@ def test_chunk_code_single_chunk_when_file_is_small():
     text = "\n".join(f"line {i}" for i in range(10))
     chunks = chunk_code(text)
     assert len(chunks) == 1
+
+
+def test_chunk_code_raises_on_invalid_overlap():
+    """chunk_code raises ValueError when overlap >= chunk_size."""
+    from indexer import chunk_code
+
+    with pytest.raises(ValueError, match="overlap"):
+        chunk_code("line1\nline2\n", chunk_size=5, overlap=5)
+    with pytest.raises(ValueError, match="overlap"):
+        chunk_code("line1\nline2\n", chunk_size=5, overlap=10)
+
+
+def test_chunk_text_raises_on_invalid_overlap():
+    """chunk_text raises ValueError when overlap >= chunk_size."""
+    from indexer import chunk_text
+
+    with pytest.raises(ValueError, match="overlap"):
+        chunk_text("word " * 100, chunk_size=50, overlap=50)
+    with pytest.raises(ValueError, match="overlap"):
+        chunk_text("word " * 100, chunk_size=50, overlap=100)
 
 
 # ── Indexing ──────────────────────────────────────────────────────────────────
@@ -91,3 +111,81 @@ def test_index_codebase_is_idempotent():
 
     # Both runs call upsert — idempotency is enforced by ON CONFLICT in db.py
     assert mock_upsert.call_count == 2
+
+
+def test_index_codebase_skips_unreadable_files():
+    """index_codebase() skips files that fail to read (logs warning, continues)."""
+    from indexer import index_codebase
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        good_file = Path(tmpdir) / "good.py"
+        good_file.write_text("x = 1\n")
+
+        mock_embedder = MagicMock()
+        mock_embedder.embed.return_value = [0.1] * 768
+
+        with patch("indexer.upsert_chunk") as mock_upsert, \
+             patch.object(Path, "read_text", side_effect=OSError("Permission denied")):
+            # Should not raise — just log and skip
+            index_codebase(tmpdir, mock_embedder, extensions=["py"])
+
+    # No upserts because read_text failed for all files
+    assert mock_upsert.call_count == 0
+
+
+def test_index_codebase_skips_embedder_errors():
+    """index_codebase() skips chunks that fail to embed (logs warning, continues)."""
+    from indexer import index_codebase
+    from embedder import EmbedderError
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "fail.py").write_text("x = 1\n")
+
+        mock_embedder = MagicMock()
+        mock_embedder.embed.side_effect = EmbedderError("backend down")
+
+        with patch("indexer.upsert_chunk") as mock_upsert:
+            # Should not raise — just log and skip
+            index_codebase(tmpdir, mock_embedder, extensions=["py"])
+
+    # No upserts because embedding failed
+    assert mock_upsert.call_count == 0
+
+
+def test_index_codebase_calls_delete_stale_chunks_on_clean():
+    """index_codebase() with clean=True calls delete_stale_chunks after indexing."""
+    from indexer import index_codebase
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "a.py").write_text("x = 1\n")
+
+        mock_embedder = MagicMock()
+        mock_embedder.embed.return_value = [0.1] * 768
+
+        with patch("indexer.upsert_chunk"), \
+             patch("indexer.delete_stale_chunks") as mock_delete:
+            index_codebase(tmpdir, mock_embedder, extensions=["py"], clean=True)
+
+    mock_delete.assert_called_once()
+    call_args = mock_delete.call_args
+    assert call_args[0][0] == "codebase"  # source_type
+    assert any("a.py" in sid for sid in call_args[0][1])  # live_ids contains the file
+
+
+def test_index_codebase_handles_delete_stale_chunks_error():
+    """index_codebase() with clean=True logs error but succeeds if delete_stale_chunks fails."""
+    from indexer import index_codebase
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "a.py").write_text("x = 1\n")
+
+        mock_embedder = MagicMock()
+        mock_embedder.embed.return_value = [0.1] * 768
+
+        with patch("indexer.upsert_chunk") as mock_upsert, \
+             patch("indexer.delete_stale_chunks", side_effect=Exception("DB error")):
+            # Should not raise — just log error
+            index_codebase(tmpdir, mock_embedder, extensions=["py"], clean=True)
+
+    # Indexing succeeded even though cleanup failed
+    assert mock_upsert.call_count == 1
