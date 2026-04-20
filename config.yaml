@@ -55,6 +55,16 @@ llm:
   #   Set NVIDIA_API_KEY env var. Get your key at https://build.nvidia.com/
   #   Override base URL with NVIDIA_NIM_BASE_URL env var (default: https://integrate.api.nvidia.com/v1)
   #
+  # ── GitHub Copilot API (COPILOT_OAUTH_TOKEN or auto-discovered) ───────────
+  #   copilot/<model-id>   e.g. copilot/gpt-4o
+  #                             copilot/claude-sonnet-4.6
+  #                             copilot/gpt-4o-mini
+  #   Auth: set COPILOT_OAUTH_TOKEN=<gho_...> env var, OR the token is
+  #   auto-discovered from ~/.copilot/config.json if you are logged in to
+  #   GitHub Copilot CLI. The backend exchanges the OAuth token for a
+  #   short-lived session token automatically (refreshed every ~30 min).
+  #   OpenAI-compatible — supports tool-calling (code_reviewer, qa_engineer).
+  #
   # Claude models are auto-detected by name prefix "claude-" and will use
   # the Anthropic API automatically. No extra config needed.
   model: "ollama/llama4"
@@ -62,6 +72,11 @@ llm:
   # Per-agent model overrides — mix backends freely per agent.
   # Example: use Claude for reasoning-heavy roles, GPT-4.1-mini for repetitive ones.
   overrides:
+    # ── Copilot backend examples ──────────────────────────────────────────
+    # product_manager: "copilot/gpt-4o"
+    # architect: "copilot/claude-sonnet-4.6"
+    # engineer: "copilot/gpt-4o-mini"
+    # ─────────────────────────────────────────────────────────────────────
     product_manager: "openai/gpt-4.1"          # or "claude-3-5-sonnet-20241022"
     pm_reviewer: "openai/gpt-4.1"
     architect: "openai/gpt-4.1"                # or "claude-3-5-sonnet-20241022"
