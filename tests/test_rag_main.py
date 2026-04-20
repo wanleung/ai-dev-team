@@ -12,6 +12,25 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 
 
+@pytest.fixture
+def load_main_module():
+    """Load main.py as a fresh module with mocked db and embedder dependencies."""
+    os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
+    os.environ.setdefault("EMBED_BACKEND", "ollama")
+
+    import importlib.util
+    main_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rag-mcp", "main.py")
+    
+    with patch("db._get_conn", side_effect=Exception("no db")), \
+         patch("embedder.Embedder.embed", side_effect=Exception("no embed")):
+        spec = importlib.util.spec_from_file_location("main_module", main_path)
+        main_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(main_mod)
+    
+    return main_mod
+
+
+
 
 def test_health_endpoint_returns_ok():
     """GET /health returns {"status": "ok"}."""
@@ -147,3 +166,39 @@ def test_search_codebase_empty_results():
 
     data = json.loads(result)
     assert data == {"results": []}
+
+
+@pytest.mark.parametrize("tool_name", ["search_memory", "search_docs"])
+def test_other_search_tools_return_results(tool_name):
+    """search_memory and search_docs return uniform {"results": [...]} envelope."""
+    import importlib
+    import importlib.util
+    from pathlib import Path
+    from unittest.mock import patch, MagicMock
+
+    os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
+    os.environ.setdefault("EMBED_BACKEND", "ollama")
+
+    rag_mcp_path = Path(__file__).parent.parent / "rag-mcp"
+    if str(rag_mcp_path) not in sys.path:
+        sys.path.insert(0, str(rag_mcp_path))
+
+    from models import SearchResult
+
+    main_path = rag_mcp_path / "main.py"
+    
+    fake_result = SearchResult(content="hello", source_id="memory/note.md", chunk_index=0, score=0.85)
+
+    with patch("db.search_chunks", return_value=[fake_result]):
+        spec = importlib.util.spec_from_file_location("main_fresh", main_path)
+        main_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(main_mod)
+
+        with patch.object(main_mod._embedder, "embed", return_value=[0.1] * 768):
+            result = asyncio.run(getattr(main_mod, tool_name)("query"))
+
+    data = json.loads(result)
+    assert "results" in data
+    assert isinstance(data["results"], list)
+    assert len(data["results"]) == 1
+    assert data["results"][0]["score"] == 0.85

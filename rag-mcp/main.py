@@ -28,6 +28,7 @@ from db import search_chunks
 from embedder import Embedder, EmbedderError
 
 _TOP_K = int(os.environ.get("RAG_TOP_K", "5"))
+_MAX_TOP_K = int(os.environ.get("RAG_MAX_TOP_K", "100"))
 _embedder = Embedder()
 
 mcp = FastMCP("rag-mcp-server")
@@ -50,7 +51,7 @@ async def search_codebase(query: str, top_k: int = _TOP_K) -> str:
     Returns:
         JSON object with "results" key containing SearchResult objects with content, source_id, score, and metadata.
     """
-    top_k = max(1, top_k)
+    top_k = max(1, min(top_k, _MAX_TOP_K))
     try:
         embedding = await asyncio.to_thread(_embedder.embed, query)
         results = await asyncio.to_thread(search_chunks, "codebase", embedding, top_k)
@@ -72,7 +73,7 @@ async def search_memory(query: str, top_k: int = _TOP_K) -> str:
     Returns:
         JSON object with "results" key containing SearchResult objects with content, source_id (run_id), score, and metadata.
     """
-    top_k = max(1, top_k)
+    top_k = max(1, min(top_k, _MAX_TOP_K))
     try:
         embedding = await asyncio.to_thread(_embedder.embed, query)
         results = await asyncio.to_thread(search_chunks, "memory", embedding, top_k)
@@ -94,7 +95,7 @@ async def search_docs(query: str, top_k: int = _TOP_K) -> str:
     Returns:
         JSON object with "results" key containing SearchResult objects with content, source_id (file path), score, and metadata.
     """
-    top_k = max(1, top_k)
+    top_k = max(1, min(top_k, _MAX_TOP_K))
     try:
         embedding = await asyncio.to_thread(_embedder.embed, query)
         results = await asyncio.to_thread(search_chunks, "docs", embedding, top_k)
