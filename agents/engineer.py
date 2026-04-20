@@ -53,7 +53,10 @@ class EngineerAgent(BaseAgent):
                 "\n\nYou have access to RAG search tools: `search_codebase` and `search_docs`. "
                 "Use them to find relevant existing code patterns and documentation before implementing."
             )
-            response = self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
+            try:
+                response = self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
+            except NotImplementedError:
+                response = self.call(prompt)
         else:
             response = self.call(prompt)
         files = self._parse_files(response)

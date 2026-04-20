@@ -64,7 +64,10 @@ class QAEngineerAgent(BaseAgent):
                 "\n\nYou have access to the `search_codebase` RAG tool. "
                 "Use it to find relevant existing code patterns before writing tests."
             )
-            response = self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
+            try:
+                response = self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
+            except NotImplementedError:
+                response = self.call(prompt)
         else:
             response = self.call(prompt)
         test_files = self._parse_test_files(response)

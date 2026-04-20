@@ -45,7 +45,10 @@ class ArchitectAgent(BaseAgent):
                 "\n\nYou have access to RAG search tools: `search_memory` and `search_docs`. "
                 "Use them to find relevant past designs and documentation before producing the system design."
             )
-            design = self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
+            try:
+                design = self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
+            except NotImplementedError:
+                design = self.call(prompt)
         else:
             design = self.call(prompt)
         modules = self._parse_modules(design)
