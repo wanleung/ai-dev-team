@@ -32,6 +32,8 @@ class Embedder:
         Raises:
             EmbedderError: If the backend is unreachable or returns an error.
         """
+        if not text or not text.strip():
+            raise EmbedderError("embed() requires non-empty text")
         try:
             if _BACKEND == "ollama":
                 return self._embed_ollama(text)
@@ -66,7 +68,10 @@ class Embedder:
             resp.raise_for_status()
         except requests.exceptions.RequestException as exc:
             raise EmbedderError(str(exc)) from exc
-        return resp.json()["embedding"]
+        data = resp.json()
+        if "embedding" not in data:
+            raise EmbedderError(f"Unexpected Ollama response: {data!r}")
+        return data["embedding"]
 
     def _embed_vllm(self, text: str) -> list[float]:
         url = f"{_VLLM_BASE}/v1/embeddings"
@@ -79,13 +84,19 @@ class Embedder:
             resp.raise_for_status()
         except requests.exceptions.RequestException as exc:
             raise EmbedderError(str(exc)) from exc
-        return resp.json()["data"][0]["embedding"]
+        data = resp.json()
+        if not data.get("data") or "embedding" not in data["data"][0]:
+            raise EmbedderError(f"Unexpected vLLM response: {data!r}")
+        return data["data"][0]["embedding"]
 
     def _embed_openai(self, text: str) -> list[float]:
         try:
             from openai import OpenAI
         except ImportError as exc:
             raise EmbedderError("openai package not installed") from exc
-        client = OpenAI()
-        resp = client.embeddings.create(model=_OPENAI_MODEL, input=text)
-        return resp.data[0].embedding
+        try:
+            client = OpenAI()
+            resp = client.embeddings.create(model=_OPENAI_MODEL, input=text)
+            return resp.data[0].embedding
+        except Exception as exc:
+            raise EmbedderError(f"OpenAI embedding failed: {exc}") from exc

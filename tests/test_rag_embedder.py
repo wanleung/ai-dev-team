@@ -111,3 +111,50 @@ def test_embed_batch_returns_list_of_embeddings(monkeypatch):
     assert results[0] == [1.0, 1.0, 1.0]
     assert results[1] == [2.0, 2.0, 2.0]
     assert results[2] == [3.0, 3.0, 3.0]
+
+
+def test_embed_raises_for_empty_text(monkeypatch):
+    """embed() raises EmbedderError for empty or whitespace-only text."""
+    monkeypatch.setenv("EMBED_BACKEND", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "nomic-embed-text")
+
+    import importlib
+    import embedder as emb_mod
+    importlib.reload(emb_mod)
+    e = emb_mod.Embedder()
+    with pytest.raises(emb_mod.EmbedderError, match="non-empty"):
+        e.embed("")
+    with pytest.raises(emb_mod.EmbedderError, match="non-empty"):
+        e.embed("   ")
+
+
+def test_unknown_backend_raises_embedder_error(monkeypatch):
+    """Unknown EMBED_BACKEND raises EmbedderError."""
+    monkeypatch.setenv("EMBED_BACKEND", "bogus_backend")
+
+    import importlib
+    import embedder as emb_mod
+    importlib.reload(emb_mod)
+    e = emb_mod.Embedder()
+    with pytest.raises(emb_mod.EmbedderError, match="Unknown EMBED_BACKEND"):
+        e.embed("hello")
+
+
+def test_ollama_raises_on_unexpected_response(monkeypatch):
+    """Ollama backend raises EmbedderError if response body lacks 'embedding' key."""
+    monkeypatch.setenv("EMBED_BACKEND", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "nomic-embed-text")
+
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status = MagicMock()
+    fake_resp.json.return_value = {"error": "model not found"}
+
+    with patch("requests.post", return_value=fake_resp):
+        import importlib
+        import embedder as emb_mod
+        importlib.reload(emb_mod)
+        e = emb_mod.Embedder()
+        with pytest.raises(emb_mod.EmbedderError, match="Unexpected Ollama response"):
+            e.embed("hello")
