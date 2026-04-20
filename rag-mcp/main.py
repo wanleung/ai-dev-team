@@ -12,6 +12,7 @@ Environment variables:
     DATABASE_URL    — Postgres connection string (required)
     EMBED_BACKEND   — ollama | vllm | openai (default: ollama)
     RAG_TOP_K       — default number of results (default: 5)
+    RAG_MAX_TOP_K   — upper bound on top_k across all tools (default: 100)
     (see embedder.py for backend-specific vars)
 """
 from __future__ import annotations
