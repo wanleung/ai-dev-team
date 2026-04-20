@@ -144,8 +144,9 @@ def _fetch_copilot_session_token(oauth_token: str) -> str:
         with urllib.request.urlopen(req) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
         raise RuntimeError(
-            f"Copilot token exchange failed: HTTP {exc.code} — {exc.reason}"
+            f"Copilot token exchange failed: HTTP {exc.code} — {exc.reason}\n{body}"
         ) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(
