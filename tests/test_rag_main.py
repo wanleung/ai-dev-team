@@ -28,7 +28,8 @@ def main_mod():
         mod = importlib.util.module_from_spec(spec)
         sys.modules["main_test"] = mod
         spec.loader.exec_module(mod)
-    return mod
+    yield mod
+    sys.modules.pop("main_test", None)
 
 
 def test_health_endpoint_returns_ok(main_mod):
@@ -123,6 +124,18 @@ def test_other_search_tools_return_results(main_mod, tool_name):
     assert isinstance(data["results"], list)
     assert len(data["results"]) == 1
     assert data["results"][0]["score"] == 0.85
+
+
+@pytest.mark.parametrize("tool_name", ["search_memory", "search_docs"])
+def test_other_search_tools_embedder_error(main_mod, tool_name):
+    """search_memory and search_docs return error envelope on EmbedderError."""
+    from embedder import EmbedderError
+    with patch.object(main_mod._embedder, "embed", side_effect=EmbedderError("down")):
+        result = asyncio.run(getattr(main_mod, tool_name)("q"))
+    data = json.loads(result)
+    assert "error" in data
+    assert "down" in data["error"]
+    assert data["results"] == []
 
 
 @pytest.mark.parametrize("requested,expected", [
