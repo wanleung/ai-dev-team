@@ -292,18 +292,17 @@ def test_ensure_copilot_session_refreshes_when_stale():
     mock_resp.__exit__ = MagicMock(return_value=False)
 
     with patch.dict(os.environ, {"COPILOT_OAUTH_TOKEN": "gho_fake"}):
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
             with patch("agents.base_agent.OpenAI") as mock_openai:
                 mock_openai.return_value = MagicMock()
-                # Init with a fresh token so __init__ succeeds
-                fresh_expiry = time.time() + 1800
-                ba_module._COPILOT_SESSION["expires_at"] = fresh_expiry
-                ba_module._COPILOT_SESSION["token"] = "old_tok"
                 from agents.base_agent import BaseAgent
                 agent = BaseAgent(model="copilot/gpt-4o")
+                call_count_after_init = mock_urlopen.call_count
 
-                # Now force expiry
+                # Force expiry so _ensure_copilot_session triggers a refresh
                 ba_module._COPILOT_SESSION["expires_at"] = time.time() - 10
                 agent._ensure_copilot_session()
 
+                # One extra urlopen call for the token refresh
+                assert mock_urlopen.call_count == call_count_after_init + 1
                 assert ba_module._COPILOT_SESSION["token"] == "new_tok"
