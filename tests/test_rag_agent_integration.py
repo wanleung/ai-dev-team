@@ -26,6 +26,9 @@ def test_engineer_uses_call_with_tools_when_registry_provided():
          patch.object(agent, "call"):
         agent.run_module("design", {"name": "foo", "description": "bar"})
         assert mock_cwt.called
+        _, kwargs = mock_cwt.call_args
+        assert kwargs.get("tools") is agent._tool_registry, \
+            "call_with_tools must receive the agent's tool_registry as tools= kwarg"
 
 
 def test_engineer_uses_call_when_no_registry():
@@ -46,6 +49,9 @@ def test_architect_uses_call_with_tools_when_registry_provided():
          patch.object(agent, "call"):
         agent.run("prd text")
         assert mock_cwt.called
+        _, kwargs = mock_cwt.call_args
+        assert kwargs.get("tools") is agent._tool_registry, \
+            "call_with_tools must receive the agent's tool_registry as tools= kwarg"
 
 
 def test_architect_uses_call_when_no_registry():
@@ -64,6 +70,9 @@ def test_qa_engineer_uses_call_with_tools_when_registry_provided():
          patch.object(agent, "call"):
         agent.run(files={"foo.py": "x=1"}, prd="prd", project_name="proj")
         assert mock_cwt.called
+        _, kwargs = mock_cwt.call_args
+        assert kwargs.get("tools") is agent._tool_registry, \
+            "call_with_tools must receive the agent's tool_registry as tools= kwarg"
 
 
 def test_qa_engineer_uses_call_when_no_registry():
@@ -73,3 +82,13 @@ def test_qa_engineer_uses_call_when_no_registry():
          patch.object(agent, "call_with_tools"):
         agent.run(files={"foo.py": "x=1"}, prd="prd", project_name="proj")
         assert mock_call.called
+
+
+def test_engineer_falls_back_to_call_on_not_implemented():
+    """EngineerAgent falls back to call() if call_with_tools raises NotImplementedError."""
+    agent = EngineerAgent(model="gpt-4o-mini", tool_registry=make_mock_registry())
+    with patch.object(agent, "call_with_tools", side_effect=NotImplementedError("not supported")), \
+         patch.object(agent, "call", return_value="### FILE: foo.py\n```\npass\n```") as mock_call:
+        result = agent.run_module("design", {"name": "foo", "description": "bar"})
+        assert mock_call.called
+        assert "foo.py" in result["files"]
