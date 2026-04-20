@@ -23,6 +23,9 @@ import os
 import re
 import subprocess
 import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -68,6 +71,86 @@ def _is_opencode_go_model(model: str) -> bool:
 def _is_nvidia_nim_model(model: str) -> bool:
     """Return True if the model should use the NVIDIA NIM API."""
     return model.startswith("nvidia-nim/")
+
+
+# ── GitHub Copilot backend helpers ────────────────────────────────────────────
+
+_COPILOT_SESSION: dict = {"token": "", "expires_at": 0.0}
+"""Module-level cache for the short-lived Copilot session token."""
+
+_COPILOT_API_BASE = "https://api.githubcopilot.com"
+_COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"
+_COPILOT_CONFIG_PATH = os.path.expanduser("~/.copilot/config.json")
+
+
+def _is_copilot_model(model: str) -> bool:
+    """Return True if the model name indicates a GitHub Copilot model."""
+    return model.startswith("copilot/")
+
+
+def _discover_copilot_oauth_token() -> str:
+    """Return the Copilot OAuth token from env var or Copilot CLI config file.
+
+    Discovery order:
+    1. COPILOT_OAUTH_TOKEN environment variable
+    2. ~/.copilot/config.json → copilot_tokens (first value)
+
+    Raises:
+        EnvironmentError: if no token is found from either source.
+    """
+    token = os.environ.get("COPILOT_OAUTH_TOKEN")
+    if token:
+        return token
+
+    if os.path.exists(_COPILOT_CONFIG_PATH):
+        with open(_COPILOT_CONFIG_PATH, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        tokens: dict = cfg.get("copilot_tokens", {})
+        if tokens:
+            return next(iter(tokens.values()))
+
+    raise EnvironmentError(
+        "No GitHub Copilot OAuth token found. Either:\n"
+        "  1. Set COPILOT_OAUTH_TOKEN=<gho_...> environment variable, or\n"
+        "  2. Log in to Copilot CLI (the token is then auto-discovered from\n"
+        "     ~/.copilot/config.json)."
+    )
+
+
+def _fetch_copilot_session_token(oauth_token: str) -> str:
+    """Exchange a Copilot OAuth token for a short-lived session token.
+
+    Updates the module-level _COPILOT_SESSION cache with the new token and
+    its expiry timestamp.
+
+    Args:
+        oauth_token: A GitHub OAuth token (gho_...) with Copilot access.
+
+    Returns:
+        The session token string for use as API Bearer auth.
+
+    Raises:
+        RuntimeError: on non-200 HTTP response from the token endpoint.
+    """
+    req = urllib.request.Request(
+        _COPILOT_TOKEN_URL,
+        headers={"Authorization": f"token {oauth_token}"},
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"Copilot token exchange failed: HTTP {exc.code} — {exc.reason}"
+        ) from exc
+
+    session_token: str = data["token"]
+    expires_str: str = data["expires_at"]
+    # Parse ISO 8601 expiry ("2026-04-20T15:00:00Z") to a Unix timestamp
+    dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+    _COPILOT_SESSION["token"] = session_token
+    _COPILOT_SESSION["expires_at"] = dt.timestamp()
+    return session_token
 
 
 class BaseAgent:
