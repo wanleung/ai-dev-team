@@ -15,6 +15,10 @@ class ArchitectAgent(BaseAgent):
 
     role_name = "architect"
 
+    def __init__(self, *args, tool_registry: "ToolRegistry | None" = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._tool_registry = tool_registry
+
     def run(self, prd: str, project_name: str = "Project") -> dict:
         """Produce a system design document from a PRD.
 
@@ -36,7 +40,14 @@ class ArchitectAgent(BaseAgent):
             f"module/file that needs to be implemented."
         )
 
-        design = self.call(prompt)
+        if self._tool_registry is not None:
+            rag_hint = (
+                "\n\nYou have access to RAG search tools: `search_memory` and `search_docs`. "
+                "Use them to find relevant past designs and documentation before producing the system design."
+            )
+            design = self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
+        else:
+            design = self.call(prompt)
         modules = self._parse_modules(design)
 
         return {

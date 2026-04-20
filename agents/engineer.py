@@ -22,6 +22,10 @@ class EngineerAgent(BaseAgent):
 
     role_name = "engineer"
 
+    def __init__(self, *args, tool_registry: "ToolRegistry | None" = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._tool_registry = tool_registry
+
     def run_module(self, design: str, module: dict, project_name: str = "Project") -> dict:
         """Implement a single module.
 
@@ -44,7 +48,14 @@ class EngineerAgent(BaseAgent):
             f"Output each file using the '### FILE: path/to/file.py' format as instructed."
         )
 
-        response = self.call(prompt)
+        if self._tool_registry is not None:
+            rag_hint = (
+                "\n\nYou have access to RAG search tools: `search_codebase` and `search_docs`. "
+                "Use them to find relevant existing code patterns and documentation before implementing."
+            )
+            response = self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
+        else:
+            response = self.call(prompt)
         files = self._parse_files(response)
 
         return {
