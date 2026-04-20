@@ -229,7 +229,8 @@ def test_base_agent_copilot_openai_client_base_url():
         with patch("urllib.request.urlopen", return_value=mock_resp):
             with patch("agents.base_agent.OpenAI") as mock_openai:
                 mock_openai.return_value = MagicMock()
-                from agents.base_agent import BaseAgent
+                from agents.base_agent import BaseAgent, _COPILOT_SESSION
+                _COPILOT_SESSION["expires_at"] = 0.0
                 BaseAgent(model="copilot/gpt-4o")
                 call_kwargs = mock_openai.call_args[1]
                 assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
