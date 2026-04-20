@@ -67,8 +67,8 @@ def test_fetch_session_token_success():
     with patch("urllib.request.urlopen", return_value=mock_resp):
         token = _fetch_copilot_session_token("gho_fake")
 
-    assert token == "session_abc"
     try:
+        assert token == "session_abc"
         assert _COPILOT_SESSION["token"] == "session_abc"
         assert _COPILOT_SESSION["expires_at"] > time.time()
     finally:
@@ -149,3 +149,17 @@ def test_discover_oauth_token_raises_when_config_is_corrupted():
         with patch("builtins.open", mock_open(read_data="not valid json")):
             with pytest.raises(EnvironmentError):
                 _discover_copilot_oauth_token()
+
+
+def test_fetch_session_token_raises_on_non_string_expires_at():
+    """Response with null expires_at raises RuntimeError (AttributeError path)."""
+    import json as _json
+    import pytest
+    from agents.base_agent import _fetch_copilot_session_token
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = _json.dumps({"token": "abc", "expires_at": None}).encode()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        with pytest.raises(RuntimeError, match="unexpected response format"):
+            _fetch_copilot_session_token("gho_test")
