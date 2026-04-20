@@ -68,10 +68,12 @@ def test_fetch_session_token_success():
         token = _fetch_copilot_session_token("gho_fake")
 
     assert token == "session_abc"
-    assert _COPILOT_SESSION["token"] == "session_abc"
-    assert _COPILOT_SESSION["expires_at"] > time.time()
-    _COPILOT_SESSION["token"] = ""
-    _COPILOT_SESSION["expires_at"] = 0.0
+    try:
+        assert _COPILOT_SESSION["token"] == "session_abc"
+        assert _COPILOT_SESSION["expires_at"] > time.time()
+    finally:
+        _COPILOT_SESSION["token"] = ""
+        _COPILOT_SESSION["expires_at"] = 0.0
 
 
 def test_fetch_session_token_raises_on_http_error():
@@ -110,3 +112,40 @@ def test_discover_oauth_token_raises_when_config_has_empty_tokens():
                 assert False, "Should have raised EnvironmentError"
             except EnvironmentError as exc:
                 assert "COPILOT_OAUTH_TOKEN" in str(exc)
+
+
+def test_fetch_session_token_raises_on_non_json_response():
+    """Non-JSON response body raises RuntimeError."""
+    from agents.base_agent import _fetch_copilot_session_token
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = b"<html>Service Unavailable</html>"
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        import pytest
+        with pytest.raises(RuntimeError, match="non-JSON response"):
+            _fetch_copilot_session_token("gho_test")
+
+
+def test_fetch_session_token_raises_on_missing_field():
+    """Response missing 'token' field raises RuntimeError."""
+    import json as _json
+    from agents.base_agent import _fetch_copilot_session_token
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = _json.dumps({"expires_at": "2099-01-01T00:00:00Z"}).encode()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        import pytest
+        with pytest.raises(RuntimeError, match="unexpected response format"):
+            _fetch_copilot_session_token("gho_test")
+
+
+def test_discover_oauth_token_raises_when_config_is_corrupted():
+    """Corrupted config.json (invalid JSON) falls through to EnvironmentError."""
+    from agents.base_agent import _discover_copilot_oauth_token
+    import pytest
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("builtins.open", mock_open(read_data="not valid json")):
+            with pytest.raises(EnvironmentError):
+                _discover_copilot_oauth_token()

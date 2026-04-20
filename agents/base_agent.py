@@ -110,7 +110,7 @@ def _discover_copilot_oauth_token() -> str:
         tokens: dict = cfg.get("copilot_tokens", {})
         if tokens:
             return next(iter(tokens.values()))
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
         pass
 
     raise EnvironmentError(
@@ -152,11 +152,20 @@ def _fetch_copilot_session_token(oauth_token: str) -> str:
         raise RuntimeError(
             f"Copilot token exchange failed: network error — {exc.reason}"
         ) from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Copilot token exchange failed: unexpected non-JSON response"
+        ) from exc
 
-    session_token: str = data["token"]
-    expires_str: str = data["expires_at"]
-    # Parse ISO 8601 expiry ("2026-04-20T15:00:00Z") to a Unix timestamp
-    dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+    try:
+        session_token: str = data["token"]
+        expires_str: str = data["expires_at"]
+        # Parse ISO 8601 expiry ("2026-04-20T15:00:00Z") to a Unix timestamp
+        dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+    except (KeyError, ValueError) as exc:
+        raise RuntimeError(
+            f"Copilot token exchange failed: unexpected response format — {exc}"
+        ) from exc
     _COPILOT_SESSION["token"] = session_token
     _COPILOT_SESSION["expires_at"] = dt.timestamp()
     return session_token
