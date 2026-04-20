@@ -7,9 +7,9 @@ services:
     ports:
       - "8001:8001"
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://user:pass@db:5432/dbname}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set (e.g. postgresql://user:pass@host:5432/dbname)}
       EMBED_BACKEND: ${EMBED_BACKEND:-ollama}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://192.168.1.x:11434}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
       # VLLM_BASE_URL: http://192.168.1.x:8000
       # VLLM_MODEL: BAAI/bge-m3
