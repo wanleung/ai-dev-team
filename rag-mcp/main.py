@@ -48,16 +48,17 @@ async def search_codebase(query: str, top_k: int = _TOP_K) -> str:
         top_k: Maximum number of results to return (default 5).
 
     Returns:
-        JSON array of SearchResult objects with content, source_id, score, and metadata.
+        JSON object with "results" key containing SearchResult objects with content, source_id, score, and metadata.
     """
+    top_k = max(1, top_k)
     try:
         embedding = await asyncio.to_thread(_embedder.embed, query)
         results = await asyncio.to_thread(search_chunks, "codebase", embedding, top_k)
-        return json.dumps([r.model_dump() for r in results])
+        return json.dumps({"results": [r.model_dump() for r in results]})
     except EmbedderError as exc:
         return json.dumps({"error": f"embedder unavailable: {exc}", "results": []})
     except Exception as exc:
-        return json.dumps({"error": str(exc), "results": []})
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}", "results": []})
 
 
 @mcp.tool()
@@ -69,16 +70,17 @@ async def search_memory(query: str, top_k: int = _TOP_K) -> str:
         top_k: Maximum number of results to return (default 5).
 
     Returns:
-        JSON array of SearchResult objects with content, source_id (run_id), score, and metadata.
+        JSON object with "results" key containing SearchResult objects with content, source_id (run_id), score, and metadata.
     """
+    top_k = max(1, top_k)
     try:
         embedding = await asyncio.to_thread(_embedder.embed, query)
         results = await asyncio.to_thread(search_chunks, "memory", embedding, top_k)
-        return json.dumps([r.model_dump() for r in results])
+        return json.dumps({"results": [r.model_dump() for r in results]})
     except EmbedderError as exc:
         return json.dumps({"error": f"embedder unavailable: {exc}", "results": []})
     except Exception as exc:
-        return json.dumps({"error": str(exc), "results": []})
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}", "results": []})
 
 
 @mcp.tool()
@@ -90,16 +92,17 @@ async def search_docs(query: str, top_k: int = _TOP_K) -> str:
         top_k: Maximum number of results to return (default 5).
 
     Returns:
-        JSON array of SearchResult objects with content, source_id (file path), score, and metadata.
+        JSON object with "results" key containing SearchResult objects with content, source_id (file path), score, and metadata.
     """
+    top_k = max(1, top_k)
     try:
         embedding = await asyncio.to_thread(_embedder.embed, query)
         results = await asyncio.to_thread(search_chunks, "docs", embedding, top_k)
-        return json.dumps([r.model_dump() for r in results])
+        return json.dumps({"results": [r.model_dump() for r in results]})
     except EmbedderError as exc:
         return json.dumps({"error": f"embedder unavailable: {exc}", "results": []})
     except Exception as exc:
-        return json.dumps({"error": str(exc), "results": []})
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}", "results": []})
 
 
 # ASGI app for uvicorn — used by Dockerfile CMD
