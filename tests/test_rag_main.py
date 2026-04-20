@@ -1,119 +1,69 @@
 """Tests for rag-mcp/main.py — tool schemas and health endpoint."""
-import sys, os
-import asyncio
+import sys
 import json
-
-# Absolute path to rag-mcp directory
-rag_mcp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rag-mcp")
-if rag_mcp_dir not in sys.path:
-    sys.path.insert(0, rag_mcp_dir)
-
-from unittest.mock import AsyncMock, patch, MagicMock
+import asyncio
+import importlib
+import importlib.util
+import os
 import pytest
+from pathlib import Path
+from unittest.mock import patch, MagicMock, ANY
+
+# Ensure rag-mcp is on the path
+RAG_MCP_DIR = Path(__file__).parent.parent / "rag-mcp"
+if str(RAG_MCP_DIR) not in sys.path:
+    sys.path.insert(0, str(RAG_MCP_DIR))
+
+os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
+os.environ.setdefault("EMBED_BACKEND", "ollama")
 
 
-@pytest.fixture
-def load_main_module():
-    """Load main.py as a fresh module with mocked db and embedder dependencies."""
-    os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
-    os.environ.setdefault("EMBED_BACKEND", "ollama")
-
-    import importlib.util
-    main_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rag-mcp", "main.py")
-    
+@pytest.fixture()
+def main_mod():
+    """Load rag-mcp/main.py in isolation, returning the module."""
+    # Patch before importing to prevent real db/embedder init
     with patch("db._get_conn", side_effect=Exception("no db")), \
-         patch("embedder.Embedder.embed", side_effect=Exception("no embed")):
-        spec = importlib.util.spec_from_file_location("main_module", main_path)
-        main_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(main_mod)
-    
-    return main_mod
+         patch("embedder.Embedder.__init__", return_value=None):
+        spec = importlib.util.spec_from_file_location("main_test", RAG_MCP_DIR / "main.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["main_test"] = mod
+        spec.loader.exec_module(mod)
+    return mod
 
 
-
-
-def test_health_endpoint_returns_ok():
+def test_health_endpoint_returns_ok(main_mod):
     """GET /health returns {"status": "ok"}."""
     from starlette.testclient import TestClient
-    os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
-    os.environ.setdefault("EMBED_BACKEND", "ollama")
-
-    with patch("db._get_conn", side_effect=Exception("no db")), \
-         patch("embedder.Embedder.embed", side_effect=Exception("no embed")):
-        import importlib.util
-        # Load main.py explicitly from rag-mcp directory
-        main_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rag-mcp", "main.py")
-        spec = importlib.util.spec_from_file_location("main", main_path)
-        main_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(main_mod)
-        app = main_mod.mcp.streamable_http_app()
-
-    client = TestClient(app)
-    resp = client.get("/health")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "ok"
+    client = TestClient(main_mod.mcp.streamable_http_app())
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
 
 
-def test_search_codebase_tool_registered():
+def test_search_codebase_tool_registered(main_mod):
     """search_codebase, search_memory, search_docs tools are registered in FastMCP."""
-    os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
-    os.environ.setdefault("EMBED_BACKEND", "ollama")
-
-    with patch("db._get_conn", side_effect=Exception("no db")), \
-         patch("embedder.Embedder.embed", side_effect=Exception("no embed")):
-        import importlib.util
-        # Load main.py explicitly from rag-mcp directory
-        main_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rag-mcp", "main.py")
-        spec = importlib.util.spec_from_file_location("main", main_path)
-        main_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(main_mod)
-
-        tool_names = [t.name for t in main_mod.mcp._tool_manager.list_tools()]
-        assert "search_codebase" in tool_names
-        assert "search_memory" in tool_names
-        assert "search_docs" in tool_names
+    tool_names = [t.name for t in main_mod.mcp._tool_manager.list_tools()]
+    assert "search_codebase" in tool_names
+    assert "search_memory" in tool_names
+    assert "search_docs" in tool_names
 
 
-def test_mcp_http_app_is_starlette_app():
-    """mcp_http_app is a Starlette ASGI app."""
-    os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
-    os.environ.setdefault("EMBED_BACKEND", "ollama")
-
-    with patch("db._get_conn", side_effect=Exception("no db")), \
-         patch("embedder.Embedder.embed", side_effect=Exception("no embed")):
-        import importlib.util
-        # Load main.py explicitly from rag-mcp directory
-        main_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rag-mcp", "main.py")
-        spec = importlib.util.spec_from_file_location("main", main_path)
-        main_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(main_mod)
-
-        assert hasattr(main_mod, "mcp_http_app")
-        assert main_mod.mcp_http_app is not None
+def test_mcp_http_app_is_starlette_app(main_mod):
+    """mcp.streamable_http_app() returns a Starlette ASGI app."""
+    app = main_mod.mcp.streamable_http_app()
+    assert app is not None
+    assert hasattr(app, "routes") or callable(app)
 
 
-def test_search_codebase_returns_results():
+def test_search_codebase_returns_results(main_mod):
     """search_codebase() returns uniform {"results": [...]} envelope on success."""
-    os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
-    os.environ.setdefault("EMBED_BACKEND", "ollama")
-
-    import importlib.util
     from models import SearchResult
-
-    # Load main module with db/embedder mocked
-    with patch("db._get_conn", side_effect=Exception("no db")), \
-         patch("db.search_chunks") as mock_search:
-        main_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rag-mcp", "main.py")
-        spec = importlib.util.spec_from_file_location("main", main_path)
-        main_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(main_mod)
-
-        fake_result = SearchResult(content="x = 1", source_id="src/foo.py", chunk_index=0, score=0.9)
-        mock_search.return_value = [fake_result]
-
-        with patch.object(main_mod._embedder, "embed", return_value=[0.1] * 768):
-            result = asyncio.run(main_mod.search_codebase("test query"))
-
+    
+    fake_result = SearchResult(content="x = 1", source_id="src/foo.py", chunk_index=0, score=0.9)
+    with patch.object(main_mod._embedder, "embed", return_value=[0.1] * 768), \
+         patch("main_test.search_chunks", return_value=[fake_result]):
+        result = asyncio.run(main_mod.search_codebase("test query"))
+    
     data = json.loads(result)
     assert "results" in data
     assert isinstance(data["results"], list)
@@ -122,83 +72,70 @@ def test_search_codebase_returns_results():
     assert data["results"][0]["score"] == 0.9
 
 
-def test_search_codebase_embedder_error_returns_error_envelope():
+def test_search_codebase_embedder_error_returns_error_envelope(main_mod):
     """search_codebase() returns {"error": ..., "results": []} on EmbedderError."""
-    os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
-    os.environ.setdefault("EMBED_BACKEND", "ollama")
-
-    import importlib.util
     from embedder import EmbedderError
-
-    with patch("db._get_conn", side_effect=Exception("no db")):
-        main_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rag-mcp", "main.py")
-        spec = importlib.util.spec_from_file_location("main", main_path)
-        main_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(main_mod)
-
+    
     with patch.object(main_mod._embedder, "embed", side_effect=EmbedderError("backend down")):
         result = asyncio.run(main_mod.search_codebase("q"))
-
+    
     data = json.loads(result)
     assert "error" in data
     assert "backend down" in data["error"]
     assert data["results"] == []
 
 
-def test_search_codebase_empty_results():
+def test_search_codebase_db_exception_returns_error_envelope(main_mod):
+    """Generic Exception from search_chunks returns {"error": "TypeName: msg", "results": []}."""
+    with patch.object(main_mod._embedder, "embed", return_value=[0.0] * 768), \
+         patch("main_test.search_chunks", side_effect=RuntimeError("connection lost")):
+        result = asyncio.run(main_mod.search_codebase("q"))
+    
+    data = json.loads(result)
+    assert "error" in data
+    assert "RuntimeError" in data["error"]
+    assert "connection lost" in data["error"]
+    assert data["results"] == []
+
+
+def test_search_codebase_empty_results(main_mod):
     """search_codebase() returns {"results": []} when no results found."""
-    os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
-    os.environ.setdefault("EMBED_BACKEND", "ollama")
-
-    import importlib.util
-
-    with patch("db._get_conn", side_effect=Exception("no db")), \
-         patch("db.search_chunks") as mock_search:
-        main_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rag-mcp", "main.py")
-        spec = importlib.util.spec_from_file_location("main", main_path)
-        main_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(main_mod)
-
-        mock_search.return_value = []
-
-        with patch.object(main_mod._embedder, "embed", return_value=[0.0] * 768):
-            result = asyncio.run(main_mod.search_codebase("nothing"))
-
+    with patch.object(main_mod._embedder, "embed", return_value=[0.0] * 768), \
+         patch("main_test.search_chunks", return_value=[]):
+        result = asyncio.run(main_mod.search_codebase("nothing"))
+    
     data = json.loads(result)
     assert data == {"results": []}
 
 
 @pytest.mark.parametrize("tool_name", ["search_memory", "search_docs"])
-def test_other_search_tools_return_results(tool_name):
+def test_other_search_tools_return_results(main_mod, tool_name):
     """search_memory and search_docs return uniform {"results": [...]} envelope."""
-    import importlib
-    import importlib.util
-    from pathlib import Path
-    from unittest.mock import patch, MagicMock
-
-    os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
-    os.environ.setdefault("EMBED_BACKEND", "ollama")
-
-    rag_mcp_path = Path(__file__).parent.parent / "rag-mcp"
-    if str(rag_mcp_path) not in sys.path:
-        sys.path.insert(0, str(rag_mcp_path))
-
     from models import SearchResult
-
-    main_path = rag_mcp_path / "main.py"
     
     fake_result = SearchResult(content="hello", source_id="memory/note.md", chunk_index=0, score=0.85)
-
-    with patch("db.search_chunks", return_value=[fake_result]):
-        spec = importlib.util.spec_from_file_location("main_fresh", main_path)
-        main_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(main_mod)
-
-        with patch.object(main_mod._embedder, "embed", return_value=[0.1] * 768):
-            result = asyncio.run(getattr(main_mod, tool_name)("query"))
-
+    with patch.object(main_mod._embedder, "embed", return_value=[0.1] * 768), \
+         patch("main_test.search_chunks", return_value=[fake_result]):
+        result = asyncio.run(getattr(main_mod, tool_name)("query"))
+    
     data = json.loads(result)
     assert "results" in data
     assert isinstance(data["results"], list)
     assert len(data["results"]) == 1
     assert data["results"][0]["score"] == 0.85
+
+
+@pytest.mark.parametrize("requested,expected", [
+    (0, 1),     # floor clamped to 1
+    (1, 1),     # at floor
+    (5, 5),     # normal
+    (100, 100), # at ceiling
+    (999, 100), # ceiling clamped
+])
+def test_search_codebase_top_k_clamping(main_mod, requested, expected):
+    """top_k is clamped to [1, _MAX_TOP_K] before the DB call."""
+    with patch.object(main_mod._embedder, "embed", return_value=[0.0] * 768), \
+         patch("main_test.search_chunks", return_value=[]) as mock_search:
+        asyncio.run(main_mod.search_codebase("q", top_k=requested))
+    
+    mock_search.assert_called_once_with("codebase", ANY, expected)
