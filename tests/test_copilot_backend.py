@@ -163,3 +163,147 @@ def test_fetch_session_token_raises_on_non_string_expires_at():
     with patch("urllib.request.urlopen", return_value=mock_resp):
         with pytest.raises(RuntimeError, match="unexpected response format"):
             _fetch_copilot_session_token("gho_test")
+
+
+# ── BaseAgent copilot backend init ────────────────────────────────────────────
+
+def test_base_agent_copilot_backend_detected_from_prefix():
+    """'copilot/' prefix auto-selects the copilot backend."""
+    from datetime import datetime, timezone, timedelta
+    import json as _json
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    response_body = _json.dumps({"token": "sess_init", "expires_at": expires}).encode()
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = response_body
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch.dict(os.environ, {"COPILOT_OAUTH_TOKEN": "gho_fake"}):
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            with patch("agents.base_agent.OpenAI") as mock_openai:
+                mock_openai.return_value = MagicMock()
+                from agents.base_agent import BaseAgent
+                agent = BaseAgent(model="copilot/gpt-4o")
+                assert agent._backend == "copilot"
+                assert agent._api_model == "gpt-4o"
+
+
+def test_base_agent_copilot_strips_prefix():
+    """_api_model is the model ID with 'copilot/' stripped."""
+    from datetime import datetime, timezone, timedelta
+    import json as _json
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    response_body = _json.dumps({"token": "sess_init", "expires_at": expires}).encode()
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = response_body
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch.dict(os.environ, {"COPILOT_OAUTH_TOKEN": "gho_fake"}):
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            with patch("agents.base_agent.OpenAI") as mock_openai:
+                mock_openai.return_value = MagicMock()
+                from agents.base_agent import BaseAgent
+                agent = BaseAgent(model="copilot/claude-sonnet-4.6")
+                assert agent._api_model == "claude-sonnet-4.6"
+
+
+def test_base_agent_copilot_openai_client_base_url():
+    """OpenAI client is initialised with the Copilot API base URL."""
+    from datetime import datetime, timezone, timedelta
+    import json as _json
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    response_body = _json.dumps({"token": "sess_tok", "expires_at": expires}).encode()
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = response_body
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch.dict(os.environ, {"COPILOT_OAUTH_TOKEN": "gho_fake"}):
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            with patch("agents.base_agent.OpenAI") as mock_openai:
+                mock_openai.return_value = MagicMock()
+                from agents.base_agent import BaseAgent
+                BaseAgent(model="copilot/gpt-4o")
+                call_kwargs = mock_openai.call_args[1]
+                assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
+                assert call_kwargs["api_key"] == "sess_tok"
+                assert call_kwargs["default_headers"]["Copilot-Integration-Id"] == "vscode-chat"
+
+
+def test_base_agent_copilot_raises_without_token():
+    """EnvironmentError is raised when no OAuth token is available."""
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            from agents.base_agent import BaseAgent
+            try:
+                BaseAgent(model="copilot/gpt-4o")
+                assert False, "Expected EnvironmentError"
+            except EnvironmentError as exc:
+                assert "COPILOT_OAUTH_TOKEN" in str(exc)
+
+
+# ── _ensure_copilot_session ───────────────────────────────────────────────────
+
+def test_ensure_copilot_session_skips_refresh_when_fresh():
+    """No token exchange when the cached token is still valid."""
+    from datetime import datetime, timezone, timedelta
+    import json as _json
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    response_body = _json.dumps({"token": "initial_tok", "expires_at": expires}).encode()
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = response_body
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch.dict(os.environ, {"COPILOT_OAUTH_TOKEN": "gho_fake"}):
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+            with patch("agents.base_agent.OpenAI") as mock_openai:
+                mock_openai.return_value = MagicMock()
+                from agents.base_agent import BaseAgent
+                agent = BaseAgent(model="copilot/gpt-4o")
+                call_count_after_init = mock_urlopen.call_count
+                agent._ensure_copilot_session()
+                # No additional urlopen call — token is still fresh
+                assert mock_urlopen.call_count == call_count_after_init
+
+
+def test_ensure_copilot_session_refreshes_when_stale():
+    """Token exchange is triggered when cached token has expired."""
+    import agents.base_agent as ba_module
+    from datetime import datetime, timezone, timedelta
+    import json as _json
+
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    response_body = _json.dumps({"token": "new_tok", "expires_at": expires}).encode()
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = response_body
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch.dict(os.environ, {"COPILOT_OAUTH_TOKEN": "gho_fake"}):
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            with patch("agents.base_agent.OpenAI") as mock_openai:
+                mock_openai.return_value = MagicMock()
+                # Init with a fresh token so __init__ succeeds
+                fresh_expiry = time.time() + 1800
+                ba_module._COPILOT_SESSION["expires_at"] = fresh_expiry
+                ba_module._COPILOT_SESSION["token"] = "old_tok"
+                from agents.base_agent import BaseAgent
+                agent = BaseAgent(model="copilot/gpt-4o")
+
+                # Now force expiry
+                ba_module._COPILOT_SESSION["expires_at"] = time.time() - 10
+                agent._ensure_copilot_session()
+
+                assert ba_module._COPILOT_SESSION["token"] == "new_tok"

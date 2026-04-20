@@ -13,6 +13,8 @@ BaseAgent: supports seven LLM backends, selectable per-agent via config.yaml.
                              Messages endpoint, all others use chat/completions)
   backend: nvidia_nim      — NVIDIA NIM API (OpenAI-compatible, model prefix "nvidia-nim/",
                              uses NVIDIA_API_KEY; base URL https://integrate.api.nvidia.com/v1)
+  backend: copilot         — GitHub Copilot Chat API (OpenAI-compatible, model prefix "copilot/",
+                             uses COPILOT_OAUTH_TOKEN or ~/.copilot/config.json)
 
 Default backend is github_models for backwards compatibility.
 """
@@ -198,7 +200,7 @@ class BaseAgent:
         model: str = "gpt-4.1",
         github_token: Optional[str] = None,
         roles_dir: Optional[Path] = None,
-        backend: Optional[str] = None,  # "github_models" | "anthropic" | "ollama" | "opencode" | "opencode_zen" | "opencode_go" | "nvidia_nim" | None (auto)
+        backend: Optional[str] = None,  # "github_models" | "anthropic" | "ollama" | "opencode" | "opencode_zen" | "opencode_go" | "nvidia_nim" | "copilot" | None (auto)
         ollama_url: str = "http://localhost:11434",
         opencode_zen_api_key: Optional[str] = None,
         opencode_zen_base_url: Optional[str] = None,
@@ -239,8 +241,25 @@ class BaseAgent:
         use_opencode = (backend == "opencode") or (
             backend is None and _is_opencode_model(model)
         )
+        use_copilot = (backend == "copilot") or (
+            backend is None and _is_copilot_model(model)
+        )
 
-        if use_opencode_go:
+        if use_copilot:
+            self._backend = "copilot"
+            self._api_model = model.removeprefix("copilot/")
+            self._copilot_oauth_token = _discover_copilot_oauth_token()
+            session_token = _fetch_copilot_session_token(self._copilot_oauth_token)
+            self.client = OpenAI(
+                base_url=_COPILOT_API_BASE,
+                api_key=session_token,
+                default_headers={
+                    "Editor-Version": "vscode/1.90.0",
+                    "Copilot-Integration-Id": "vscode-chat",
+                },
+            )
+            self._anthropic_client = None
+        elif use_opencode_go:
             self._backend = "opencode_go"
             self._backend = "opencode_go"
             # Strip "opencode-go/" prefix → remainder is the model ID for the Go plan API
@@ -372,6 +391,26 @@ class BaseAgent:
     def reset_history(self) -> None:
         """Clear conversation history (call between unrelated pipeline tasks)."""
         self._history = []
+
+    def _ensure_copilot_session(self) -> None:
+        """Refresh the Copilot session token if it is within 60s of expiry.
+
+        Rebuilds self.client with the new token when a refresh occurs.
+        No-op for non-copilot backends.
+        """
+        if self._backend != "copilot":
+            return
+        if time.time() < _COPILOT_SESSION["expires_at"] - 60:
+            return
+        new_token = _fetch_copilot_session_token(self._copilot_oauth_token)
+        self.client = OpenAI(
+            base_url=_COPILOT_API_BASE,
+            api_key=new_token,
+            default_headers={
+                "Editor-Version": "vscode/1.90.0",
+                "Copilot-Integration-Id": "vscode-chat",
+            },
+        )
 
     def request_clarification(self, questions: list[str]) -> None:
         """Pause the pipeline and ask the human clarifying questions.
@@ -636,7 +675,9 @@ class BaseAgent:
             # Claude (zen) or MiniMax (go) routed through Anthropic-compatible endpoint
             return self._call_anthropic(full_message)
 
-        # OpenAI-compatible backends (GitHub Models, Ollama, opencode_zen/opencode_go non-Anthropic)
+        # OpenAI-compatible backends (GitHub Models, Ollama, opencode_zen/opencode_go non-Anthropic, Copilot)
+        # Refresh Copilot session token if near expiry
+        self._ensure_copilot_session()
         messages: list[dict] = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
