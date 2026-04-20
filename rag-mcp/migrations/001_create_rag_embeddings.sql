@@ -1,3 +1,5 @@
+BEGIN;
+
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS rag_embeddings (
@@ -15,3 +17,5 @@ CREATE INDEX IF NOT EXISTS rag_embeddings_hnsw_idx
 
 CREATE UNIQUE INDEX IF NOT EXISTS rag_embeddings_upsert_idx
     ON rag_embeddings (source_type, source_id, chunk_index);
+
+COMMIT;
