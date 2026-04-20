@@ -17,6 +17,10 @@ class QAEngineerAgent(BaseAgent):
 
     role_name = "qa_engineer"
 
+    def __init__(self, *args, tool_registry: "ToolRegistry | None" = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._tool_registry = tool_registry
+
     def run(self, files: dict[str, str], prd: str, project_name: str = "Project", test_plan: str = "") -> dict:
         """Generate tests for the implemented code.
 
@@ -55,7 +59,14 @@ class QAEngineerAgent(BaseAgent):
             f"Use '### FILE: tests/test_xxx.py' format for each test file."
         )
 
-        response = self.call(prompt)
+        if self._tool_registry is not None:
+            rag_hint = (
+                "\n\nYou have access to the `search_codebase` RAG tool. "
+                "Use it to find relevant existing code patterns before writing tests."
+            )
+            response = self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
+        else:
+            response = self.call(prompt)
         test_files = self._parse_test_files(response)
         test_plan = self._extract_test_plan(response)
 

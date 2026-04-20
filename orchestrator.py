@@ -219,6 +219,10 @@ class Orchestrator:
             tool_registry = builtin_tools
         self._tool_registry = tool_registry
 
+        # Extract RAG server for retrieval-augmented agents (isolated from builtin tools)
+        rag_servers = [s for s in (mcp_servers or []) if s.get("name") == "rag"]
+        rag_registry = MCPToolRegistry(rag_servers) if rag_servers else None
+
         # Shared kwargs for all agents
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
                               "nvidia_nim_api_key": nvidia_nim_api_key,
@@ -233,12 +237,12 @@ class Orchestrator:
 
         self.pm = ProductManagerAgent(model=_model("product_manager"), **agent_kwargs)
         self.pm_reviewer = PMReviewerAgent(model=_model("pm_reviewer"), **agent_kwargs)
-        self.architect = ArchitectAgent(model=_model("architect"), **agent_kwargs)
+        self.architect = ArchitectAgent(model=_model("architect"), tool_registry=rag_registry, **agent_kwargs)
         self.architect_reviewer = ArchitectReviewerAgent(model=_model("architect_reviewer"), **agent_kwargs)
-        self.engineer = EngineerAgent(model=_model("engineer"), **agent_kwargs)
+        self.engineer = EngineerAgent(model=_model("engineer"), tool_registry=rag_registry, **agent_kwargs)
         self.reviewer = CodeReviewerAgent(model=_model("code_reviewer"), tool_registry=tool_registry, **agent_kwargs)
         self.qa_planner = QAPlannerAgent(model=_model("qa_planner"), tool_registry=tool_registry, **agent_kwargs)
-        self.qa = QAEngineerAgent(model=_model("qa_engineer"), **agent_kwargs)
+        self.qa = QAEngineerAgent(model=_model("qa_engineer"), tool_registry=rag_registry, **agent_kwargs)
         self.deployment_tester = DeploymentTesterAgent(model=_model("deployment_tester"), **agent_kwargs)
 
         # Snapshot original system prompts to prevent stacking on repeated run() calls
