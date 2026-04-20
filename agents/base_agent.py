@@ -75,6 +75,8 @@ def _is_nvidia_nim_model(model: str) -> bool:
 
 # ── GitHub Copilot backend helpers ────────────────────────────────────────────
 
+# NOTE: Not thread-safe. For CPython the GIL serialises access, but if
+# threading is ever introduced a threading.Lock should guard writes.
 _COPILOT_SESSION: dict = {"token": "", "expires_at": 0.0}
 """Module-level cache for the short-lived Copilot session token."""
 
@@ -102,12 +104,14 @@ def _discover_copilot_oauth_token() -> str:
     if token:
         return token
 
-    if os.path.exists(_COPILOT_CONFIG_PATH):
+    try:
         with open(_COPILOT_CONFIG_PATH, encoding="utf-8") as fh:
             cfg = json.load(fh)
         tokens: dict = cfg.get("copilot_tokens", {})
         if tokens:
             return next(iter(tokens.values()))
+    except FileNotFoundError:
+        pass
 
     raise EnvironmentError(
         "No GitHub Copilot OAuth token found. Either:\n"
@@ -142,6 +146,10 @@ def _fetch_copilot_session_token(oauth_token: str) -> str:
     except urllib.error.HTTPError as exc:
         raise RuntimeError(
             f"Copilot token exchange failed: HTTP {exc.code} — {exc.reason}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Copilot token exchange failed: network error — {exc.reason}"
         ) from exc
 
     session_token: str = data["token"]

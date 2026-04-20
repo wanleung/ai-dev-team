@@ -31,24 +31,17 @@ def test_discover_oauth_token_from_env():
 
 def test_discover_oauth_token_from_config_file():
     from agents.base_agent import _discover_copilot_oauth_token
-    config = {
-        "copilot_tokens": {
-            "https://github.com:testuser": "gho_fromfile"
-        }
-    }
+    config = {"copilot_tokens": {"https://github.com:testuser": "gho_fromfile"}}
     config_json = json.dumps(config)
-    with patch.dict(os.environ, {}, clear=False):
-        env = {k: v for k, v in os.environ.items() if k != "COPILOT_OAUTH_TOKEN"}
-        with patch.dict(os.environ, env, clear=True):
-            with patch("builtins.open", mock_open(read_data=config_json)):
-                with patch("os.path.exists", return_value=True):
-                    assert _discover_copilot_oauth_token() == "gho_fromfile"
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("builtins.open", mock_open(read_data=config_json)):
+            assert _discover_copilot_oauth_token() == "gho_fromfile"
 
 
 def test_discover_oauth_token_raises_when_missing():
     from agents.base_agent import _discover_copilot_oauth_token
     with patch.dict(os.environ, {}, clear=True):
-        with patch("os.path.exists", return_value=False):
+        with patch("builtins.open", side_effect=FileNotFoundError):
             try:
                 _discover_copilot_oauth_token()
                 assert False, "Should have raised EnvironmentError"
@@ -76,6 +69,8 @@ def test_fetch_session_token_success():
     assert token == "session_abc"
     assert _COPILOT_SESSION["token"] == "session_abc"
     assert _COPILOT_SESSION["expires_at"] > time.time()
+    _COPILOT_SESSION["token"] = ""
+    _COPILOT_SESSION["expires_at"] = 0.0
 
 
 def test_fetch_session_token_raises_on_http_error():
@@ -89,3 +84,26 @@ def test_fetch_session_token_raises_on_http_error():
             assert False, "Should have raised RuntimeError"
         except RuntimeError as exc:
             assert "401" in str(exc)
+
+
+def test_fetch_session_token_raises_on_url_error():
+    from agents.base_agent import _fetch_copilot_session_token
+    import urllib.error
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
+        try:
+            _fetch_copilot_session_token("gho_fake")
+            assert False, "Should have raised RuntimeError"
+        except RuntimeError as exc:
+            assert "network error" in str(exc)
+
+
+def test_discover_oauth_token_raises_when_config_has_empty_tokens():
+    from agents.base_agent import _discover_copilot_oauth_token
+    config_json = json.dumps({"copilot_tokens": {}})
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("builtins.open", mock_open(read_data=config_json)):
+            try:
+                _discover_copilot_oauth_token()
+                assert False, "Should have raised EnvironmentError"
+            except EnvironmentError as exc:
+                assert "COPILOT_OAUTH_TOKEN" in str(exc)
