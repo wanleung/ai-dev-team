@@ -183,4 +183,10 @@ mcp:
      type: http
      url: "http://10.100.1.8:8000/mcp"
 
-
+    # RAG MCP server — enables search_codebase, search_memory, search_docs tools.
+    # Start with: cd rag-mcp && docker compose up -d
+    # Apply migration: docker exec <container> psql $DATABASE_URL -f migrations/001_create_rag_embeddings.sql
+    # Then uncomment the entry below:
+    # - name: rag
+    #   type: http
+    #   url: "http://localhost:8001/mcp"
