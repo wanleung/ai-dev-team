@@ -18,6 +18,7 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **PR feedback loop** — humans post review comments on AI-generated PRs → Engineer + Code Reviewer + QA automatically re-run, push fixes, and update the PR (up to `max_revisions` rounds)
 - **Tool calling built-in** — Code Reviewer runs `ruff`, QA Planner searches GitHub Issues; any agent can call tools via `call_with_tools()`
 - **MCP server support** — connect any MCP-compatible server (stdio or SSE); tools are automatically merged and injected into tool-calling agents
+- 🔍 **RAG knowledge base** — Engineer, Architect, and QA Engineer agents can search an indexed pgvector knowledge base (codebase, past designs, docs) via `search_codebase`, `search_memory`, and `search_docs` tools — powered by Ollama, vLLM, or OpenAI embeddings
 - **Pluggable skill system** — skills are markdown files in `skills/` that inject domain-specific guidance into agent prompts; auto-detected from project context (issue body, repo languages) or always-loaded from config
 - **Fully customisable** — add agents, skills, and tools by editing markdown role files and Python tool functions
 - 🧠 **Agent memory** — tiered SQLite memory (run → monthly → quarterly), conversation history within each run, auto-summariser after every pipeline
@@ -1175,6 +1176,116 @@ mcp:
 **Install:** `pip install mcp` (or add `mcp>=1.0.0` to `requirements.txt` — already included).
 
 > ⚠️ MCP tool-calling requires a tool-calling-capable backend. The `opencode` CLI backend does **not** support tool calls. Use `github_models`, `anthropic`, `opencode-zen/` (non-Claude), or `opencode-go/` (non-MiniMax) backends.
+
+---
+
+## 🔍 RAG Knowledge Base (Retrieval-Augmented Generation)
+
+The RAG MCP server gives Engineer, Architect, and QA Engineer agents the ability to search an indexed pgvector knowledge base before generating code, designs, or tests. This improves consistency with existing patterns and surfaces relevant documentation at the right moment.
+
+### How it works
+
+```
+User requirement
+    ↓
+Architect/Engineer/QA agent receives task
+    ↓
+Agent calls search_memory / search_codebase / search_docs  →  relevant chunks returned
+    ↓
+Agent incorporates retrieved context into its response
+```
+
+### Setup
+
+**Prerequisites:** PostgreSQL with the `pgvector` extension, and one of: Ollama (local), vLLM, or an OpenAI-compatible embedding endpoint.
+
+**Step 1 — Start the RAG server**
+
+```bash
+cd rag-mcp
+# Set required env vars (DATABASE_URL must point to your Postgres with pgvector)
+export DATABASE_URL="postgresql://user:pass@host:5432/dbname"
+export EMBED_BACKEND=ollama                          # or: vllm, openai
+export OLLAMA_BASE_URL=http://your-ollama-host:11434 # when EMBED_BACKEND=ollama
+export OLLAMA_MODEL=nomic-embed-text                 # or any embedding model
+docker compose up -d
+```
+
+**Step 2 — Apply the migration**
+
+```bash
+docker exec <container_name> psql "$DATABASE_URL" \
+  -f migrations/001_create_rag_embeddings.sql
+```
+
+Or apply directly:
+```bash
+psql "$DATABASE_URL" -f rag-mcp/migrations/001_create_rag_embeddings.sql
+```
+
+**Step 3 — Index your codebase**
+
+```bash
+source venv/bin/activate
+cd rag-mcp
+
+# Index the codebase (Python files)
+DATABASE_URL=... EMBED_BACKEND=ollama OLLAMA_BASE_URL=... OLLAMA_MODEL=nomic-embed-text \
+  python indexer.py codebase /path/to/your/repo --clean
+
+# Index docs (markdown / text files)
+python indexer.py docs /path/to/docs/
+
+# Index agent memory files
+python indexer.py memory /path/to/memory/
+```
+
+**Step 4 — Enable in config.yaml**
+
+Uncomment the RAG entry in the `mcp.servers` section:
+
+```yaml
+mcp:
+  servers:
+    - name: rag
+      type: http
+      url: "http://localhost:8001/mcp"
+```
+
+That's it — Engineer, Architect, and QA Engineer will automatically use RAG search tools when responding.
+
+### Embedding backends
+
+| Backend | `EMBED_BACKEND` | Required env vars | Notes |
+|---------|----------------|-------------------|-------|
+| Ollama (local) | `ollama` | `OLLAMA_BASE_URL`, `OLLAMA_MODEL` | Recommended for local setup; use `nomic-embed-text` |
+| vLLM | `vllm` | `VLLM_BASE_URL`, `VLLM_MODEL` | Faster than Ollama; same API shape |
+| OpenAI | `openai` | `OPENAI_API_KEY`, `OPENAI_EMBED_MODEL` | Requires internet; defaults to `text-embedding-3-small` |
+
+### Tools exposed
+
+| Tool | Used by | Searches |
+|------|---------|---------|
+| `search_codebase` | Engineer, QA Engineer | Source code chunks — finds existing implementations, patterns |
+| `search_memory` | Architect | Past designs, summaries — avoids repeating past decisions |
+| `search_docs` | Engineer, Architect | Documentation, markdown files |
+
+### Re-indexing
+
+Re-run `indexer.py` any time your codebase changes. Use `--clean` to remove stale embeddings for deleted files:
+
+```bash
+python indexer.py codebase /your/repo --clean
+```
+
+### Health check
+
+```bash
+curl http://localhost:8001/health
+# {"status": "ok"}
+```
+
+> ⚠️ RAG tool calls use `call_with_tools()` internally. The `opencode` CLI backend does **not** support tool calls — RAG will silently fall back to non-RAG mode for agents using that backend.
 
 ---
 
