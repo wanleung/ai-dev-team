@@ -21,7 +21,9 @@ Default backend is github_models for backwards compatibility.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import random
 import re
 import subprocess
 import time
@@ -171,6 +173,94 @@ def _fetch_copilot_session_token(oauth_token: str) -> str:
     _COPILOT_SESSION["token"] = session_token
     _COPILOT_SESSION["expires_at"] = dt.timestamp()
     return session_token
+
+
+# ── Retry / backoff configuration ────────────────────────────────────────────
+
+_log = logging.getLogger(__name__)
+
+_DEFAULT_MAX_RETRIES: int = int(os.environ.get("AGENT_MAX_RETRIES", "3"))
+_DEFAULT_BASE_DELAY: float = float(os.environ.get("AGENT_RETRY_BASE_DELAY", "1.0"))
+
+
+def _retry_with_backoff(fn, max_retries: int = _DEFAULT_MAX_RETRIES, base_delay: float = _DEFAULT_BASE_DELAY):
+    """Call *fn()* and retry with exponential backoff on transient API errors.
+
+    Args:
+        fn:          A zero-argument callable wrapping a single LLM API call.
+        max_retries: Maximum number of retry attempts after the initial failure.
+                     Defaults to ``AGENT_MAX_RETRIES`` env var (3).
+        base_delay:  Base wait time in seconds before the first retry.
+                     Actual delay = ``base_delay * 2^attempt * uniform(0.9, 1.1)``.
+                     Defaults to ``AGENT_RETRY_BASE_DELAY`` env var (1.0).
+
+    Returns:
+        Whatever *fn()* returns on a successful call.
+
+    Raises:
+        The last retryable exception after all retries are exhausted, or any
+        non-retryable exception immediately (no retry).
+
+    Retryable (network / server-side transients):
+        openai.APIConnectionError, openai.APITimeoutError,
+        openai.RateLimitError, openai.InternalServerError,
+        and their anthropic equivalents when the library is installed.
+
+    Non-retryable (caller / auth errors):
+        openai.AuthenticationError, openai.BadRequestError.
+    """
+    import openai as _openai_mod
+
+    _retryable: list = [
+        _openai_mod.APIConnectionError,
+        _openai_mod.APITimeoutError,
+        _openai_mod.RateLimitError,
+        _openai_mod.InternalServerError,
+    ]
+    _non_retryable: tuple = (
+        _openai_mod.AuthenticationError,
+        _openai_mod.BadRequestError,
+    )
+
+    try:
+        import anthropic as _anthropic_mod
+        _retryable.extend([
+            _anthropic_mod.APIConnectionError,
+            _anthropic_mod.APITimeoutError,
+            _anthropic_mod.InternalServerError,
+            _anthropic_mod.RateLimitError,
+        ])
+    except ImportError:
+        pass
+
+    _retryable_tuple = tuple(_retryable)
+
+    last_exc: BaseException | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except _non_retryable:
+            raise
+        except _retryable_tuple as exc:  # type: ignore[misc]
+            last_exc = exc
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt) * random.uniform(0.9, 1.1)
+                error_type = type(exc).__name__
+                short_message = str(exc)[:120]
+                _log.warning(
+                    "Retrying in %.1fs (attempt %d/%d): %s: %s",
+                    delay, attempt + 1, max_retries, error_type, short_message,
+                )
+                time.sleep(delay)
+            else:
+                _log.error(
+                    "All %d retries exhausted: %s: %s",
+                    max_retries, type(exc).__name__, str(exc)[:120],
+                )
+        except Exception:
+            raise
+
+    raise last_exc  # type: ignore[misc]
 
 
 class BaseAgent:
@@ -453,27 +543,16 @@ class BaseAgent:
         if self.system_prompt:
             kwargs["system"] = self.system_prompt
 
-        for attempt in range(max_retries):
-            try:
-                if self._inter_call_delay > 0 and attempt == 0:
-                    time.sleep(self._inter_call_delay)
-                response = self._anthropic_client.messages.create(**kwargs)
-                reply = response.content[0].text
-                # Update history
-                self._history.append({"role": "user", "content": full_message})
-                self._history.append({"role": "assistant", "content": reply})
-                return reply
-            except Exception as exc:
-                is_rate_limit = "429" in str(exc) or "rate_limit" in str(exc).lower()
-                is_server_error = "500" in str(exc) or "502" in str(exc) or "503" in str(exc) or "504" in str(exc) or "DOCTYPE" in str(exc)
-                if (is_rate_limit or is_server_error) and attempt < max_retries - 1:
-                    wait = delay * (2 ** attempt)
-                    reason = "Rate limited (Anthropic)" if is_rate_limit else "Server error (Anthropic)"
-                    print(f"    ⏳ {reason} — waiting {wait}s… (retry {attempt + 2}/{max_retries})")
-                    time.sleep(wait)
-                else:
-                    raise
-        raise RuntimeError("All Anthropic retries exhausted")
+        if self._inter_call_delay > 0:
+            time.sleep(self._inter_call_delay)
+        response = _retry_with_backoff(
+            lambda: self._anthropic_client.messages.create(**kwargs)
+        )
+        reply = response.content[0].text
+        # Update history
+        self._history.append({"role": "user", "content": full_message})
+        self._history.append({"role": "assistant", "content": reply})
+        return reply
 
     def _call_opencode(self, prompt: str, max_retries: int = 2, timeout: int | None = None) -> str:
         """Run a prompt via the opencode CLI subprocess.
@@ -578,9 +657,6 @@ class BaseAgent:
             messages.append({"role": "system", "content": self.system_prompt})
         messages.append({"role": "user", "content": full_message})
 
-        max_retries = self._max_api_retries
-        delay = self._retry_delay
-
         # Refresh Copilot session token if near expiry
         try:
             self._ensure_copilot_session()
@@ -589,28 +665,17 @@ class BaseAgent:
 
         for turn in range(max_turns):
             # Call the API with tool schemas
-            for attempt in range(max_retries):
-                try:
-                    if self._inter_call_delay > 0 and attempt == 0:
-                        time.sleep(self._inter_call_delay)
-                    response = self.client.chat.completions.create(
-                        model=self._api_model,
-                        messages=messages,
-                        tools=tools.schemas,
-                        tool_choice="auto",
-                        temperature=0.3,
-                    )
-                    break
-                except Exception as exc:
-                    is_rate_limit = "429" in str(exc) or "RateLimitReached" in str(exc)
-                    is_server_error = "500" in str(exc) or "502" in str(exc) or "503" in str(exc) or "504" in str(exc) or "DOCTYPE" in str(exc)
-                    if (is_rate_limit or is_server_error) and attempt < max_retries - 1:
-                        wait = delay * (2 ** attempt)
-                        reason = "Rate limited" if is_rate_limit else "Server error"
-                        print(f"    ⏳ {reason} — waiting {wait}s (turn {turn + 1}, retry {attempt + 2}/{max_retries})…")
-                        time.sleep(wait)
-                    else:
-                        raise
+            if self._inter_call_delay > 0:
+                time.sleep(self._inter_call_delay)
+            response = _retry_with_backoff(
+                lambda: self.client.chat.completions.create(
+                    model=self._api_model,
+                    messages=messages,
+                    tools=tools.schemas,
+                    tool_choice="auto",
+                    temperature=0.3,
+                )
+            )
 
             msg = response.choices[0].message
 
@@ -651,10 +716,12 @@ class BaseAgent:
             "role": "user",
             "content": "Please provide your final response based on the tool results above.",
         })
-        response = self.client.chat.completions.create(
-            model=self._api_model,
-            messages=messages,
-            temperature=0.3,
+        response = _retry_with_backoff(
+            lambda: self.client.chat.completions.create(
+                model=self._api_model,
+                messages=messages,
+                temperature=0.3,
+            )
         )
         return response.choices[0].message.content or ""
 
@@ -690,32 +757,20 @@ class BaseAgent:
         messages.extend(self._history)
         messages.append({"role": "user", "content": full_message})
 
-        max_retries = self._max_api_retries
-        delay = self._retry_delay
-        for attempt in range(max_retries):
-            try:
-                if self._inter_call_delay > 0 and attempt == 0:
-                    time.sleep(self._inter_call_delay)
-                response = self.client.chat.completions.create(
-                    model=self._api_model,
-                    messages=messages,
-                    temperature=0.3,
-                )
-                reply = response.choices[0].message.content or ""
-                # Persist to history
-                self._history.append({"role": "user", "content": full_message})
-                self._history.append({"role": "assistant", "content": reply})
-                return reply
-            except Exception as exc:
-                is_rate_limit = "429" in str(exc) or "RateLimitReached" in str(exc)
-                is_server_error = "500" in str(exc) or "502" in str(exc) or "503" in str(exc) or "504" in str(exc) or "DOCTYPE" in str(exc)
-                if (is_rate_limit or is_server_error) and attempt < max_retries - 1:
-                    wait = delay * (2 ** attempt)
-                    reason = "Rate limited" if is_rate_limit else "Server error"
-                    print(f"    ⏳ {reason} — waiting {wait}s before retry {attempt + 2}/{max_retries}…")
-                    time.sleep(wait)
-                else:
-                    raise
+        if self._inter_call_delay > 0:
+            time.sleep(self._inter_call_delay)
+        response = _retry_with_backoff(
+            lambda: self.client.chat.completions.create(
+                model=self._api_model,
+                messages=messages,
+                temperature=0.3,
+            )
+        )
+        reply = response.choices[0].message.content or ""
+        # Persist to history
+        self._history.append({"role": "user", "content": full_message})
+        self._history.append({"role": "assistant", "content": reply})
+        return reply
 
     @staticmethod
     def truncate_files(files: dict[str, str], max_chars: int = 12_000) -> dict[str, str]:
