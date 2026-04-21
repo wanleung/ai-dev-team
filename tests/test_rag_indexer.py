@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
+import requests
 
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
@@ -189,3 +190,205 @@ def test_index_codebase_handles_delete_stale_chunks_error():
 
     # Indexing succeeded even though cleanup failed
     assert mock_upsert.call_count == 1
+
+
+# ── URL indexing ──────────────────────────────────────────────────────────────
+
+def _make_html_response(text: str, links: list[str] = None, status_code: int = 200) -> MagicMock:
+    """Build a mock requests.Response for HTML pages."""
+    html_links = "".join(f'<a href="{href}">link</a>' for href in (links or []))
+    html = f"""
+    <html><body>
+      <nav>Navigation</nav>
+      <p>{text}</p>
+      {html_links}
+      <footer>Footer</footer>
+    </body></html>
+    """
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.headers = {"Content-Type": "text/html; charset=utf-8"}
+    resp.text = html
+    return resp
+
+
+def test_index_url_single_page(monkeypatch):
+    """index_url crawls seed page, follows same-domain links, ignores external links."""
+    from indexer import index_url
+
+    seed_url = "https://docs.example.com/start"
+    same_domain_link = "https://docs.example.com/page2"
+    external_link = "https://other.com/page"
+
+    visible_text = "A " * 60  # > 100 chars
+
+    seed_resp = _make_html_response(visible_text, links=[same_domain_link, external_link])
+    child_resp = _make_html_response(visible_text, links=[])
+
+    def fake_get(url, timeout=10):
+        if url == seed_url:
+            return seed_resp
+        if url == same_domain_link:
+            return child_resp
+        raise AssertionError(f"Unexpected GET: {url}")
+
+    mock_session = MagicMock()
+    mock_session.get.side_effect = fake_get
+    mock_session.headers = {}
+
+    mock_embedder = MagicMock()
+    mock_embedder.embed.return_value = [0.1] * 768
+
+    with patch("indexer.requests.Session", return_value=mock_session), \
+         patch("indexer.upsert_chunk") as mock_upsert, \
+         patch("indexer.delete_stale_chunks"):
+        index_url(seed_url, mock_embedder, max_depth=3)
+
+    # Both seed and same-domain child should be upserted
+    upserted_ids = {c[1]["source_id"] for c in mock_upsert.call_args_list}
+    assert seed_url in upserted_ids
+    assert same_domain_link in upserted_ids
+    # External link should NOT be upserted
+    assert external_link not in upserted_ids
+
+    # External link should never be fetched
+    fetched_urls = [call.args[0] for call in mock_session.get.call_args_list]
+    assert external_link not in fetched_urls
+
+
+def test_index_url_depth_limit(monkeypatch):
+    """index_url with max_depth=1 crawls seed + depth-1 children, not grandchildren."""
+    from indexer import index_url
+
+    seed_url = "https://docs.example.com/"
+    child_url = "https://docs.example.com/child"
+    grandchild_url = "https://docs.example.com/grandchild"
+
+    visible_text = "B " * 60
+
+    seed_resp = _make_html_response(visible_text, links=[child_url])
+    child_resp = _make_html_response(visible_text, links=[grandchild_url])
+    grandchild_resp = _make_html_response(visible_text, links=[])
+
+    def fake_get(url, timeout=10):
+        mapping = {
+            "https://docs.example.com": seed_resp,
+            seed_url.rstrip("/"): seed_resp,
+            seed_url: seed_resp,
+            child_url: child_resp,
+            grandchild_url: grandchild_resp,
+        }
+        return mapping.get(url, grandchild_resp)
+
+    mock_session = MagicMock()
+    mock_session.get.side_effect = fake_get
+    mock_session.headers = {}
+
+    mock_embedder = MagicMock()
+    mock_embedder.embed.return_value = [0.1] * 768
+
+    with patch("indexer.requests.Session", return_value=mock_session), \
+         patch("indexer.upsert_chunk") as mock_upsert, \
+         patch("indexer.delete_stale_chunks"):
+        index_url(seed_url, mock_embedder, max_depth=1)
+
+    fetched_urls = [call.args[0] for call in mock_session.get.call_args_list]
+    # Grandchild must NOT be fetched
+    assert grandchild_url not in fetched_urls
+    # Seed and child should be fetched
+    assert child_url in fetched_urls
+
+
+def test_index_url_skips_non_html(monkeypatch):
+    """index_url does not fetch .pdf or .zip links from the seed page."""
+    from indexer import index_url
+
+    seed_url = "https://docs.example.com/start"
+    pdf_link = "https://docs.example.com/doc.pdf"
+    zip_link = "https://docs.example.com/archive.zip"
+
+    visible_text = "C " * 60
+
+    seed_resp = _make_html_response(visible_text, links=[pdf_link, zip_link])
+
+    mock_session = MagicMock()
+    mock_session.get.return_value = seed_resp
+    mock_session.headers = {}
+
+    mock_embedder = MagicMock()
+    mock_embedder.embed.return_value = [0.1] * 768
+
+    with patch("indexer.requests.Session", return_value=mock_session), \
+         patch("indexer.upsert_chunk"), \
+         patch("indexer.delete_stale_chunks"):
+        index_url(seed_url, mock_embedder, max_depth=3)
+
+    fetched_urls = [call.args[0] for call in mock_session.get.call_args_list]
+    assert pdf_link not in fetched_urls
+    assert zip_link not in fetched_urls
+
+
+def test_index_url_request_error(monkeypatch):
+    """index_url logs a warning and does not crash when requests.get raises ConnectionError."""
+    from indexer import index_url
+    import logging
+
+    mock_session = MagicMock()
+    mock_session.get.side_effect = requests.ConnectionError("refused")
+    mock_session.headers = {}
+
+    mock_embedder = MagicMock()
+
+    with patch("indexer.requests.Session", return_value=mock_session), \
+         patch("indexer.upsert_chunk") as mock_upsert, \
+         patch("indexer.delete_stale_chunks"):
+        # Must not raise
+        index_url("https://docs.example.com/", mock_embedder, max_depth=0)
+
+    mock_upsert.assert_not_called()
+
+
+def test_index_url_short_text_skipped(monkeypatch):
+    """index_url does not call upsert_chunk when page text is < 100 chars."""
+    from indexer import index_url
+
+    short_html = "<html><body><p>Too short.</p></body></html>"
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {"Content-Type": "text/html"}
+    resp.text = short_html
+
+    mock_session = MagicMock()
+    mock_session.get.return_value = resp
+    mock_session.headers = {}
+
+    mock_embedder = MagicMock()
+
+    with patch("indexer.requests.Session", return_value=mock_session), \
+         patch("indexer.upsert_chunk") as mock_upsert, \
+         patch("indexer.delete_stale_chunks"):
+        index_url("https://docs.example.com/", mock_embedder, max_depth=0)
+
+    mock_upsert.assert_not_called()
+
+
+def test_normalise_url():
+    """_normalise_url strips trailing slash, drops fragment, preserves scheme and host."""
+    from indexer import _normalise_url
+
+    # Trailing slash stripped (non-root path)
+    assert _normalise_url("https://example.com/docs/") == "https://example.com/docs"
+
+    # Root slash preserved
+    assert _normalise_url("https://example.com/") == "https://example.com/"
+
+    # Fragment dropped
+    assert _normalise_url("https://example.com/page#section") == "https://example.com/page"
+
+    # Both trailing slash and fragment
+    assert _normalise_url("https://example.com/docs/#anchor") == "https://example.com/docs"
+
+    # Scheme and host preserved
+    result = _normalise_url("https://docs.example.com/path/to/page")
+    assert result.startswith("https://docs.example.com")
+    assert result == "https://docs.example.com/path/to/page"
