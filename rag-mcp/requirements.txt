@@ -5,3 +5,5 @@ pgvector==0.4.2
 requests==2.32.5
 openai==2.29.0
 pydantic==2.12.5
+beautifulsoup4==4.13.4
+lxml==5.4.0

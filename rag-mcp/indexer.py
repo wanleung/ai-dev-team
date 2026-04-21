@@ -4,6 +4,7 @@ Usage:
     python indexer.py --source codebase --path /path/to/repo [--ext py,ts,go] [--clean]
     python indexer.py --source docs --path /path/to/docs [--ext md,txt,rst]
     python indexer.py --source memory --db /path/to/memory.db
+    python indexer.py --source url --url https://docs.example.com [--depth 3] [--clean]
 
 Environment variables required:
     DATABASE_URL  — Postgres connection string
@@ -15,7 +16,12 @@ import argparse
 import logging
 import os
 import sys
+from collections import deque
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse, urljoin
+
+import requests
+from bs4 import BeautifulSoup
 
 from db import upsert_chunk, delete_stale_chunks
 from embedder import Embedder, EmbedderError
@@ -164,6 +170,128 @@ def index_docs(
             log.error("Failed to delete stale chunks (indexing itself succeeded): %s", exc)
 
 
+_NON_HTML_EXTS = {".pdf", ".zip", ".png", ".jpg", ".jpeg", ".gif", ".css", ".js"}
+
+
+def _normalise_url(url: str) -> str:
+    """Normalise a URL by dropping fragment and stripping trailing slash from path.
+
+    Preserves scheme, netloc, query string. The path trailing slash is stripped
+    unless the path is exactly '/'.
+    """
+    parsed = urlparse(url)
+    path = parsed.path
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
+    normalised = urlunparse((parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, ""))
+    return normalised
+
+
+def index_url(
+    start_url: str,
+    embedder: Embedder,
+    max_depth: int = 3,
+    clean: bool = False,
+) -> None:
+    """Crawl start_url (BFS up to max_depth) and index visible text into the 'docs' source type.
+
+    Args:
+        start_url: Seed URL to begin crawling from.
+        embedder: Embedder instance used to generate chunk embeddings.
+        max_depth: Maximum crawl depth (0 = seed page only).
+        clean: When True, delete stale 'docs' embeddings for URLs not found during crawl.
+    """
+    start_url = _normalise_url(start_url)
+    base_domain = urlparse(start_url).netloc
+
+    visited: set[str] = set()
+    live_ids: list[str] = []
+    queue: deque[tuple[str, int]] = deque([(start_url, 0)])
+
+    session = requests.Session()
+    session.headers["User-Agent"] = "RAG-Indexer/1.0"
+
+    while queue:
+        url, depth = queue.popleft()
+
+        if url in visited:
+            continue
+        visited.add(url)
+
+        if depth > max_depth:
+            continue
+
+        parsed = urlparse(url)
+
+        # Stay on the same domain
+        if parsed.netloc != base_domain:
+            continue
+
+        # Skip non-HTML resource extensions
+        path_lower = parsed.path.lower()
+        if any(path_lower.endswith(ext) for ext in _NON_HTML_EXTS):
+            continue
+
+        try:
+            response = session.get(url, timeout=10)
+        except requests.RequestException as exc:
+            log.warning("Request failed for %s: %s", url, exc)
+            continue
+
+        if response.status_code != 200:
+            log.warning("Non-200 status %d for %s", response.status_code, url)
+            continue
+
+        content_type = response.headers.get("Content-Type", "")
+        if "text/html" not in content_type:
+            log.warning("Skipping non-HTML content type '%s' for %s", content_type, url)
+            continue
+
+        soup = BeautifulSoup(response.text, "lxml")
+
+        # Remove noise tags before extracting text
+        for tag in soup.find_all(["script", "style", "nav", "footer"]):
+            tag.decompose()
+
+        text = soup.get_text(separator=" ", strip=True)
+
+        if len(text) < 100:
+            log.warning("Skipping %s — extracted text too short (%d chars)", url, len(text))
+        else:
+            live_ids.append(url)
+            chunks = chunk_text(text)
+            for i, chunk in enumerate(chunks):
+                try:
+                    embedding = embedder.embed(chunk)
+                except EmbedderError as exc:
+                    log.warning("Skipping %s chunk %d: %s", url, i, exc)
+                    continue
+                upsert_chunk(
+                    source_type="docs",
+                    source_id=url,
+                    chunk_index=i,
+                    content=chunk,
+                    embedding=embedding,
+                    metadata={"url": url, "depth": depth},
+                )
+                log.info("Indexed url %s chunk %d", url, i)
+
+        # Enqueue discovered links for next depth level
+        if depth < max_depth:
+            for anchor in soup.find_all("a", href=True):
+                href = anchor["href"]
+                child_url = _normalise_url(urljoin(url, href))
+                if child_url not in visited:
+                    queue.append((child_url, depth + 1))
+
+    if clean:
+        try:
+            deleted = delete_stale_chunks("docs", live_ids)
+            log.info("Cleaned %d stale docs chunks", deleted)
+        except Exception as exc:
+            log.error("Failed to delete stale chunks (indexing itself succeeded): %s", exc)
+
+
 def index_memory(db_path: str, embedder: Embedder) -> None:
     """Index past pipeline runs from the MemoryStore SQLite database.
 
@@ -210,11 +338,13 @@ def index_memory(db_path: str, embedder: Embedder) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="RAG indexer — populate pgvector knowledge base")
-    parser.add_argument("--source", choices=["codebase", "docs", "memory"], required=True)
+    parser.add_argument("--source", choices=["codebase", "docs", "memory", "url"], required=True)
     parser.add_argument("--path", help="Root directory for codebase/docs sources")
     parser.add_argument("--db", help="Path to MemoryStore SQLite file (--source memory)")
     parser.add_argument("--ext", help="Comma-separated file extensions to index (e.g. py,ts,go)")
     parser.add_argument("--clean", action="store_true", help="Delete embeddings for removed files")
+    parser.add_argument("--url", help="Seed URL to crawl (--source url)")
+    parser.add_argument("--depth", type=int, default=3, help="Maximum crawl depth (default: 3)")
     args = parser.parse_args()
 
     embedder = Embedder()
@@ -232,6 +362,10 @@ def main() -> None:
         if not args.db:
             parser.error("--db required for --source memory")
         index_memory(args.db, embedder)
+    elif args.source == "url":
+        if not args.url:
+            parser.error("--url required for --source url")
+        index_url(args.url, embedder, max_depth=args.depth, clean=args.clean)
 
     log.info("Indexing complete.")
 
