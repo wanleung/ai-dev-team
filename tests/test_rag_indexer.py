@@ -392,3 +392,45 @@ def test_normalise_url():
     result = _normalise_url("https://docs.example.com/path/to/page")
     assert result.startswith("https://docs.example.com")
     assert result == "https://docs.example.com/path/to/page"
+
+
+# ── Standards indexing ────────────────────────────────────────────────────────
+
+def test_index_standards_indexes_md_files():
+    """index_standards() calls upsert_chunk with source_type='standards' for .md files."""
+    from indexer import index_standards
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "style.md").write_text("# Style Guide\n\nUse snake_case for functions.\n")
+
+        mock_embedder = MagicMock()
+        mock_embedder.embed.return_value = [0.1] * 768
+
+        with patch("indexer.upsert_chunk") as mock_upsert:
+            index_standards(tmpdir, mock_embedder)
+
+    assert mock_upsert.call_count >= 1
+    call_kwargs = mock_upsert.call_args_list[0][1]
+    assert call_kwargs["source_type"] == "standards"
+    assert "style.md" in call_kwargs["source_id"]
+
+
+def test_index_standards_default_extensions():
+    """index_standards() includes .adoc by default but excludes .py files."""
+    from indexer import index_standards
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "guide.adoc").write_text("= Architecture Guide\n\nFollow these patterns.\n")
+        (Path(tmpdir) / "helper.py").write_text("def foo(): pass\n")
+
+        mock_embedder = MagicMock()
+        mock_embedder.embed.return_value = [0.1] * 768
+
+        with patch("indexer.upsert_chunk") as mock_upsert:
+            index_standards(tmpdir, mock_embedder)
+
+    upserted_ids = {c[1]["source_id"] for c in mock_upsert.call_args_list}
+    # .adoc should be indexed
+    assert any("guide.adoc" in sid for sid in upserted_ids)
+    # .py should NOT be indexed (not in default extensions)
+    assert not any("helper.py" in sid for sid in upserted_ids)

@@ -152,3 +152,48 @@ def test_search_codebase_top_k_clamping(main_mod, requested, expected):
         asyncio.run(main_mod.search_codebase("q", top_k=requested))
     
     mock_search.assert_called_once_with("codebase", ANY, expected)
+
+
+def test_search_standards_returns_results(main_mod):
+    """search_standards() returns uniform {"results": [...]} envelope on success."""
+    from models import SearchResult
+
+    fake_result = SearchResult(
+        content="Use snake_case for function names.",
+        source_id="standards/python.md",
+        chunk_index=0,
+        score=0.92,
+    )
+    with patch.object(main_mod._embedder, "embed", return_value=[0.1] * 768), \
+         patch("main_test.search_chunks", return_value=[fake_result]) as mock_search:
+        result = asyncio.run(main_mod.search_standards("naming conventions"))
+
+    mock_search.assert_called_once_with("standards", ANY, ANY)
+    data = json.loads(result)
+    assert "results" in data
+    assert isinstance(data["results"], list)
+    assert len(data["results"]) == 1
+    assert data["results"][0]["content"] == "Use snake_case for function names."
+    assert data["results"][0]["score"] == 0.92
+
+
+def test_search_standards_embed_error(main_mod):
+    """search_standards() returns {"error": ..., "results": []} on EmbedderError."""
+    from embedder import EmbedderError
+
+    with patch.object(main_mod._embedder, "embed", side_effect=EmbedderError("embedder down")):
+        result = asyncio.run(main_mod.search_standards("query"))
+
+    data = json.loads(result)
+    assert "error" in data
+    assert "embedder down" in data["error"]
+    assert data["results"] == []
+
+
+def test_search_standards_top_k_clamped(main_mod):
+    """search_standards() clamps top_k=0 to 1 before the DB call."""
+    with patch.object(main_mod._embedder, "embed", return_value=[0.0] * 768), \
+         patch("main_test.search_chunks", return_value=[]) as mock_search:
+        asyncio.run(main_mod.search_standards("q", top_k=0))
+
+    mock_search.assert_called_once_with("standards", ANY, 1)

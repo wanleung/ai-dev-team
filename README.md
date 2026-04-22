@@ -1269,6 +1269,7 @@ That's it — Engineer, Architect, and QA Engineer will automatically use RAG se
 | `search_codebase` | Engineer, QA Engineer | Source code chunks — finds existing implementations, patterns |
 | `search_memory` | Architect | Past designs, summaries — avoids repeating past decisions |
 | `search_docs` | Engineer, Architect | Documentation, markdown files |
+| `search_standards` | Architect | Coding standards, design patterns, guidelines |
 
 ### Re-indexing
 
@@ -1276,6 +1277,9 @@ Re-run `indexer.py` any time your codebase changes. Use `--clean` to remove stal
 
 ```bash
 python indexer.py codebase /your/repo --clean
+
+# Index coding standards / architectural guidelines
+python indexer.py --source standards --path ./standards/ --clean
 ```
 
 ### Health check
@@ -1286,6 +1290,92 @@ curl http://localhost:8001/health
 ```
 
 > ⚠️ RAG tool calls use `call_with_tools()` internally. The `opencode` CLI backend does **not** support tool calls — RAG will silently fall back to non-RAG mode for agents using that backend.
+
+### Adding a New Source Type
+
+A source type is a named collection in the knowledge base (e.g. `codebase`, `docs`, `standards`). Each source type has:
+1. An **indexer function** in `rag-mcp/indexer.py` that chunks and stores content
+2. A **search tool** in `rag-mcp/main.py` that agents call at runtime
+
+#### Step 1 — Add the indexer function (`rag-mcp/indexer.py`)
+
+Copy the pattern from `index_standards()` or `index_docs()`. Change `source_type=` to your new name:
+
+```python
+def index_mytype(path: str, embedder: Embedder, extensions=None, clean=False):
+    exts = {f".{e.lstrip('.')}" for e in (extensions or ["md", "txt"])}
+    root = Path(path)
+    live_ids = []
+    for fpath in sorted(root.rglob("*")):
+        if fpath.suffix not in exts or not fpath.is_file():
+            continue
+        source_id = str(fpath)
+        live_ids.append(source_id)
+        try:
+            text = fpath.read_text(errors="replace")
+        except OSError as exc:
+            log.warning("Skipping %s: %s", fpath, exc)
+            live_ids.pop()
+            continue
+        for i, chunk in enumerate(chunk_text(text)):
+            try:
+                embedding = embedder.embed(chunk)
+            except EmbedderError as exc:
+                log.warning("Skipping %s chunk %d: %s", source_id, i, exc)
+                continue
+            upsert_chunk(
+                source_type="mytype",      # ← your new name
+                source_id=source_id,
+                chunk_index=i,
+                content=chunk,
+                embedding=embedding,
+                metadata={"path": source_id},
+            )
+```
+
+Then add `"mytype"` to `--source` choices in `main()` and call your function.
+
+#### Step 2 — Add the search tool (`rag-mcp/main.py`)
+
+```python
+@mcp.tool()
+async def search_mytype(query: str, top_k: int = _TOP_K) -> str:
+    """Search <describe what this collection contains and when to use it>.
+    The description is what the agent reads to decide whether to call this tool.
+    """
+    try:
+        top_k = max(1, min(top_k, _MAX_TOP_K))
+        embedding = await asyncio.to_thread(_embedder.embed, query)
+        results = await asyncio.to_thread(search_chunks, "mytype", embedding, top_k)
+        return json.dumps({"results": [r.model_dump() for r in results]})
+    except EmbedderError as exc:
+        return json.dumps({"error": str(exc), "results": []})
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "results": []})
+```
+
+#### Step 3 — Choose which agents can use it
+
+Agents automatically see all tools on the RAG MCP server. Control access by which agents receive the `tool_registry`:
+
+- **All RAG-enabled agents** (Engineer, Architect, QA Engineer) get it automatically if the RAG server is enabled in `config.yaml`
+- To restrict to specific agents only, create a **separate MCP server** entry in `config.yaml` pointing to a second RAG instance indexed with only that source type
+
+#### Step 4 — Index your content
+
+```bash
+cd rag-mcp
+DATABASE_URL=... EMBED_BACKEND=ollama OLLAMA_BASE_URL=... OLLAMA_MODEL=nomic-embed-text \
+  python indexer.py --source mytype --path /path/to/content --clean
+```
+
+#### Step 5 — Redeploy the RAG server
+
+```bash
+cd rag-mcp && docker compose up -d --build
+```
+
+The new `search_mytype` tool is immediately available to all RAG-enabled agents.
 
 ---
 
