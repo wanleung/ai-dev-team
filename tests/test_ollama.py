@@ -67,10 +67,9 @@ def test_base_agent_ollama_client_uses_ollama_url():
         mock_openai_cls.return_value = MagicMock()
         from agents.base_agent import BaseAgent
         agent = BaseAgent(model="ollama/llama3.2", ollama_url="http://10.0.0.1:11434")
-        mock_openai_cls.assert_called_once_with(
-            base_url="http://10.0.0.1:11434/v1",
-            api_key="ollama",
-        )
+        call_kwargs = mock_openai_cls.call_args.kwargs
+        assert call_kwargs["base_url"] == "http://10.0.0.1:11434/v1"
+        assert call_kwargs["api_key"] == "ollama"
 
 
 def test_base_agent_github_models_api_model_unchanged():
@@ -90,10 +89,9 @@ def test_base_agent_ollama_url_trailing_slash_normalised():
         mock_openai_cls.return_value = MagicMock()
         from agents.base_agent import BaseAgent
         BaseAgent(model="ollama/llama3.2", ollama_url="http://localhost:11434/")
-        mock_openai_cls.assert_called_once_with(
-            base_url="http://localhost:11434/v1",
-            api_key="ollama",
-        )
+        call_kwargs = mock_openai_cls.call_args.kwargs
+        assert call_kwargs["base_url"] == "http://localhost:11434/v1"
+        assert call_kwargs["api_key"] == "ollama"
 
 
 # ── Orchestrator wiring ───────────────────────────────────────────────────────
@@ -159,4 +157,123 @@ def test_from_config_loads_config_local_yaml(tmp_path):
 
     orc = Orchestrator.from_config(str(tmp_path / "config.yaml"))
     assert orc.agent_kwargs["ollama_url"] == "http://10.100.1.30:11434"
+
+
+# ── Ollama streaming + thinking suppression tests ────────────────────────────
+
+def _make_chunk(content):
+    """Helper to create a fake streaming chunk."""
+    chunk = MagicMock()
+    chunk.choices[0].delta.content = content
+    return chunk
+
+
+def test_ollama_call_uses_streaming():
+    """call() passes stream=True to chat.completions.create for Ollama backend."""
+    with patch("agents.base_agent.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        # Return an iterator of chunks
+        mock_client.chat.completions.create.return_value = iter([
+            _make_chunk("Hello"),
+            _make_chunk(" world"),
+        ])
+
+        import importlib
+        import agents.base_agent as ba
+        importlib.reload(ba)
+
+        agent = ba.BaseAgent(model="ollama/qwen3", ollama_url="http://10.0.0.1:11434")
+        agent.client = mock_client
+        result = agent.call("Say hi")
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs.get("stream") is True
+        assert result == "Hello world"
+
+
+def test_ollama_think_tags_stripped():
+    """call() strips <think>...</think> blocks from Ollama streaming responses."""
+    with patch("agents.base_agent.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = iter([
+            _make_chunk("<think>some internal reasoning\n"),
+            _make_chunk("more reasoning</think>\n"),
+            _make_chunk("Actual answer"),
+        ])
+
+        import importlib
+        import agents.base_agent as ba
+        importlib.reload(ba)
+
+        agent = ba.BaseAgent(model="ollama/qwen3", ollama_url="http://10.0.0.1:11434")
+        agent.client = mock_client
+        result = agent.call("Think hard")
+
+        assert result == "Actual answer"
+        assert "<think>" not in result
+
+
+def test_ollama_extra_body_think_false():
+    """call() passes extra_body={'think': False} for Ollama backend calls."""
+    with patch("agents.base_agent.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = iter([
+            _make_chunk("Answer"),
+        ])
+
+        import importlib
+        import agents.base_agent as ba
+        importlib.reload(ba)
+
+        agent = ba.BaseAgent(model="ollama/qwen3", ollama_url="http://10.0.0.1:11434")
+        agent.client = mock_client
+        agent.call("Test")
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs.get("extra_body") == {"think": False}
+
+
+def test_non_ollama_not_streaming():
+    """call() does NOT use stream=True for non-Ollama (github_models) backend."""
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_fake"}):
+        import importlib
+        import agents.base_agent as ba
+        importlib.reload(ba)
+
+        agent = ba.BaseAgent(model="openai/gpt-4.1")
+
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = "Response"
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.return_value = mock_response
+
+        agent.call("Hello")
+
+        call_kwargs = agent.client.chat.completions.create.call_args.kwargs
+        # stream should not be True (either absent or False)
+        assert not call_kwargs.get("stream")
+
+
+def test_ollama_no_timeout():
+    """Ollama client is created with no read timeout (timeout.read is None)."""
+    import httpx
+    import os as _os
+    import importlib
+    import agents.base_agent as ba
+
+    _os.environ.pop("OLLAMA_TIMEOUT", None)
+    importlib.reload(ba)
+
+    with patch("agents.base_agent.OpenAI") as mock_openai_cls:
+        mock_openai_cls.return_value = MagicMock()
+        ba.BaseAgent(model="ollama/qwen3", ollama_url="http://10.0.0.1:11434")
+        call_kwargs = mock_openai_cls.call_args.kwargs
+        timeout = call_kwargs.get("timeout")
+        assert timeout is not None, "timeout kwarg should be passed to OpenAI client"
+        # With no OLLAMA_TIMEOUT set, read timeout should be None (unlimited)
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.read is None
 
