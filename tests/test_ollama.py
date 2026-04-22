@@ -373,3 +373,92 @@ def test_orchestrator_passes_ollama_think_stream():
     assert orc.ollama_stream is False
 
 
+# ── Per-agent ollama_think / ollama_stream overrides ─────────────────────────
+
+def test_model_override_dict_form_model():
+    """Dict override: architect gets the dict's model and ollama_think values."""
+    from orchestrator import Orchestrator
+
+    orc = Orchestrator(
+        model="ollama/llama4",
+        model_overrides={
+            "architect": {
+                "model": "ollama/qwen3.6",
+                "ollama_think": True,
+            }
+        },
+        ollama_think=False,
+        ollama_stream=True,
+    )
+    # Model prefix is stripped by BaseAgent; we verify the Orchestrator resolves
+    # the dict's model key, i.e., the agent was NOT created with the global model.
+    # We do that by checking the _api_model stored on the agent instance.
+    assert orc.architect._api_model == "qwen3.6"
+    # ollama_think=True was specified in the dict override
+    assert orc.architect._ollama_think is True
+
+
+def test_model_override_dict_form_inherits_global():
+    """Dict override without ollama_think key inherits global ollama_think."""
+    from orchestrator import Orchestrator
+
+    orc = Orchestrator(
+        model="ollama/llama4",
+        model_overrides={
+            "engineer": {
+                "model": "ollama/qwen2.5:latest",
+                # ollama_think intentionally absent → should inherit global
+            }
+        },
+        ollama_think=True,   # global default
+        ollama_stream=False,
+    )
+    # No ollama_think in override → falls back to global True
+    assert orc.engineer._ollama_think is True
+    # No ollama_stream in override → falls back to global False
+    assert orc.engineer._ollama_stream is False
+
+
+def test_model_override_string_form_unchanged():
+    """String override still works and agent inherits global ollama_think/ollama_stream."""
+    from orchestrator import Orchestrator
+
+    orc = Orchestrator(
+        model="ollama/llama4",
+        model_overrides={"qa_engineer": "ollama/qwen3.6"},
+        ollama_think=False,
+        ollama_stream=True,
+    )
+    assert orc.qa._api_model == "qwen3.6"
+    assert orc.qa._ollama_think is False
+    assert orc.qa._ollama_stream is True
+
+
+def test_model_helper_dict_returns_model_key():
+    """_model() returns the 'model' key from a dict override."""
+    from orchestrator import Orchestrator
+
+    orc = Orchestrator(
+        model="ollama/llama4",
+        model_overrides={
+            "engineer": {"model": "ollama/qwen2.5", "ollama_think": True}
+        },
+    )
+    # Agent was instantiated with ollama/qwen2.5; BaseAgent strips prefix → qwen2.5
+    assert orc.engineer._api_model == "qwen2.5"
+
+
+def test_model_helper_dict_no_model_key_falls_back():
+    """_model() falls back to global model when dict override has no 'model' key."""
+    from orchestrator import Orchestrator
+
+    orc = Orchestrator(
+        model="ollama/llama4",
+        model_overrides={
+            "pm_reviewer": {"ollama_think": True}  # no 'model' key
+        },
+    )
+    # Should fall back to the global model "ollama/llama4" → api_model "llama4"
+    assert orc.pm_reviewer._api_model == "llama4"
+
+
