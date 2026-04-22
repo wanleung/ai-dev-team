@@ -1,6 +1,23 @@
 version: "3.8"
 
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ragpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-rag}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag} -d ${POSTGRES_DB:-rag}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   rag-mcp:
     build:
       context: .
@@ -8,8 +25,11 @@ services:
       - "8001:8001"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set (e.g. postgresql://user:pass@host:5432/dbname)}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-ragpassword}@postgres:5432/${POSTGRES_DB:-rag}
       EMBED_BACKEND: ${EMBED_BACKEND:-ollama}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
@@ -25,3 +45,6 @@ services:
       retries: 5
       start_period: 15s
     restart: unless-stopped
+
+volumes:
+  pgdata:
