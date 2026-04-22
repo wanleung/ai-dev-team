@@ -36,7 +36,11 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
 
+import httpx
 from openai import OpenAI
+
+# Ollama timeout: None means no read timeout (streaming keeps TCP alive).
+_ollama_timeout = float(os.environ.get("OLLAMA_TIMEOUT", "0")) or None
 
 _ANTHROPIC_MODELS = {
     "claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5",
@@ -453,7 +457,15 @@ class BaseAgent:
         elif use_ollama:
             self._backend = "ollama"
             self._api_model = model.removeprefix("ollama/")
-            self.client = OpenAI(base_url=f"{ollama_url.rstrip('/')}/v1", api_key="ollama")
+            self.client = OpenAI(
+                base_url=f"{ollama_url.rstrip('/')}/v1",
+                api_key="ollama",
+                timeout=(
+                    httpx.Timeout(timeout=_ollama_timeout, connect=10.0)
+                    if _ollama_timeout
+                    else httpx.Timeout(timeout=None, connect=10.0)
+                ),
+            )
             self._anthropic_client = None
         else:
             token = github_token or os.environ.get("GITHUB_TOKEN")
@@ -674,6 +686,7 @@ class BaseAgent:
                     tools=tools.schemas,
                     tool_choice="auto",
                     temperature=0.3,
+                    **({"extra_body": {"think": False}} if self._backend == "ollama" else {}),
                 )
             )
 
@@ -681,7 +694,10 @@ class BaseAgent:
 
             # No tool calls → final answer
             if not msg.tool_calls:
-                return msg.content or ""
+                final_content = msg.content or ""
+                if self._backend == "ollama":
+                    final_content = re.sub(r"<think>.*?</think>", "", final_content, flags=re.DOTALL).strip()
+                return final_content
 
             # Append assistant message (with tool_calls) to history
             messages.append({
@@ -721,9 +737,13 @@ class BaseAgent:
                 model=self._api_model,
                 messages=messages,
                 temperature=0.3,
+                **({"extra_body": {"think": False}} if self._backend == "ollama" else {}),
             )
         )
-        return response.choices[0].message.content or ""
+        final_reply = response.choices[0].message.content or ""
+        if self._backend == "ollama":
+            final_reply = re.sub(r"<think>.*?</think>", "", final_reply, flags=re.DOTALL).strip()
+        return final_reply
 
     def call(self, user_message: str, context: Optional[str] = None) -> str:
         """Send a message to the LLM and return the response.
@@ -759,14 +779,38 @@ class BaseAgent:
 
         if self._inter_call_delay > 0:
             time.sleep(self._inter_call_delay)
-        response = _retry_with_backoff(
-            lambda: self.client.chat.completions.create(
-                model=self._api_model,
-                messages=messages,
-                temperature=0.3,
+
+        if self._backend == "ollama":
+            def _collect_stream(stream) -> str:
+                collected = ""
+                for chunk in stream:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        collected += delta
+                return collected
+
+            reply = _retry_with_backoff(
+                lambda: _collect_stream(
+                    self.client.chat.completions.create(
+                        model=self._api_model,
+                        messages=messages,
+                        temperature=0.3,
+                        stream=True,
+                        extra_body={"think": False},
+                    )
+                )
             )
-        )
-        reply = response.choices[0].message.content or ""
+            # Strip <think>...</think> blocks (safety net if model still emits them)
+            reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
+        else:
+            response = _retry_with_backoff(
+                lambda: self.client.chat.completions.create(
+                    model=self._api_model,
+                    messages=messages,
+                    temperature=0.3,
+                )
+            )
+            reply = response.choices[0].message.content or ""
         # Persist to history
         self._history.append({"role": "user", "content": full_message})
         self._history.append({"role": "assistant", "content": reply})
