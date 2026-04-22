@@ -965,7 +965,7 @@ class Orchestrator:
     def _stage_test_runner(self, result: PipelineResult) -> None:
         """Run pytest on the locally saved test files and post results back to the PR."""
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
-        project_dir = self.workspace_dir / safe
+        project_dir = (self.workspace_dir / safe).resolve()  # absolute path — avoids doubled --rootdir when cwd changes
 
         # Install test requirements if present
         req_file = project_dir / "requirements-test.txt"
