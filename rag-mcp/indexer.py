@@ -5,6 +5,7 @@ Usage:
     python indexer.py --source docs --path /path/to/docs [--ext md,txt,rst]
     python indexer.py --source memory --db /path/to/memory.db
     python indexer.py --source url --url https://docs.example.com [--depth 3] [--clean]
+    python indexer.py --source standards --path /path/to/standards [--ext md,txt,adoc] [--clean]
 
 Environment variables required:
     DATABASE_URL  — Postgres connection string
@@ -336,9 +337,65 @@ def index_memory(db_path: str, embedder: Embedder) -> None:
         conn.close()
 
 
+def index_standards(
+    path: str,
+    embedder: Embedder,
+    extensions: list[str] | None = None,
+    clean: bool = False,
+) -> None:
+    """Index coding standards and design guidelines into the 'standards' source type.
+
+    Supports the same file types as docs (md, txt, rst) plus common config formats.
+
+    Args:
+        path: Root directory containing standards files to index.
+        embedder: Embedder instance used to generate chunk embeddings.
+        extensions: List of file extensions to include (default: md, txt, rst, adoc).
+        clean: When True, delete stale 'standards' embeddings for files no longer found.
+    """
+    exts = {f".{e.lstrip('.')}" for e in (extensions or ["md", "txt", "rst", "adoc"])}
+    root = Path(path)
+    live_ids: list[str] = []
+
+    for fpath in sorted(root.rglob("*")):
+        if fpath.suffix not in exts or not fpath.is_file():
+            continue
+        source_id = str(fpath)
+        live_ids.append(source_id)
+        try:
+            text = fpath.read_text(errors="replace")
+        except OSError as exc:
+            log.warning("Skipping unreadable file %s: %s", fpath, exc)
+            live_ids.pop()
+            continue
+        chunks = chunk_text(text)
+        for i, chunk in enumerate(chunks):
+            try:
+                embedding = embedder.embed(chunk)
+            except EmbedderError as exc:
+                log.warning("Skipping %s chunk %d: %s", source_id, i, exc)
+                continue
+            upsert_chunk(
+                source_type="standards",
+                source_id=source_id,
+                chunk_index=i,
+                content=chunk,
+                embedding=embedding,
+                metadata={"ext": fpath.suffix, "path": source_id},
+            )
+            log.info("Indexed standards %s chunk %d", source_id, i)
+
+    if clean:
+        try:
+            deleted = delete_stale_chunks("standards", live_ids)
+            log.info("Cleaned %d stale standards chunks", deleted)
+        except Exception as exc:
+            log.error("Failed to delete stale chunks: %s", exc)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="RAG indexer — populate pgvector knowledge base")
-    parser.add_argument("--source", choices=["codebase", "docs", "memory", "url"], required=True)
+    parser.add_argument("--source", choices=["codebase", "docs", "memory", "url", "standards"], required=True)
     parser.add_argument("--path", help="Root directory for codebase/docs sources")
     parser.add_argument("--db", help="Path to MemoryStore SQLite file (--source memory)")
     parser.add_argument("--ext", help="Comma-separated file extensions to index (e.g. py,ts,go)")
@@ -366,6 +423,10 @@ def main() -> None:
         if not args.url:
             parser.error("--url required for --source url")
         index_url(args.url, embedder, max_depth=args.depth, clean=args.clean)
+    elif args.source == "standards":
+        if not args.path:
+            parser.error("--path required for --source standards")
+        index_standards(args.path, embedder, extensions=exts, clean=args.clean)
 
     log.info("Indexing complete.")
 
