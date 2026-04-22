@@ -237,18 +237,42 @@ class Orchestrator:
         self.agent_kwargs = agent_kwargs
 
         def _model(agent_name: str) -> str:
-            """Return the model for a given agent, falling back to the global default."""
-            return self.model_overrides.get(agent_name, model)
+            """Return the model for a given agent, falling back to the global default.
 
-        self.pm = ProductManagerAgent(model=_model("product_manager"), **agent_kwargs)
-        self.pm_reviewer = PMReviewerAgent(model=_model("pm_reviewer"), **agent_kwargs)
-        self.architect = ArchitectAgent(model=_model("architect"), tool_registry=rag_registry, **agent_kwargs)
-        self.architect_reviewer = ArchitectReviewerAgent(model=_model("architect_reviewer"), **agent_kwargs)
-        self.engineer = EngineerAgent(model=_model("engineer"), tool_registry=rag_registry, **agent_kwargs)
-        self.reviewer = CodeReviewerAgent(model=_model("code_reviewer"), tool_registry=tool_registry, **agent_kwargs)
-        self.qa_planner = QAPlannerAgent(model=_model("qa_planner"), tool_registry=tool_registry, **agent_kwargs)
-        self.qa = QAEngineerAgent(model=_model("qa_engineer"), tool_registry=rag_registry, **agent_kwargs)
-        self.deployment_tester = DeploymentTesterAgent(model=_model("deployment_tester"), **agent_kwargs)
+            Supports both string overrides (model name only) and dict overrides
+            (with optional ``model``, ``ollama_think``, ``ollama_stream`` keys).
+            """
+            override = self.model_overrides.get(agent_name, model)
+            if isinstance(override, dict):
+                return override.get("model", model)
+            return override
+
+        def _agent_ollama_kwargs(agent_name: str) -> dict:
+            """Return ollama_think/ollama_stream for this agent, falling back to global defaults.
+
+            If the agent's override entry is a dict it may contain per-agent values for
+            ``ollama_think`` and/or ``ollama_stream``; any key absent in the dict falls
+            back to the global values supplied to ``Orchestrator.__init__``.
+            If the override is a plain string (model name only) or absent, the global
+            defaults are returned unchanged.
+            """
+            override = self.model_overrides.get(agent_name, {})
+            if isinstance(override, dict):
+                return {
+                    "ollama_think": override.get("ollama_think", ollama_think),
+                    "ollama_stream": override.get("ollama_stream", ollama_stream),
+                }
+            return {"ollama_think": ollama_think, "ollama_stream": ollama_stream}
+
+        self.pm = ProductManagerAgent(model=_model("product_manager"), **{**agent_kwargs, **_agent_ollama_kwargs("product_manager")})
+        self.pm_reviewer = PMReviewerAgent(model=_model("pm_reviewer"), **{**agent_kwargs, **_agent_ollama_kwargs("pm_reviewer")})
+        self.architect = ArchitectAgent(model=_model("architect"), tool_registry=rag_registry, **{**agent_kwargs, **_agent_ollama_kwargs("architect")})
+        self.architect_reviewer = ArchitectReviewerAgent(model=_model("architect_reviewer"), **{**agent_kwargs, **_agent_ollama_kwargs("architect_reviewer")})
+        self.engineer = EngineerAgent(model=_model("engineer"), tool_registry=rag_registry, **{**agent_kwargs, **_agent_ollama_kwargs("engineer")})
+        self.reviewer = CodeReviewerAgent(model=_model("code_reviewer"), tool_registry=tool_registry, **{**agent_kwargs, **_agent_ollama_kwargs("code_reviewer")})
+        self.qa_planner = QAPlannerAgent(model=_model("qa_planner"), tool_registry=tool_registry, **{**agent_kwargs, **_agent_ollama_kwargs("qa_planner")})
+        self.qa = QAEngineerAgent(model=_model("qa_engineer"), tool_registry=rag_registry, **{**agent_kwargs, **_agent_ollama_kwargs("qa_engineer")})
+        self.deployment_tester = DeploymentTesterAgent(model=_model("deployment_tester"), **{**agent_kwargs, **_agent_ollama_kwargs("deployment_tester")})
 
         # Snapshot original system prompts to prevent stacking on repeated run() calls
         self._original_system_prompts: dict = {
@@ -261,8 +285,8 @@ class Orchestrator:
             if agent is not None
         }
 
-        self.summariser = SummaryAgent(model=_model("summariser"), **agent_kwargs)
-        self.refactor_agent = RefactorAgent(model=_model("refactor_agent"), **agent_kwargs)
+        self.summariser = SummaryAgent(model=_model("summariser"), **{**agent_kwargs, **_agent_ollama_kwargs("summariser")})
+        self.refactor_agent = RefactorAgent(model=_model("refactor_agent"), **{**agent_kwargs, **_agent_ollama_kwargs("refactor_agent")})
 
         # Long-term SQLite memory store
         self.memory = MemoryStore(self.workspace_dir / "memory.db")

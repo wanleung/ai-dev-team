@@ -83,6 +83,17 @@ llm:
   # Per-agent model overrides — mix backends freely per agent.
   # Example: use Claude for reasoning-heavy roles, GPT-4.1-mini for repetitive ones.
   overrides:
+    # Each override can be a model string (simple) or a dict (per-agent settings):
+    #
+    # Simple form (model name only):
+    #   architect: "ollama/qwen3.6"
+    #
+    # Dict form (model + per-agent Ollama settings):
+    #   architect:
+    #     model: "ollama/qwen3.6"
+    #     ollama_think: true    # override global ollama_think for this agent
+    #     ollama_stream: false  # override global ollama_stream for this agent
+    #
     # ── Copilot backend examples ──────────────────────────────────────────
     # product_manager: "copilot/gpt-4o"
     # architect: "copilot/claude-sonnet-4.6"
