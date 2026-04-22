@@ -2,10 +2,12 @@
 
 Usage:
     python indexer.py --source codebase --path /path/to/repo [--ext py,ts,go] [--clean]
-    python indexer.py --source docs --path /path/to/docs [--ext md,txt,rst]
+    python indexer.py --source docs --path /path/to/docs [--ext md,txt,rst] [--clean]
+    python indexer.py --source docs --url https://react.dev/reference/react [--depth 3] [--clean]
     python indexer.py --source memory --db /path/to/memory.db
     python indexer.py --source url --url https://docs.example.com [--depth 3] [--clean]
     python indexer.py --source standards --path /path/to/standards [--ext md,txt,adoc] [--clean]
+    python indexer.py --source standards --url https://eips.ethereum.org/EIPS/eip-20 [--depth 2]
 
 Environment variables required:
     DATABASE_URL  — Postgres connection string
@@ -193,14 +195,16 @@ def index_url(
     embedder: Embedder,
     max_depth: int = 3,
     clean: bool = False,
+    source_type: str = "docs",
 ) -> None:
-    """Crawl start_url (BFS up to max_depth) and index visible text into the 'docs' source type.
+    """Crawl start_url (BFS up to max_depth) and index visible text.
 
     Args:
         start_url: Seed URL to begin crawling from.
         embedder: Embedder instance used to generate chunk embeddings.
         max_depth: Maximum crawl depth (0 = seed page only).
-        clean: When True, delete stale 'docs' embeddings for URLs not found during crawl.
+        clean: When True, delete stale embeddings for URLs not found during crawl.
+        source_type: RAG collection to store into (default: 'docs').
     """
     start_url = _normalise_url(start_url)
     base_domain = urlparse(start_url).netloc
@@ -268,7 +272,7 @@ def index_url(
                     log.warning("Skipping %s chunk %d: %s", url, i, exc)
                     continue
                 upsert_chunk(
-                    source_type="docs",
+                    source_type=source_type,
                     source_id=url,
                     chunk_index=i,
                     content=chunk,
@@ -287,8 +291,8 @@ def index_url(
 
     if clean:
         try:
-            deleted = delete_stale_chunks("docs", live_ids)
-            log.info("Cleaned %d stale docs chunks", deleted)
+            deleted = delete_stale_chunks(source_type, live_ids)
+            log.info("Cleaned %d stale %s chunks", deleted, source_type)
         except Exception as exc:
             log.error("Failed to delete stale chunks (indexing itself succeeded): %s", exc)
 
@@ -412,9 +416,13 @@ def main() -> None:
             parser.error("--path required for --source codebase")
         index_codebase(args.path, embedder, extensions=exts, clean=args.clean)
     elif args.source == "docs":
-        if not args.path:
-            parser.error("--path required for --source docs")
-        index_docs(args.path, embedder, extensions=exts, clean=args.clean)
+        if args.url:
+            # Crawl a URL and store as source_type="docs"
+            index_url(args.url, embedder, max_depth=args.depth, clean=args.clean)
+        elif args.path:
+            index_docs(args.path, embedder, extensions=exts, clean=args.clean)
+        else:
+            parser.error("--source docs requires either --path (directory) or --url (web crawl)")
     elif args.source == "memory":
         if not args.db:
             parser.error("--db required for --source memory")
@@ -424,9 +432,14 @@ def main() -> None:
             parser.error("--url required for --source url")
         index_url(args.url, embedder, max_depth=args.depth, clean=args.clean)
     elif args.source == "standards":
-        if not args.path:
-            parser.error("--path required for --source standards")
-        index_standards(args.path, embedder, extensions=exts, clean=args.clean)
+        if args.url:
+            # Crawl a URL and store as source_type="standards"
+            index_url(args.url, embedder, max_depth=args.depth, clean=args.clean,
+                      source_type="standards")
+        elif args.path:
+            index_standards(args.path, embedder, extensions=exts, clean=args.clean)
+        else:
+            parser.error("--source standards requires either --path (directory) or --url (web crawl)")
 
     log.info("Indexing complete.")
 
