@@ -190,6 +190,8 @@ class Orchestrator:
         use_github: bool = False,
         target_repo: Optional[str] = None,
         ollama_url: str = "http://localhost:11434",
+        ollama_think: bool = False,
+        ollama_stream: bool = True,
         nvidia_nim_api_key: Optional[str] = None,
         nvidia_nim_base_url: Optional[str] = None,
         max_revisions: int = 3,
@@ -208,6 +210,8 @@ class Orchestrator:
         self.use_github = use_github and bool(github_repo)
         self._github_token = github_token
         self.ollama_url = ollama_url
+        self.ollama_think = ollama_think
+        self.ollama_stream = ollama_stream
         self.max_revisions = max_revisions
         self.skill_loader: Optional[SkillLoader] = skill_loader
 
@@ -225,6 +229,7 @@ class Orchestrator:
 
         # Shared kwargs for all agents
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
+                              "ollama_think": ollama_think, "ollama_stream": ollama_stream,
                               "nvidia_nim_api_key": nvidia_nim_api_key,
                               "nvidia_nim_base_url": nvidia_nim_base_url,
                               "retry_delay": retry_delay, "max_api_retries": max_api_retries,
@@ -313,6 +318,8 @@ class Orchestrator:
             model_overrides=llm.get("overrides", {}),
             use_github=use_github,
             ollama_url=llm.get("ollama_url", "http://localhost:11434"),
+            ollama_think=llm.get("ollama_think", False),
+            ollama_stream=llm.get("ollama_stream", True),
             max_revisions=pipeline.get("max_revisions", 3),
             skill_loader=skill_loader,
             mcp_servers=mcp_servers,
