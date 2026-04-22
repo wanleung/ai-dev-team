@@ -1203,24 +1203,23 @@ Agent incorporates retrieved context into its response
 
 ```bash
 cd rag-mcp
-# Set required env vars (DATABASE_URL must point to your Postgres with pgvector)
-export DATABASE_URL="postgresql://user:pass@host:5432/dbname"
-export EMBED_BACKEND=ollama                          # or: vllm, openai
-export OLLAMA_BASE_URL=http://your-ollama-host:11434 # when EMBED_BACKEND=ollama
-export OLLAMA_MODEL=nomic-embed-text                 # or any embedding model
+
+# Copy and edit the env file (set your Ollama host at minimum)
+cp .env.example .env
+# edit .env
+
 docker compose up -d
 ```
 
+The bundled `pgvector/pgvector:pg16` container starts automatically. Data is stored in a named Docker volume (`pgdata`) so it survives restarts and `docker compose down`.
+
 **Step 2 — Apply the migration**
 
-```bash
-docker exec <container_name> psql "$DATABASE_URL" \
-  -f migrations/001_create_rag_embeddings.sql
-```
+Runs once on first start (or after wiping the volume):
 
-Or apply directly:
 ```bash
-psql "$DATABASE_URL" -f rag-mcp/migrations/001_create_rag_embeddings.sql
+docker compose exec postgres psql -U rag rag \
+  -f /dev/stdin < migrations/001_create_rag_embeddings.sql
 ```
 
 **Step 3 — Index your codebase**
@@ -1230,7 +1229,8 @@ source venv/bin/activate
 cd rag-mcp
 
 # Index the codebase (Python files)
-DATABASE_URL=... EMBED_BACKEND=ollama OLLAMA_BASE_URL=... OLLAMA_MODEL=nomic-embed-text \
+DATABASE_URL=postgresql://rag:ragpassword@localhost:5432/rag \
+  EMBED_BACKEND=ollama OLLAMA_BASE_URL=http://your-ollama:11434 OLLAMA_MODEL=nomic-embed-text \
   python indexer.py codebase /path/to/your/repo --clean
 
 # Index docs (markdown / text files)
@@ -1312,6 +1312,21 @@ python indexer.py standards /docs/company-guidelines/
 curl http://localhost:8001/health
 # {"status": "ok"}
 ```
+
+### Backup & machine migration
+
+The postgres data lives in a named Docker volume (`pgdata`). To move to a new machine:
+
+```bash
+# On old machine — dump
+docker compose exec postgres pg_dump -U rag rag > rag_backup.sql
+
+# On new machine — start fresh stack then restore
+docker compose up -d
+cat rag_backup.sql | docker compose exec -T postgres psql -U rag rag
+```
+
+> 💡 Alternatively, just re-run `indexer.py` on the new machine — embeddings are deterministic for the same model, so re-indexing is often simpler than migrating.
 
 > ⚠️ RAG tool calls use `call_with_tools()` internally. The `opencode` CLI backend does **not** support tool calls — RAG will silently fall back to non-RAG mode for agents using that backend.
 
