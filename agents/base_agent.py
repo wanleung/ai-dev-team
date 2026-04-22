@@ -296,6 +296,8 @@ class BaseAgent:
         roles_dir: Optional[Path] = None,
         backend: Optional[str] = None,  # "github_models" | "anthropic" | "ollama" | "opencode" | "opencode_zen" | "opencode_go" | "nvidia_nim" | "copilot" | None (auto)
         ollama_url: str = "http://localhost:11434",
+        ollama_think: bool = False,
+        ollama_stream: bool = True,
         opencode_zen_api_key: Optional[str] = None,
         opencode_zen_base_url: Optional[str] = None,
         opencode_go_base_url: Optional[str] = None,
@@ -310,6 +312,8 @@ class BaseAgent:
         self._retry_delay = retry_delay
         self._max_api_retries = max_api_retries
         self._inter_call_delay = inter_call_delay
+        self._ollama_think = ollama_think
+        self._ollama_stream = ollama_stream
 
         # Short-term conversation history — persists within a pipeline run.
         # Call agent.reset_history() between unrelated tasks.
@@ -686,7 +690,7 @@ class BaseAgent:
                     tools=tools.schemas,
                     tool_choice="auto",
                     temperature=0.3,
-                    **({"extra_body": {"think": False}} if self._backend == "ollama" else {}),
+                    **({"extra_body": {"think": False}} if self._backend == "ollama" and not self._ollama_think else {}),
                 )
             )
 
@@ -737,7 +741,7 @@ class BaseAgent:
                 model=self._api_model,
                 messages=messages,
                 temperature=0.3,
-                **({"extra_body": {"think": False}} if self._backend == "ollama" else {}),
+                **({"extra_body": {"think": False}} if self._backend == "ollama" and not self._ollama_think else {}),
             )
         )
         final_reply = response.choices[0].message.content or ""
@@ -781,25 +785,36 @@ class BaseAgent:
             time.sleep(self._inter_call_delay)
 
         if self._backend == "ollama":
-            def _collect_stream(stream) -> str:
-                collected = ""
-                for chunk in stream:
-                    delta = chunk.choices[0].delta.content
-                    if delta:
-                        collected += delta
-                return collected
+            if self._ollama_stream:
+                def _collect_stream(stream) -> str:
+                    collected = ""
+                    for chunk in stream:
+                        delta = chunk.choices[0].delta.content
+                        if delta:
+                            collected += delta
+                    return collected
 
-            reply = _retry_with_backoff(
-                lambda: _collect_stream(
-                    self.client.chat.completions.create(
+                reply = _retry_with_backoff(
+                    lambda: _collect_stream(
+                        self.client.chat.completions.create(
+                            model=self._api_model,
+                            messages=messages,
+                            temperature=0.3,
+                            stream=True,
+                            **({"extra_body": {"think": False}} if not self._ollama_think else {}),
+                        )
+                    )
+                )
+            else:
+                response = _retry_with_backoff(
+                    lambda: self.client.chat.completions.create(
                         model=self._api_model,
                         messages=messages,
                         temperature=0.3,
-                        stream=True,
-                        extra_body={"think": False},
+                        **({"extra_body": {"think": False}} if not self._ollama_think else {}),
                     )
                 )
-            )
+                reply = response.choices[0].message.content or ""
             # Strip <think>...</think> blocks (safety net if model still emits them)
             reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
         else:

@@ -277,3 +277,99 @@ def test_ollama_no_timeout():
         assert isinstance(timeout, httpx.Timeout)
         assert timeout.read is None
 
+
+# ── New: ollama_think / ollama_stream config options ─────────────────────────
+
+def test_ollama_stream_disabled_no_stream_kwarg():
+    """call() does NOT pass stream=True when ollama_stream=False."""
+    with patch("agents.base_agent.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = "Answer"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        import importlib
+        import agents.base_agent as ba
+        importlib.reload(ba)
+
+        agent = ba.BaseAgent(
+            model="ollama/qwen3",
+            ollama_url="http://10.0.0.1:11434",
+            ollama_stream=False,
+        )
+        agent.client = mock_client
+        agent.call("Test")
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs.get("stream") is not True
+
+
+def test_ollama_think_enabled_no_extra_body():
+    """call() does NOT pass extra_body={'think': False} when ollama_think=True."""
+    with patch("agents.base_agent.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = iter([
+            _make_chunk("Answer"),
+        ])
+
+        import importlib
+        import agents.base_agent as ba
+        importlib.reload(ba)
+
+        agent = ba.BaseAgent(
+            model="ollama/qwen3",
+            ollama_url="http://10.0.0.1:11434",
+            ollama_think=True,
+        )
+        agent.client = mock_client
+        agent.call("Test")
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        extra_body = call_kwargs.get("extra_body", {})
+        assert extra_body.get("think") is not False
+
+
+def test_ollama_think_disabled_extra_body_false():
+    """call() passes extra_body={'think': False} when ollama_think=False (default)."""
+    with patch("agents.base_agent.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = iter([
+            _make_chunk("Answer"),
+        ])
+
+        import importlib
+        import agents.base_agent as ba
+        importlib.reload(ba)
+
+        agent = ba.BaseAgent(
+            model="ollama/qwen3",
+            ollama_url="http://10.0.0.1:11434",
+            ollama_think=False,  # default — suppress thinking
+        )
+        agent.client = mock_client
+        agent.call("Test")
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs.get("extra_body") == {"think": False}
+
+
+def test_orchestrator_passes_ollama_think_stream():
+    """Orchestrator passes ollama_think and ollama_stream through to agent_kwargs."""
+    from orchestrator import Orchestrator
+
+    orc = Orchestrator(
+        github_token="ghp_fake",
+        ollama_url="http://10.0.0.1:11434",
+        ollama_think=True,
+        ollama_stream=False,
+    )
+    assert orc.agent_kwargs.get("ollama_think") is True
+    assert orc.agent_kwargs.get("ollama_stream") is False
+    assert orc.ollama_think is True
+    assert orc.ollama_stream is False
+
+
