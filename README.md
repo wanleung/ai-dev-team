@@ -1282,6 +1282,30 @@ python indexer.py codebase /your/repo --clean
 python indexer.py --source standards --path ./standards/ --clean
 ```
 
+### What goes where
+
+Use **`docs`** for all library and API documentation — semantic search naturally surfaces the right language/library from the query, so you don't need a separate source type per language:
+
+```bash
+# All lib docs go into the same 'docs' index
+python indexer.py docs /docs/cpp-stl/
+python indexer.py docs /docs/python-stdlib/
+python indexer.py docs /docs/react-native/
+python indexer.py docs /docs/rust-std/
+python indexer.py docs /docs/java-sdk/
+```
+
+Use **`standards`** for specifications, protocols, and architectural guidelines — content agents reference when making design decisions rather than implementation lookups:
+
+```bash
+# Specs and standards
+python indexer.py standards /docs/rfcs/
+python indexer.py standards /docs/ercs/
+python indexer.py standards /docs/company-guidelines/
+```
+
+> 💡 **Rule of thumb:** only create a new source type if you need a distinct MCP tool so agents can explicitly choose to search that collection (e.g. a `search_api_specs` tool for a dedicated API-spec agent). For general reference material, `docs` or `standards` covers the vast majority of use cases.
+
 ### Health check
 
 ```bash
