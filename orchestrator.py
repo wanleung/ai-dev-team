@@ -36,6 +36,7 @@ from agents.summariser import SummaryAgent
 from agents.memory_bank_updater import MemoryBankUpdaterAgent
 from agents.refactor_agent import RefactorAgent
 from agents.memory_consolidator import MemoryConsolidatorAgent
+from framework_docs import FrameworkDocsLoader
 from github_client import GitHubClient, parse_target_repo
 from memory_store import MemoryStore
 from skills_loader import SkillContext, SkillLoader
@@ -200,6 +201,7 @@ class Orchestrator:
         retry_delay: int = 15,
         max_api_retries: int = 5,
         inter_call_delay: int = 0,
+        framework_docs_loader: Optional["FrameworkDocsLoader"] = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -214,6 +216,7 @@ class Orchestrator:
         self.ollama_stream = ollama_stream
         self.max_revisions = max_revisions
         self.skill_loader: Optional[SkillLoader] = skill_loader
+        self.framework_docs_loader: FrameworkDocsLoader = framework_docs_loader or FrameworkDocsLoader(config={})
 
         # Build combined tool registry (builtin + optional MCP servers)
         if mcp_servers:
@@ -328,6 +331,8 @@ class Orchestrator:
         skill_loader = SkillLoader(config=cfg)
         skill_loader.init()
 
+        framework_docs_loader = FrameworkDocsLoader(config=cfg)
+
         repo = gh.get("repo", "")
         use_github = bool(repo) and repo != "your-username/your-repo"
 
@@ -350,6 +355,7 @@ class Orchestrator:
             retry_delay=pipeline.get("retry_delay", 15),
             max_api_retries=pipeline.get("max_api_retries", 5),
             inter_call_delay=pipeline.get("inter_call_delay", 0),
+            framework_docs_loader=framework_docs_loader,
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
@@ -889,6 +895,10 @@ class Orchestrator:
     def _stage_engineer(self, result: PipelineResult) -> None:
         # Limit to num_engineers modules for parallel dispatch
         modules = result.modules[: max(self.num_engineers, len(result.modules))]
+        # Determine project_dir for framework docs detection
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
+        project_dir = (self.workspace_dir / safe).resolve()
+        framework_context = self.framework_docs_loader.load(project_dir)
         if self.target_github:
             eng_result = self.engineer.run_with_github(
                 result.design,
@@ -898,13 +908,15 @@ class Orchestrator:
                 branch_prefix=self.branch_prefix,
                 issue_number=result.issue_number,
                 max_workers=self.num_engineers,
+                framework_context=framework_context,
             )
             result.branch = eng_result.get("branch")
             result.pr_number = eng_result.get("pr_number")
             result.pr_url = eng_result.get("pr_url")
         else:
             eng_result = self.engineer.run_all_modules(
-                result.design, modules, result.project_name, max_workers=self.num_engineers
+                result.design, modules, result.project_name, max_workers=self.num_engineers,
+                framework_context=framework_context,
             )
         result.all_files = eng_result["all_files"]
         self._save_files_locally(result.all_files, result.project_name)
