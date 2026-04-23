@@ -189,11 +189,11 @@ class EngineerAgent(BaseAgent):
     def fix_failures(
         self,
         failure_output: str,
-        all_files: dict,
+        all_files: dict[str, str],
         design: str,
         project_name: str = "Project",
         framework_context: str = "",
-    ) -> dict:
+    ) -> dict[str, str]:
         """Produce targeted code fixes for failing tests.
 
         Args:
@@ -212,13 +212,13 @@ class EngineerAgent(BaseAgent):
             if framework_context else ""
         )
         files_section = "\n\n".join(
-            f"## File: {path}\n\n```\n{content}\n```"
+            f"## File: {path}\n\n````\n{content}\n````"
             for path, content in all_files.items()
         )
         prompt = (
             f"{framework_section}"
             f"You are fixing test failures in the project '{project_name}'.\n\n"
-            f"## Test Failure Output\n\n```\n{failure_output}\n```\n\n"
+            f"## Test Failure Output\n\n````\n{failure_output}\n````\n\n"
             f"## Current Project Files\n\n{files_section}\n\n"
             f"## System Design\n\n{design}\n\n"
             f"Read the test failure output carefully. Identify the root cause.\n"
@@ -229,7 +229,7 @@ class EngineerAgent(BaseAgent):
         response = self.call(prompt)
         # Only parse if the response contains explicit FILE markers;
         # do not apply the _parse_files fallback that wraps plain text as main.py.
-        if "### FILE:" not in response:
+        if not response or "### FILE:" not in response:
             return {}
         return self._parse_files(response)
 

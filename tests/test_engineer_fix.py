@@ -24,6 +24,7 @@ def test_fix_failures_returns_parsed_files():
     )
     assert "app/models/user.py" in patches
     assert "class User" in patches["app/models/user.py"]
+    assert "app/main.py" not in patches
 
 
 def test_fix_failures_returns_empty_on_no_file_blocks():
