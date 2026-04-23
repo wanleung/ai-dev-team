@@ -21,6 +21,7 @@ def test_bug_fix_result_has_retry_fields():
     result = BugFixResult(issue_number=1, issue_title="Bug", issue_body="desc")
     assert hasattr(result, "test_retry_count")
     assert result.test_retry_count == 0
+    assert result.test_results == ""
     assert hasattr(result, "test_fix_history")
     assert result.test_fix_history == []
     assert hasattr(result, "tests_passed")
