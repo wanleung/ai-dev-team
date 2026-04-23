@@ -1,5 +1,5 @@
 # Test & Deploy Retry Loop — Design Spec
-_Date: 2026-04-21_
+_Date: 2026-04-21 (updated 2026-04-23)_
 
 ## Problem
 
@@ -7,6 +7,10 @@ When the pipeline runs tests (unit or deployment), failures are reported but the
 stops. There is no automatic feedback loop to send failures back to the engineer for
 targeted fixes. A human must manually inspect failures, fix code, and re-run — defeating
 the purpose of an automated software house.
+
+This problem also affects the **bug fix pipeline** (`BugFixOrchestrator`): it writes
+regression tests via the QA agent but never runs them. A broken fix can be merged without
+anyone knowing the regression tests fail.
 
 ## Proposed Solution
 
@@ -16,8 +20,12 @@ are re-run. This repeats up to `max_test_retries` times (configurable, default 5
 all retries are exhausted, the current state is committed and a human-review flag is
 posted on the PR.
 
-The same loop applies to deployment smoke tests, but only if unit tests have already
-passed (no point fixing docker issues if the app code is broken).
+The retry logic is extracted into a **shared `TestFixLoopMixin`** class so that both
+`Orchestrator` (feature pipeline) and `BugFixOrchestrator` (bug fix pipeline) use
+identical behaviour without duplicating code.
+
+The deploy retry loop applies only to the feature pipeline (deploy smoke tests) and only
+if unit tests have already passed (no point fixing docker issues if app code is broken).
 
 ---
 
@@ -113,7 +121,69 @@ def _stage_test_fix_loop(self, result: PipelineResult) -> None:
 
 ---
 
-### 4. Pipeline wiring
+### 4. `TestFixLoopMixin` — Shared utility class
+
+**Location:** `test_fix_loop.py` (new top-level module)
+
+To avoid duplicating retry logic in both `Orchestrator` and `BugFixOrchestrator`, extract
+the common loop into a mixin:
+
+```python
+class TestFixLoopMixin:
+    """Mixin providing run_test_fix_loop() for orchestrators that have an engineer agent."""
+
+    def run_test_fix_loop(
+        self,
+        result,                    # PipelineResult or BugFixResult (duck-typed)
+        run_tests_fn,              # callable(result) → sets result.tests_passed + result.test_results
+        get_all_files_fn,          # callable() → dict[str, str] of current files on disk
+        write_files_fn,            # callable(patches: dict) — writes patched files to disk
+        commit_fn,                 # callable(attempt: int) — git commit fix attempt
+        post_comment_fn,           # callable(message: str) — post PR/issue comment
+        max_retries: int = 5,
+    ) -> None:
+```
+
+- `Orchestrator` implements `get_all_files_fn` by reading `project_dir` recursively
+- `BugFixOrchestrator` passes `result.fixed_files` merged with `result.test_files`
+- Both call `self.engineer.fix_failures(...)` in the loop body
+- The mixin holds no state — it only orchestrates the provided callables
+
+Both `Orchestrator` and `BugFixOrchestrator` inherit from `TestFixLoopMixin`.
+
+---
+
+### 5. Bug fix pipeline additions
+
+**Location:** `bug_fix_orchestrator.py`
+
+Add two new stages to `BugFixOrchestrator.run()` after `_stage_qa`:
+
+```python
+# Stage 5: Run regression tests
+self._run_stage("🏃 Test Runner", "Running regression tests...", result, lambda: self._stage_test_runner(result))
+
+# Stage 6: Test fix loop (if tests failed)
+self._run_stage("🔁 Test Fix Loop", "Auto-fixing test failures...", result, lambda: self._stage_test_fix_loop(result))
+```
+
+`_stage_test_runner` in `BugFixOrchestrator` runs pytest against `result.test_files`
+written to the workspace directory (same mechanics as the feature pipeline).
+
+`_stage_test_fix_loop` uses `TestFixLoopMixin.run_test_fix_loop()` with:
+- `get_all_files_fn`: returns `result.fixed_files | result.test_files`
+- `commit_fn`: commits to the fix PR branch
+- `post_comment_fn`: posts on the GitHub Issue (not a PR)
+
+`BugFixResult` gains the same retry fields:
+```python
+test_retry_count: int = 0
+test_fix_history: list[str] = field(default_factory=list)
+```
+
+---
+
+### 6. Pipeline wiring (feature pipeline)
 
 **Replace in `run()`:**
 ```python
@@ -136,7 +206,7 @@ The `completed_stages` checkpoint keys remain `"test_runner"` and `"deploy_test_
 
 ---
 
-### 5. `PipelineResult` additions
+### 7. `PipelineResult` and `BugFixResult` additions
 
 ```python
 test_retry_count: int = 0
@@ -150,7 +220,7 @@ Serialised in `to_dict()` under `"test_retry_count"`, `"test_fix_history"`,
 
 ---
 
-### 6. `config.yaml` additions
+### 8. `config.yaml` additions
 
 ```yaml
 pipeline:
@@ -186,14 +256,18 @@ pipeline:
   - Prompt includes failure output verbatim
   - Prompt includes all provided files
   - Framework context prepended when non-empty
-- `tests/test_test_fix_loop.py` — unit tests for `_stage_test_fix_loop()`:
+- `tests/test_test_fix_loop.py` — unit tests for `TestFixLoopMixin.run_test_fix_loop()`:
   - Returns immediately when tests pass on first run
   - Calls fix_failures + re-runs tests on failure
   - Stops loop when tests pass mid-way
-  - Exhausts all retries and posts PR comment
+  - Exhausts all retries and posts PR/issue comment
   - Handles empty patch dict (LLM returned nothing) gracefully
   - `test_retry_count` incremented correctly
   - `test_fix_history` populated with one entry per attempt
+- `tests/test_bug_fix_retry.py` — integration tests for `BugFixOrchestrator` retry:
+  - Regression tests are run after QA stage
+  - Retry loop triggered on failure
+  - PR/Issue comment posted after exhaustion
 
 ---
 
