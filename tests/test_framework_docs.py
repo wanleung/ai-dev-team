@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 import pytest
-from framework_docs import FrameworkDocsLoader
+from framework_docs import FrameworkDocsLoader, _MAX_TOTAL_BUNDLED, _SCAFFOLD_HINT
 
 
 @pytest.fixture
@@ -14,18 +14,19 @@ def _loader(config_override=None):
     cfg = {
         "framework_docs": {
             "check_agents_md": True,
-            "frameworks": {
-                "nextjs": {
-                    "detect_file": "package.json",
-                    "detect_key": '"next"',
-                    "bundled_docs": "node_modules/next/dist/docs/",
+            "frameworks": [
+                {
+                    "name": "nextjs",
+                    "detect": ["package.json"],
+                    "summary": "Next.js: use app/ directory, server components, etc.",
+                    "bundled_docs_path": "node_modules/next/dist/docs",
                 },
-                "flutter": {
-                    "detect_file": "pubspec.yaml",
-                    "detect_key": "flutter:",
-                    "rag_hint": "Use search_docs for Flutter API docs.",
+                {
+                    "name": "flutter",
+                    "detect": ["pubspec.yaml"],
+                    "summary": "Use search_docs for Flutter API docs.",
                 },
-            },
+            ],
         }
     }
     if config_override:
@@ -57,8 +58,16 @@ def test_agents_md_takes_priority_over_claude_md(tmp_project):
     assert "claude content" not in ctx
 
 
-def test_empty_project_returns_empty(tmp_project):
+def test_no_match_returns_scaffold_hint(tmp_project):
+    """framework_docs config present but no files matched → scaffold hint returned."""
     loader = _loader()
+    ctx = loader.load(tmp_project)
+    assert ctx == _SCAFFOLD_HINT
+
+
+def test_empty_config_returns_empty(tmp_project):
+    """No framework_docs key in config → empty string returned (not scaffold hint)."""
+    loader = FrameworkDocsLoader(config={})
     ctx = loader.load(tmp_project)
     assert ctx == ""
 
@@ -68,7 +77,7 @@ def test_nextjs_framework_detected_no_bundled_docs(tmp_project):
     (tmp_project / "package.json").write_text(json.dumps(pkg))
     loader = _loader()
     ctx = loader.load(tmp_project)
-    # No bundled docs dir exists, but should still note detection
+    # No bundled docs dir exists, but summary should appear
     assert "next" in ctx.lower()
 
 
@@ -93,12 +102,14 @@ def test_flutter_rag_hint_injected(tmp_project):
 
 def test_check_agents_md_disabled(tmp_project):
     (tmp_project / "AGENTS.md").write_text("should be ignored")
-    # Use _loader with override that disables agents_md but keeps framework config
-    loader = _loader({"framework_docs": {"check_agents_md": False, "frameworks": {
-        "nextjs": {"detect_file": "package.json", "detect_key": '"next"'}
-    }}})
+    loader = _loader({"framework_docs": {
+        "check_agents_md": False,
+        "frameworks": [
+            {"name": "nextjs", "detect": ["package.json"], "summary": "Next.js"},
+        ],
+    }})
     ctx = loader.load(tmp_project)
-    assert ctx == ""
+    assert "should be ignored" not in ctx
 
 
 def test_framework_docs_disabled_entirely(tmp_project):
@@ -120,12 +131,30 @@ def test_agents_md_and_framework_both_included(tmp_project):
 
 
 def test_bundled_docs_respects_total_char_limit(tmp_project):
-    """_read_bundled_docs must not exceed _MAX_TOTAL_BUNDLED chars total."""
-    from framework_docs import _read_bundled_docs, _MAX_TOTAL_BUNDLED
+    """_read_bundled_docs must not exceed max_chars total."""
     docs_dir = tmp_project / "docs"
     docs_dir.mkdir()
     for i in range(10):
         (docs_dir / f"doc{i:02d}.md").write_text("x" * 5000)
-    result = _read_bundled_docs(docs_dir)
+    loader = FrameworkDocsLoader(config={})
+    result = loader._read_bundled_docs(docs_dir, _MAX_TOTAL_BUNDLED)
     # Allow some overhead for "### filename\n\n" headers
     assert len(result) <= _MAX_TOTAL_BUNDLED + 200
+
+
+def test_bundled_docs_nonexistent_path_returns_empty(tmp_path):
+    """_read_bundled_docs returns empty string when path does not exist."""
+    loader = FrameworkDocsLoader(config={})
+    result = loader._read_bundled_docs(tmp_path / "nonexistent", _MAX_TOTAL_BUNDLED)
+    assert result == ""
+
+
+def test_agents_md_found_in_parent_dir(tmp_path):
+    """AGENTS.md one level above project_dir is found via walk-up."""
+    parent_dir = tmp_path / "parent"
+    project_dir = parent_dir / "project"
+    project_dir.mkdir(parents=True)
+    (parent_dir / "AGENTS.md").write_text("# AGENTS\nParent instructions.")
+    loader = _loader()
+    ctx = loader.load(project_dir)
+    assert "Parent instructions." in ctx
