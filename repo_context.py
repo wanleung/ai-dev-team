@@ -5,7 +5,13 @@ and renders an appropriate tree text for injection into agent prompts.
 """
 from __future__ import annotations
 
+import subprocess
+import sys
+import tempfile
+import zipfile
+import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -89,3 +95,81 @@ class RepoContextLoader:
                     seen_dirs.add(parent)
                     lines.append(f"  {parent}/  (...)")
         return "\n".join(lines)
+
+
+class RepoAutoIndexer:
+    """Downloads a GitHub repo and indexes it into the RAG codebase collection.
+
+    Called before the Engineer stage when RAG MCP is configured.
+    Uses the rag-mcp/indexer.py subprocess so the RAG server is always
+    the single source of truth for embeddings.
+    """
+
+    def __init__(self, indexer_script: str = "rag-mcp/indexer.py") -> None:
+        self.indexer_script = indexer_script
+
+    def index(
+        self,
+        repo: str,
+        github_token: str,
+        repo_dir: Optional[str] = None,
+        ref: str = "HEAD",
+    ) -> None:
+        """Download repo zip and run indexer against it.
+
+        Args:
+            repo: 'owner/repo' string.
+            github_token: GitHub personal access token.
+            repo_dir: If provided, use this local directory instead of downloading.
+            ref: Git ref to download (default HEAD).
+        """
+        script = Path(self.indexer_script)
+        if not script.exists():
+            return  # RAG indexer not available — skip silently
+
+        if repo_dir:
+            self._run_indexer(repo_dir)
+        else:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                extracted = self._download_repo_zip(repo, github_token, tmpdir, ref)
+                if extracted:
+                    self._run_indexer(extracted)
+
+    def _download_repo_zip(
+        self, repo: str, github_token: str, tmpdir: str, ref: str
+    ) -> Optional[str]:
+        """Download repo zipball and extract. Returns extracted directory path or None."""
+        zip_path = Path(tmpdir) / "repo.zip"
+        url = f"https://api.github.com/repos/{repo}/zipball/{ref}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"token {github_token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                zip_path.write_bytes(resp.read())
+        except Exception:
+            return None
+
+        extract_dir = Path(tmpdir) / "repo"
+        extract_dir.mkdir()
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(extract_dir)
+        except zipfile.BadZipFile:
+            return None
+
+        # GitHub zip contains a single top-level dir like "owner-repo-sha/"
+        subdirs = [d for d in extract_dir.iterdir() if d.is_dir()]
+        return str(subdirs[0]) if subdirs else str(extract_dir)
+
+    def _run_indexer(self, path: str) -> None:
+        """Run rag-mcp/indexer.py --source codebase --path <path> --clean."""
+        subprocess.run(
+            [sys.executable, self.indexer_script, "--source", "codebase", "--path", path, "--clean"],
+            check=False,
+            timeout=300,
+        )

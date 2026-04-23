@@ -38,7 +38,7 @@ from agents.refactor_agent import RefactorAgent
 from agents.memory_consolidator import MemoryConsolidatorAgent
 from framework_docs import FrameworkDocsLoader
 from github_client import GitHubClient, parse_target_repo
-from repo_context import RepoContext, RepoContextLoader
+from repo_context import RepoContext, RepoContextLoader, RepoAutoIndexer
 from memory_store import MemoryStore
 from skills_loader import SkillContext, SkillLoader
 from test_fix_loop import TestFixLoopMixin
@@ -237,6 +237,11 @@ class Orchestrator(TestFixLoopMixin):
         self.framework_docs_loader: FrameworkDocsLoader = framework_docs_loader or FrameworkDocsLoader(config={})
         self.repo_context_loader: Optional[RepoContextLoader] = repo_context_loader
 
+        # RAG registry and auto-indexer: only active when RAG MCP is configured
+        # (rag_registry is built below from mcp_servers; store a forward ref here)
+        self._rag_registry = None  # will be set after rag_registry is built below
+        self.repo_auto_indexer: Optional[RepoAutoIndexer] = None  # set after rag check
+
         # Build combined tool registry (builtin + optional MCP servers)
         if mcp_servers:
             mcp_registry = MCPToolRegistry(mcp_servers)
@@ -248,6 +253,8 @@ class Orchestrator(TestFixLoopMixin):
         # Extract RAG server for retrieval-augmented agents (isolated from builtin tools)
         rag_servers = [s for s in (mcp_servers or []) if s.get("name") == "rag"]
         rag_registry = MCPToolRegistry(rag_servers) if rag_servers else None
+        self._rag_registry = rag_registry
+        self.repo_auto_indexer = RepoAutoIndexer() if rag_registry else None
 
         # Shared kwargs for all agents
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
@@ -796,6 +803,15 @@ class Orchestrator(TestFixLoopMixin):
         else:
             console.print("  ⏭️  [dim]🔎 Architect Reviewer — skipped (checkpoint)[/dim]")
 
+        # ── Auto-index repo into RAG (before Engineer) ───────────────────────
+        if self.repo_auto_indexer and self.target_github:
+            self._run_stage(
+                "📦 RAG Index",
+                "Indexing repo codebase into RAG...",
+                result,
+                lambda: self._stage_repo_index(result),
+            )
+
         # ── Stage 3: Engineers ────────────────────────────────────────────────
         if "engineer" not in result.completed_stages:
             self._run_stage(
@@ -934,8 +950,21 @@ class Orchestrator(TestFixLoopMixin):
         else:
             console.print(f"  🔎 Design verdict: [bold]{rev_result['verdict']}[/bold]")
 
+    def _stage_repo_index(self, result: PipelineResult) -> None:
+        """Auto-index the target repo into RAG codebase collection.
+
+        Only runs when RAG MCP is configured and target_github is set.
+        Runs before the Engineer stage so search_codebase returns real results.
+        """
+        if not self.repo_auto_indexer or not self.target_github:
+            return
+        console.print("  📦 [dim]Indexing repo into RAG codebase collection...[/dim]")
+        self.repo_auto_indexer.index(
+            repo=self.target_github.repo,
+            github_token=self._github_token or "",
+        )
+
     def _stage_engineer(self, result: PipelineResult) -> None:
-        # Limit to num_engineers modules for parallel dispatch
         modules = result.modules[: max(self.num_engineers, len(result.modules))]
         # Determine project_dir for framework docs detection
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
