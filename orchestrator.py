@@ -804,13 +804,14 @@ class Orchestrator(TestFixLoopMixin):
             console.print("  ⏭️  [dim]🔎 Architect Reviewer — skipped (checkpoint)[/dim]")
 
         # ── Auto-index repo into RAG (before Engineer) ───────────────────────
-        if self.repo_auto_indexer and self.target_github:
+        if self.repo_auto_indexer and self.target_github and "rag_index" not in result.completed_stages:
             self._run_stage(
                 "📦 RAG Index",
                 "Indexing repo codebase into RAG...",
                 result,
                 lambda: self._stage_repo_index(result),
             )
+            result.completed_stages.append("rag_index")
 
         # ── Stage 3: Engineers ────────────────────────────────────────────────
         if "engineer" not in result.completed_stages:
