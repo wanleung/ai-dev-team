@@ -74,7 +74,11 @@ class FrameworkDocsLoader:
                 for filename in ("AGENTS.md", "CLAUDE.md"):
                     candidate = current / filename
                     if candidate.is_file():
-                        content = candidate.read_text(encoding="utf-8", errors="replace").strip()
+                        try:
+                            content = candidate.read_text(encoding="utf-8", errors="replace").strip()
+                        except OSError as exc:
+                            log.warning("Could not read %s: %s", candidate, exc)
+                            continue
                         if content:
                             log.info("Loaded framework context from %s", candidate)
                             sections.append(
@@ -94,6 +98,10 @@ class FrameworkDocsLoader:
         for fw in frameworks:
             name = fw.get("name", "")
             detect_patterns: list[str] = fw.get("detect", [])
+
+            if not detect_patterns:
+                log.warning("Framework %r has no 'detect' patterns — skipping.", name)
+                continue
 
             # Detect: any glob pattern under project_dir matches → framework present
             matched = any(
