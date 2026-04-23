@@ -1440,6 +1440,55 @@ The role files (`roles/*.md`) are the heart of the system. They encode domain kn
 
 ---
 
+## Framework Docs Awareness
+
+The engineer agent automatically receives framework-specific documentation in its prompt based on the project it's working on.
+
+### How it works
+
+1. **AGENTS.md / CLAUDE.md detection**: Before writing code, the engineer walks up the project directory tree looking for `AGENTS.md` (preferred) or `CLAUDE.md`. If found, its content is prepended to the prompt.
+
+2. **Framework detection**: The orchestrator checks `config.yaml`'s `framework_docs.frameworks` list. Each entry defines glob patterns to detect the framework. If any pattern matches a file in the project directory, the framework's summary is included.
+
+3. **Bundled docs**: For frameworks that ship bundled docs (e.g., Next.js ships docs in `node_modules/next/dist/docs/`), those are also read and included (up to a character cap).
+
+### Supported frameworks (pre-configured)
+
+| Framework | Detection | Notes |
+|-----------|-----------|-------|
+| Next.js | `package.json`, `next.config.*` | Also reads bundled docs from `node_modules/next/dist/docs/` |
+| Nuxt 3 | `nuxt.config.*` | |
+| React Native | `app.json`, `metro.config.*` | |
+| Flutter | `pubspec.yaml` | |
+| FastAPI | `requirements*.txt`, `pyproject.toml` | |
+| Django | `manage.py` | |
+
+### Adding a framework
+
+Add an entry to `framework_docs.frameworks` in `config.yaml`:
+
+```yaml
+framework_docs:
+  frameworks:
+    - name: my-framework
+      detect:
+        - "my-framework.config.*"
+      summary: |
+        Key conventions for my-framework...
+      bundled_docs_path: "node_modules/my-framework/docs"  # optional
+```
+
+### Disabling
+
+To disable framework doc injection entirely, remove the `framework_docs` key from `config.yaml`, or set:
+```yaml
+framework_docs:
+  check_agents_md: false
+  frameworks: []
+```
+
+---
+
 ## 📄 License
 
 GNU General Public License v3.0 or later (GPL-3.0-or-later). See [LICENSE](LICENSE) for details.
