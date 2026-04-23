@@ -673,7 +673,8 @@ class Orchestrator(TestFixLoopMixin):
                 tree_block = repo_context.tree_text + "\n\n---\n\n"
                 for agent in (self.pm, self.architect, self.pm_reviewer, self.architect_reviewer):
                     if agent.system_prompt is not None:
-                        agent.system_prompt = tree_block + agent.system_prompt
+                        if not agent.system_prompt.startswith(tree_block):
+                            agent.system_prompt = tree_block + agent.system_prompt
 
         # ── Inject long-term memory into agents ───────────────────────────────
         active_repo = str(self.target_github.repo if self.target_github else
@@ -868,14 +869,6 @@ class Orchestrator(TestFixLoopMixin):
         return self._finish(result, start_time)
 
     # ── Stage implementations ────────────────────────────────────────────────
-
-    def _stage_summary(self, result: "PipelineResult") -> None:
-        """Stub hook for post-pipeline summary generation (used in testing/extensions)."""
-        pass
-
-    def _stage_memory_update(self, result: "PipelineResult") -> None:
-        """Stub hook for long-term memory update (used in testing/extensions)."""
-        pass
 
     def _stage_pm(self, result: PipelineResult, requirement: str) -> None:
         ctx = self._build_clarification_context(result.clarification_history, stage="pm")
