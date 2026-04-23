@@ -137,9 +137,36 @@ def test_bundled_docs_respects_total_char_limit(tmp_project):
     for i in range(10):
         (docs_dir / f"doc{i:02d}.md").write_text("x" * 5000)
     loader = FrameworkDocsLoader(config={})
-    result = loader._read_bundled_docs(docs_dir, _MAX_TOTAL_BUNDLED)
-    # Allow some overhead for "### filename\n\n" headers
-    assert len(result) <= _MAX_TOTAL_BUNDLED + 200
+    cap = 8000
+    result = loader._read_bundled_docs(docs_dir, cap)
+    # No more than cap — slicing before append means total never exceeds max_chars
+    assert len(result) <= cap
+
+
+def test_summary_included_with_bundled_docs(tmp_project):
+    """Summary AND bundled docs are both included when a framework is detected."""
+    pkg = {"dependencies": {"next": "^14.0.0"}}
+    (tmp_project / "package.json").write_text(json.dumps(pkg))
+    docs_dir = tmp_project / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "guide.md").write_text("# Guide\nBundled doc content here.")
+
+    loader = FrameworkDocsLoader(config={
+        "framework_docs": {
+            "check_agents_md": False,
+            "frameworks": [
+                {
+                    "name": "nextjs",
+                    "detect": ["package.json"],
+                    "summary": "Next.js: use app/ directory.",
+                    "bundled_docs_path": "docs",
+                }
+            ],
+        }
+    })
+    ctx = loader.load(tmp_project)
+    assert "Next.js: use app/ directory." in ctx
+    assert "Bundled doc content here." in ctx
 
 
 def test_bundled_docs_nonexistent_path_returns_empty(tmp_path):

@@ -114,18 +114,11 @@ class FrameworkDocsLoader:
                     project_dir / bundled_path, _MAX_TOTAL_BUNDLED
                 )
 
-            section_parts = [f"## {name} Framework Docs\n"]
+            # always include summary
+            sections.append(f"## {name}\n\n{summary}")
+            # also include bundled docs if available
             if bundled_text:
-                section_parts.append(bundled_text)
-            elif summary:
-                section_parts.append(summary)
-            else:
-                section_parts.append(
-                    f"Framework '{name}' detected. "
-                    "Check the installed package for bundled documentation or use search_docs."
-                )
-
-            sections.append("\n".join(section_parts))
+                sections.append(bundled_text)
 
         # Layer 3 — scaffold hint when config was present but nothing matched
         if not sections:
@@ -152,7 +145,8 @@ class FrameworkDocsLoader:
         total = 0
 
         for doc_file in sorted(path.rglob("*.md")):
-            if total >= max_chars:
+            remaining = max_chars - total
+            if remaining <= 0:
                 break
             try:
                 text = doc_file.read_text(encoding="utf-8", errors="replace").strip()
@@ -161,8 +155,10 @@ class FrameworkDocsLoader:
             if not text:
                 continue
             chunk = text[:_MAX_DOC_CHARS]
-            entry = f"### {doc_file.name}\n\n{chunk}"
+            entry = f"### {doc_file.name}\n\n{chunk}\n\n"
+            if len(entry) > remaining:
+                entry = entry[:remaining]
             parts.append(entry)
             total += len(entry)  # header + content count toward cap
 
-        return "\n\n".join(parts)
+        return "".join(parts)
