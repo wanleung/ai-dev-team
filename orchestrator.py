@@ -1058,13 +1058,10 @@ class Orchestrator(TestFixLoopMixin):
                 f"```\n{truncated}\n```",
             )
 
-    def _stage_test_fix_loop(self, result: PipelineResult) -> None:
-        """Run tests and automatically retry engineer fixes on failure."""
-        safe = "".join(
-            c if c.isalnum() or c in "-_" else "_"
-            for c in result.project_name.lower()
-        )
-        project_dir = (self.workspace_dir / safe).resolve()
+    def _make_project_file_helpers(
+        self, project_dir
+    ) -> tuple:
+        """Return (get_all_files_fn, write_files_fn) closures for a project directory."""
         skip = {".git", "__pycache__", "node_modules"}
 
         def get_all_files_fn() -> dict:
@@ -1087,6 +1084,18 @@ class Orchestrator(TestFixLoopMixin):
                 full_path.parent.mkdir(parents=True, exist_ok=True)
                 full_path.write_text(content, encoding="utf-8")
 
+        return get_all_files_fn, write_files_fn
+
+    def _stage_test_fix_loop(self, result: PipelineResult) -> None:
+        """Run tests and automatically retry engineer fixes on failure."""
+        safe = "".join(
+            c if c.isalnum() or c in "-_" else "_"
+            for c in result.project_name.lower()
+        )
+        project_dir = (self.workspace_dir / safe).resolve()
+
+        get_all_files_fn, write_files_fn = self._make_project_file_helpers(project_dir)
+
         def commit_fn(attempt: int, patches: dict) -> bool:
             if self.target_github and result.branch:
                 for filepath, content in patches.items():
@@ -1096,7 +1105,7 @@ class Orchestrator(TestFixLoopMixin):
                         message=f"fix(auto): test retry {attempt}/{self.max_test_retries}",
                         branch=result.branch,
                     )
-            return True
+            return True  # GitHub API always commits; cannot detect "no diff" to short-circuit
 
         def post_comment_fn(message: str) -> None:
             if self.target_github and result.pr_number:
@@ -1191,27 +1200,8 @@ class Orchestrator(TestFixLoopMixin):
             for c in result.project_name.lower()
         )
         project_dir = (self.workspace_dir / safe).resolve()
-        skip = {".git", "__pycache__", "node_modules"}
 
-        def get_all_files_fn() -> dict:
-            files = {}
-            for path in sorted(project_dir.rglob("*")):
-                if any(part in skip for part in path.parts):
-                    continue
-                if path.is_file() and path.suffix not in {".pyc", ".pyo"}:
-                    try:
-                        files[str(path.relative_to(project_dir))] = path.read_text(
-                            encoding="utf-8", errors="replace"
-                        )
-                    except OSError:
-                        pass
-            return files
-
-        def write_files_fn(patches: dict) -> None:
-            for filepath, content in patches.items():
-                full_path = project_dir / filepath
-                full_path.parent.mkdir(parents=True, exist_ok=True)
-                full_path.write_text(content, encoding="utf-8")
+        get_all_files_fn, write_files_fn = self._make_project_file_helpers(project_dir)
 
         def commit_fn(attempt: int, patches: dict) -> bool:
             if self.target_github and result.branch:
@@ -1222,7 +1212,7 @@ class Orchestrator(TestFixLoopMixin):
                         message=f"fix(auto): deploy retry {attempt}/{self.max_deploy_retries}",
                         branch=result.branch,
                     )
-            return True
+            return True  # GitHub API always commits; cannot detect "no diff" to short-circuit
 
         def post_comment_fn(message: str) -> None:
             if self.target_github and result.pr_number:
@@ -1249,28 +1239,29 @@ class Orchestrator(TestFixLoopMixin):
 
         def run_deploy_tests(r):
             self._stage_deploy_test_runner(r)
-            # Mirror deploy fields back to standard names for mixin
-            r.tests_passed = r.deploy_tests_passed
+            # Treat None (skipped/unavailable) as a non-failure so the fix loop doesn't trigger
+            r.tests_passed = r.deploy_tests_passed if r.deploy_tests_passed is not None else True
             r.test_results = r.deploy_test_results
 
-        self.run_test_fix_loop(
-            result=result,
-            run_tests_fn=run_deploy_tests,
-            get_all_files_fn=get_all_files_fn,
-            write_files_fn=write_files_fn,
-            commit_fn=commit_fn,
-            post_comment_fn=post_comment_fn,
-            fix_fn=fix_fn,
-            max_retries=self.max_deploy_retries,
-        )
-
-        # Restore and sync deploy fields
-        result.deploy_retry_count = result.test_retry_count
-        result.deploy_fix_history = result.test_fix_history
-        result.tests_passed = _orig_passed
-        result.test_results = _orig_results
-        result.test_retry_count = _orig_count
-        result.test_fix_history = _orig_history
+        try:
+            self.run_test_fix_loop(
+                result=result,
+                run_tests_fn=run_deploy_tests,
+                get_all_files_fn=get_all_files_fn,
+                write_files_fn=write_files_fn,
+                commit_fn=commit_fn,
+                post_comment_fn=post_comment_fn,
+                fix_fn=fix_fn,
+                max_retries=self.max_deploy_retries,
+            )
+        finally:
+            # Restore and sync deploy fields
+            result.deploy_retry_count = result.test_retry_count
+            result.deploy_fix_history = result.test_fix_history
+            result.tests_passed    = _orig_passed
+            result.test_results    = _orig_results
+            result.test_retry_count = _orig_count
+            result.test_fix_history = _orig_history
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
