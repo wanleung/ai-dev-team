@@ -23,6 +23,7 @@ from rich.table import Table
 
 from agents import ArchitectAgent, CodeReviewerAgent, EngineerAgent, QAEngineerAgent
 from github_client import GitHubClient, parse_target_repo
+from test_fix_loop import TestFixLoopMixin
 
 console = Console()
 
@@ -77,9 +78,14 @@ class BugFixResult:
     branch: Optional[str] = None
     duration_seconds: float = 0.0
     errors: list[str] = field(default_factory=list)
+    # Test-fix retry tracking
+    tests_passed: Optional[bool] = None
+    test_results: str = ""
+    test_retry_count: int = 0
+    test_fix_history: list[str] = field(default_factory=list)
 
 
-class BugFixOrchestrator:
+class BugFixOrchestrator(TestFixLoopMixin):
     """Runs the bug-fix pipeline triggered by a GitHub Issue.
 
     Usage:
@@ -95,11 +101,13 @@ class BugFixOrchestrator:
         branch_prefix: str = "fix/agent",
         workspace_dir: str = "./workspace",
         model_overrides: Optional[dict] = None,
+        max_test_retries: int = 5,
     ) -> None:
         self.model = model
         self.branch_prefix = branch_prefix
         self.workspace_dir = Path(workspace_dir)
         self._github_token = github_token  # stored for creating target GitHubClient at runtime
+        self.max_test_retries = max_test_retries
         overrides = model_overrides or {}
 
         agent_kwargs = {"github_token": github_token}
@@ -133,6 +141,7 @@ class BugFixOrchestrator:
             branch_prefix=gh.get("bug_branch_prefix", "fix/agent"),
             workspace_dir=pipeline.get("workspace_dir", "./workspace"),
             model_overrides=llm.get("overrides", {}),
+            max_test_retries=pipeline.get("max_test_retries", 5),
         )
 
     def run(
@@ -203,6 +212,13 @@ class BugFixOrchestrator:
 
         # ── Stage 4: Regression Tests ────────────────────────────────────────
         self._run_stage("🧪 QA Engineer", "Writing regression tests...", result, lambda: self._stage_qa(result))
+
+        # ── Stage 5: Run Regression Tests ────────────────────────────────────
+        self._run_stage("🏃 Test Runner", "Running regression tests…", result, lambda: self._stage_test_runner(result))
+
+        # ── Stage 6: Test Fix Loop ────────────────────────────────────────────
+        if result.test_files and result.tests_passed is False:
+            self._run_stage("🔁 Test Fix Loop", "Auto-fixing regression test failures…", result, lambda: self._stage_test_fix_loop(result))
 
         return self._finish(result, start_time)
 
@@ -297,6 +313,128 @@ class BugFixOrchestrator:
                 project_name=f"Bug Fix #{result.issue_number}",
             )
         result.test_files = qa_result["test_files"]
+
+    def _stage_test_runner(self, result: BugFixResult) -> None:
+        """Run pytest on regression test files written to the local workspace."""
+        import subprocess
+        import sys
+
+        project_dir = self.workspace_dir / f"fix-issue-{result.issue_number}"
+
+        # Write test files to disk if not already present
+        tests_dir = project_dir / "tests"
+        if result.test_files:
+            tests_dir.mkdir(parents=True, exist_ok=True)
+            for filepath, content in result.test_files.items():
+                full_path = project_dir / filepath
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_text(content, encoding="utf-8")
+
+        if not tests_dir.exists():
+            console.print("    ⚠️  No tests/ directory found — skipping execution.")
+            result.test_results = "No tests directory found."
+            return
+
+        console.print(f"    🏃 Running pytest in {tests_dir}…")
+        try:
+            import importlib.util as _ilu
+            _timeout_flag = ["--timeout=30"] if _ilu.find_spec("pytest_timeout") else []
+            proc = subprocess.run(
+                [
+                    sys.executable, "-m", "pytest", str(tests_dir), "-v", "--tb=short",
+                    f"--rootdir={project_dir}", "-p", "no:cacheprovider",
+                ] + _timeout_flag,
+                capture_output=True,
+                text=True,
+                cwd=str(project_dir),
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired:
+            result.test_results = "Tests timed out after 5 minutes."
+            result.tests_passed = False
+            return
+
+        output = proc.stdout + proc.stderr
+        result.tests_passed = proc.returncode == 0
+        result.test_results = output
+        status = "✅ All tests passed" if result.tests_passed else "❌ Some tests failed"
+        console.print(f"    {status}")
+
+        lines = output.strip().splitlines()
+        for line in lines[-20:]:
+            console.print(f"    [dim]{line}[/dim]")
+
+        if hasattr(self, "_target_gh") and self._target_gh and getattr(result, "pr_number", None):
+            truncated = "\n".join(lines[-60:]) if len(lines) > 60 else output
+            self._target_gh.add_pr_comment(
+                result.pr_number,
+                f"## 🏃 Regression Test Results\n\n"
+                f"**Status:** {status}\n\n```\n{truncated}\n```",
+            )
+
+    def _stage_test_fix_loop(self, result: BugFixResult) -> None:
+        """Run regression tests and retry engineer fixes on failure."""
+        project_dir = self.workspace_dir / f"fix-issue-{result.issue_number}"
+        skip = {".git", "__pycache__", "node_modules"}
+
+        def get_all_files_fn() -> dict:
+            # Merge fixed_files and test_files; re-read from disk to capture prior patches
+            files: dict[str, str] = {}
+            if project_dir.exists():
+                for path in sorted(project_dir.rglob("*")):
+                    if any(part in skip for part in path.parts):
+                        continue
+                    if path.is_file() and path.suffix not in {".pyc", ".pyo"}:
+                        try:
+                            files[str(path.relative_to(project_dir))] = path.read_text(
+                                encoding="utf-8", errors="replace"
+                            )
+                        except OSError:
+                            pass
+            return files or {**result.fixed_files, **result.test_files}
+
+        def write_files_fn(patches: dict) -> None:
+            for filepath, content in patches.items():
+                full_path = project_dir / filepath
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_text(content, encoding="utf-8")
+            # Keep result.fixed_files in sync so _finish() reports correctly
+            result.fixed_files.update(patches)
+
+        def commit_fn(attempt: int, patches: dict) -> bool:
+            if hasattr(self, "_target_gh") and self._target_gh and getattr(result, "branch", None):
+                for filepath, content in patches.items():
+                    self._target_gh.commit_file(
+                        path=filepath,
+                        content=content,
+                        message=f"fix(auto): regression test retry {attempt}/{self.max_test_retries}",
+                        branch=result.branch,
+                    )
+            return True
+
+        def post_comment_fn(message: str) -> None:
+            # Post on the tracker issue (self.github), not the code PR
+            if self.github:
+                self.github.add_issue_comment(result.issue_number, message)
+
+        def fix_fn(failure_output: str, all_files: dict) -> dict:
+            return self.engineer.fix_failures(
+                failure_output=failure_output,
+                all_files=all_files,
+                design=result.diagnosis,
+                project_name=f"Bug Fix #{result.issue_number}",
+            )
+
+        self.run_test_fix_loop(
+            result=result,
+            run_tests_fn=lambda r: self._stage_test_runner(r),
+            get_all_files_fn=get_all_files_fn,
+            write_files_fn=write_files_fn,
+            commit_fn=commit_fn,
+            post_comment_fn=post_comment_fn,
+            fix_fn=fix_fn,
+            max_retries=self.max_test_retries,
+        )
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
