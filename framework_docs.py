@@ -27,11 +27,17 @@ class FrameworkDocsLoader:
     def load(self, project_dir: Path) -> str:
         """Return a context string to prepend to engineer prompts, or empty string if nothing found.
 
+        Collects ALL available context: AGENTS.md/CLAUDE.md (if present) AND any
+        config-driven framework docs. Both are returned together so project-specific
+        instructions and framework API docs are never mutually exclusive.
+
         Args:
             project_dir: Absolute path to the project workspace directory.
         """
         if not self._cfg:
             return ""
+
+        sections: list[str] = []
 
         # Layer 1 — AGENTS.md / CLAUDE.md
         if self._cfg.get("check_agents_md", True):
@@ -41,19 +47,13 @@ class FrameworkDocsLoader:
                     content = candidate.read_text(encoding="utf-8", errors="replace").strip()
                     if content:
                         log.info("Loaded framework context from %s", filename)
-                        return (
-                            f"## Framework Instructions ({filename})\n\n"
-                            f"{content}\n\n"
-                            "---\n\n"
+                        sections.append(
+                            f"## Framework Instructions ({filename})\n\n{content}"
                         )
+                        break  # AGENTS.md takes priority over CLAUDE.md — only include one
 
         # Layer 2 — Config-driven framework detection
         frameworks = self._cfg.get("frameworks", {})
-        if not frameworks:
-            return ""
-
-        collected: list[str] = []
-
         for fw_name, fw_cfg in frameworks.items():
             detect_file = fw_cfg.get("detect_file")
             detect_key = fw_cfg.get("detect_key", "")
@@ -71,10 +71,7 @@ class FrameworkDocsLoader:
 
             log.info("Detected framework: %s", fw_name)
 
-            # RAG hint (always included if detected)
             rag_hint = fw_cfg.get("rag_hint", "")
-
-            # Bundled docs
             bundled_path = fw_cfg.get("bundled_docs")
             bundled_text = ""
             if bundled_path:
@@ -93,16 +90,16 @@ class FrameworkDocsLoader:
                     "Check the installed package for bundled documentation or use search_docs."
                 )
 
-            collected.append("\n".join(section_parts))
+            sections.append("\n".join(section_parts))
 
-        if not collected:
+        if not sections:
             return ""
 
-        return "\n\n---\n\n".join(collected) + "\n\n---\n\n"
+        return "\n\n---\n\n".join(sections) + "\n\n---\n\n"
 
 
 def _read_bundled_docs(docs_dir: Path) -> str:
-    """Read markdown/text files from a bundled docs directory up to _MAX_TOTAL_BUNDLED chars."""
+    """Read markdown (.md) files from a bundled docs directory up to _MAX_TOTAL_BUNDLED chars."""
     parts: list[str] = []
     total = 0
 
@@ -116,7 +113,8 @@ def _read_bundled_docs(docs_dir: Path) -> str:
         if not text:
             continue
         chunk = text[:_MAX_DOC_CHARS]
-        parts.append(f"### {doc_file.name}\n\n{chunk}")
-        total += len(chunk)
+        entry = f"### {doc_file.name}\n\n{chunk}"
+        parts.append(entry)
+        total += len(entry)   # count header + content, not just chunk
 
     return "\n\n".join(parts)
