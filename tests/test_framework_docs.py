@@ -185,3 +185,42 @@ def test_agents_md_found_in_parent_dir(tmp_path):
     loader = _loader()
     ctx = loader.load(project_dir)
     assert "Parent instructions." in ctx
+
+
+def test_agents_md_unreadable_is_skipped(tmp_path):
+    """OSError when reading AGENTS.md should be caught and logged, walk-up continues."""
+    project = tmp_path / "project"
+    project.mkdir()
+    agents = project / "AGENTS.md"
+    agents.write_text("secret")
+    agents.chmod(0o000)
+    loader = _loader()
+    try:
+        ctx = loader.load(project)
+        assert ctx == _SCAFFOLD_HINT
+    finally:
+        agents.chmod(0o644)
+
+
+def test_framework_with_empty_detect_is_skipped(tmp_path):
+    """Framework with empty detect list should be skipped with warning."""
+    project = tmp_path / "project"
+    project.mkdir()
+    loader = FrameworkDocsLoader(config={
+        "framework_docs": {
+            "check_agents_md": False,
+            "frameworks": [{"name": "phantom", "detect": [], "summary": "Should not appear"}],
+        }
+    })
+    ctx = loader.load(project)
+    assert ctx == _SCAFFOLD_HINT
+
+
+def test_empty_agents_md_is_skipped(tmp_path):
+    """AGENTS.md with only whitespace should be skipped and continue walk-up."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "AGENTS.md").write_text("   \n   ")
+    loader = _loader()
+    ctx = loader.load(project)
+    assert ctx == _SCAFFOLD_HINT
