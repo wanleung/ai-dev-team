@@ -123,7 +123,7 @@ github:
 # ── Team Composition ────────────────────────────────────────────────────────
 team:
   # Number of parallel Engineer agents (each handles a separate module)
-  num_engineers: 2
+  num_engineers: 1
 
   # Enable/disable specific agents
   agents:
@@ -212,3 +212,75 @@ mcp:
     # - name: rag
     #   type: http
     #   url: "http://localhost:8001/mcp"
+
+# ── Framework Docs Awareness ───────────────────────────────────────────────────
+framework_docs:
+  check_agents_md: true   # walk up project dir looking for AGENTS.md / CLAUDE.md
+  frameworks:
+    - name: nextjs
+      detect:
+        - "package.json"
+        - "next.config.*"
+      summary: |
+        This project uses Next.js (App Router). Key conventions:
+        - Use the App Router (`app/` directory), not Pages Router.
+        - Server Components by default; add `"use client"` only when needed.
+        - Data fetching: use `fetch()` in Server Components or React `use()` hook.
+        - Routing: file-based via `app/` directory structure.
+        - Refer to bundled docs at `node_modules/next/dist/docs/` if present.
+      bundled_docs_path: "node_modules/next/dist/docs"
+
+    - name: nuxt
+      detect:
+        - "nuxt.config.*"
+      summary: |
+        This project uses Nuxt 3. Key conventions:
+        - Auto-imports for composables, components, and utils.
+        - `server/` for API routes; `pages/` for file-based routing.
+        - `useFetch` / `useAsyncData` for data fetching.
+        - Nitro server engine; `useRuntimeConfig()` for env vars.
+
+    - name: react-native
+      detect:
+        - "app.json"
+        - "metro.config.*"
+      summary: |
+        This project uses React Native. Key conventions:
+        - Use functional components with hooks.
+        - Navigation: React Navigation (`@react-navigation/native`).
+        - Styling: `StyleSheet.create()`; no CSS.
+        - Platform branching: `Platform.OS` or `.ios.tsx` / `.android.tsx` file suffixes.
+
+    - name: flutter
+      detect:
+        - "pubspec.yaml"
+      summary: |
+        This project uses Flutter/Dart. Key conventions:
+        - State management: Riverpod (watch providers in build, use ref.read in callbacks).
+        - Local DB: Drift (code-gen required after schema changes — run build_runner).
+        - Navigation: GoRouter.
+        - After editing pubspec.yaml run `flutter pub get`.
+        - After model/provider changes run `flutter pub run build_runner build --delete-conflicting-outputs`.
+
+    - name: fastapi
+      detect:
+        - "requirements*.txt"
+        - "pyproject.toml"
+      summary: |
+        This project uses FastAPI. Key conventions:
+        - Route handlers are async; use `async def`.
+        - Pydantic models for request/response validation.
+        - Dependency injection via `Depends()`.
+        - Use `APIRouter` for modular routes.
+        - Alembic for database migrations.
+
+    - name: django
+      detect:
+        - "manage.py"
+      summary: |
+        This project uses Django. Key conventions:
+        - MTV pattern (Models, Templates, Views).
+        - ORM: `Model.objects.filter(...)` / `select_related` / `prefetch_related`.
+        - Class-based views preferred; `APIView` for DRF endpoints.
+        - `settings.py` for config; use `django-environ` for env vars.
+        - Run `python manage.py migrate` after model changes.
