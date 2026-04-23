@@ -162,6 +162,11 @@ pipeline:
   # throttling. Set to 5–10 for opencode-go Go plan.
   inter_call_delay: 0
 
+  # Auto-fix retry loop: maximum engineer fix attempts when tests fail.
+  # Set to 0 to disable. Applies to both unit tests and deployment tests.
+  max_test_retries: 5
+  max_deploy_retries: 5
+
 # ── Skills System ────────────────────────────────────────────────────────────
 skills:
   # Skills that are always loaded regardless of project context

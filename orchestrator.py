@@ -40,6 +40,7 @@ from framework_docs import FrameworkDocsLoader
 from github_client import GitHubClient, parse_target_repo
 from memory_store import MemoryStore
 from skills_loader import SkillContext, SkillLoader
+from test_fix_loop import TestFixLoopMixin
 from tools import builtin_tools, CombinedToolRegistry, MCPToolRegistry
 
 console = Console()
@@ -117,6 +118,11 @@ class PipelineResult:
     # Q&A clarification fields
     pending_clarification: Optional[dict] = None  # set while waiting for human reply
     clarification_history: list[dict] = field(default_factory=list)  # completed Q&A rounds
+    # Test-fix retry tracking
+    test_retry_count: int = 0
+    test_fix_history: list[str] = field(default_factory=list)
+    deploy_retry_count: int = 0
+    deploy_fix_history: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -150,6 +156,10 @@ class PipelineResult:
             "completed_stages": self.completed_stages,
             "pending_clarification": self.pending_clarification,
             "clarification_history": self.clarification_history,
+            "test_retry_count": self.test_retry_count,
+            "test_fix_history": self.test_fix_history,
+            "deploy_retry_count": self.deploy_retry_count,
+            "deploy_fix_history": self.deploy_fix_history,
         }
 
     @classmethod
@@ -162,12 +172,14 @@ class PipelineResult:
                     "test_results", "deploy_test_results", "tests_passed", "deploy_tests_passed",
                     "issue_number", "issue_url",
                     "pr_number", "pr_url", "branch", "completed_stages",
-                    "pending_clarification", "clarification_history"]:
+                    "pending_clarification", "clarification_history",
+                    "test_retry_count", "test_fix_history",
+                    "deploy_retry_count", "deploy_fix_history"]:
             setattr(r, key, data.get(key, getattr(r, key)))
         return r
 
 
-class Orchestrator:
+class Orchestrator(TestFixLoopMixin):
     """Runs the AI software house pipeline end-to-end.
 
     Usage:
@@ -201,6 +213,8 @@ class Orchestrator:
         retry_delay: int = 15,
         max_api_retries: int = 5,
         inter_call_delay: int = 0,
+        max_test_retries: int = 5,
+        max_deploy_retries: int = 5,
         framework_docs_loader: Optional["FrameworkDocsLoader"] = None,
     ) -> None:
         self.model = model
@@ -215,6 +229,8 @@ class Orchestrator:
         self.ollama_think = ollama_think
         self.ollama_stream = ollama_stream
         self.max_revisions = max_revisions
+        self.max_test_retries = max_test_retries
+        self.max_deploy_retries = max_deploy_retries
         self.skill_loader: Optional[SkillLoader] = skill_loader
         self.framework_docs_loader: FrameworkDocsLoader = framework_docs_loader or FrameworkDocsLoader(config={})
 
@@ -355,6 +371,8 @@ class Orchestrator:
             retry_delay=pipeline.get("retry_delay", 15),
             max_api_retries=pipeline.get("max_api_retries", 5),
             inter_call_delay=pipeline.get("inter_call_delay", 0),
+            max_test_retries=pipeline.get("max_test_retries", 5),
+            max_deploy_retries=pipeline.get("max_deploy_retries", 5),
             framework_docs_loader=framework_docs_loader,
         )
 
@@ -800,11 +818,11 @@ class Orchestrator:
 
         # ── Stage 6: Test Runner ──────────────────────────────────────────────
         if "test_runner" not in result.completed_stages and result.test_files:
-            self._run_stage("🏃 Test Runner", "Executing tests...", result, lambda: self._stage_test_runner(result))
+            self._run_stage("🏃 Test Runner + Fix Loop", "Executing tests (with auto-fix)…", result, lambda: self._stage_test_fix_loop(result))
             result.completed_stages.append("test_runner")
             self._save_checkpoint(result)
         else:
-            console.print("  ⏭️  [dim]🏃 Test Runner — skipped (checkpoint)[/dim]")
+            console.print("  ⏭️  [dim]🏃 Test Runner + Fix Loop — skipped (checkpoint)[/dim]")
 
         # ── Stage 7: Deployment Tester ────────────────────────────────────────
         if "deployment_tester" not in result.completed_stages:
@@ -816,11 +834,11 @@ class Orchestrator:
 
         # ── Stage 8: Run Deployment Tests ─────────────────────────────────────
         if "deploy_test_runner" not in result.completed_stages and result.deploy_files:
-            self._run_stage("🐳 Deploy Test Runner", "Running docker smoke tests...", result, lambda: self._stage_deploy_test_runner(result))
+            self._run_stage("🐳 Deploy Test Runner + Fix Loop", "Running deployment tests (with auto-fix)…", result, lambda: self._stage_deploy_fix_loop(result))
             result.completed_stages.append("deploy_test_runner")
             self._save_checkpoint(result)
         else:
-            console.print("  ⏭️  [dim]🐳 Deploy Test Runner — skipped (checkpoint)[/dim]")
+            console.print("  ⏭️  [dim]🐳 Deploy Test Runner + Fix Loop — skipped (checkpoint)[/dim]")
 
         # Pipeline complete — remove checkpoint
         self._clear_checkpoint(result)
@@ -1040,6 +1058,69 @@ class Orchestrator:
                 f"```\n{truncated}\n```",
             )
 
+    def _stage_test_fix_loop(self, result: PipelineResult) -> None:
+        """Run tests and automatically retry engineer fixes on failure."""
+        safe = "".join(
+            c if c.isalnum() or c in "-_" else "_"
+            for c in result.project_name.lower()
+        )
+        project_dir = (self.workspace_dir / safe).resolve()
+        skip = {".git", "__pycache__", "node_modules"}
+
+        def get_all_files_fn() -> dict:
+            files = {}
+            for path in sorted(project_dir.rglob("*")):
+                if any(part in skip for part in path.parts):
+                    continue
+                if path.is_file() and path.suffix not in {".pyc", ".pyo"}:
+                    try:
+                        files[str(path.relative_to(project_dir))] = path.read_text(
+                            encoding="utf-8", errors="replace"
+                        )
+                    except OSError:
+                        pass
+            return files
+
+        def write_files_fn(patches: dict) -> None:
+            for filepath, content in patches.items():
+                full_path = project_dir / filepath
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_text(content, encoding="utf-8")
+
+        def commit_fn(attempt: int, patches: dict) -> bool:
+            if self.target_github and result.branch:
+                for filepath, content in patches.items():
+                    self.target_github.commit_file(
+                        path=filepath,
+                        content=content,
+                        message=f"fix(auto): test retry {attempt}/{self.max_test_retries}",
+                        branch=result.branch,
+                    )
+            return True
+
+        def post_comment_fn(message: str) -> None:
+            if self.target_github and result.pr_number:
+                self.target_github.add_pr_comment(result.pr_number, message)
+
+        def fix_fn(failure_output: str, all_files: dict) -> dict:
+            return self.engineer.fix_failures(
+                failure_output=failure_output,
+                all_files=all_files,
+                design=result.design,
+                project_name=result.project_name,
+            )
+
+        self.run_test_fix_loop(
+            result=result,
+            run_tests_fn=lambda r: self._stage_test_runner(r),
+            get_all_files_fn=get_all_files_fn,
+            write_files_fn=write_files_fn,
+            commit_fn=commit_fn,
+            post_comment_fn=post_comment_fn,
+            fix_fn=fix_fn,
+            max_retries=self.max_test_retries,
+        )
+
     def _stage_deployment_tester(self, result: PipelineResult) -> None:
         """Generate deployment smoke tests and commit them to the PR branch."""
         deploy_result = self.deployment_tester.run(result.all_files, result.prd, result.project_name)
@@ -1094,6 +1175,102 @@ class Orchestrator:
                 f"**Status:** {status}\n\n"
                 f"```\n{truncated}\n```",
             )
+
+    def _stage_deploy_fix_loop(self, result: PipelineResult) -> None:
+        """Run deployment tests and retry engineer fixes on failure.
+
+        Only called when unit tests have passed (result.tests_passed is True).
+        Uses result.deploy_retry_count and result.deploy_fix_history.
+        """
+        if result.tests_passed is not True:
+            console.print("    ⏭️  Skipping deploy fix loop — unit tests did not pass.")
+            return
+
+        safe = "".join(
+            c if c.isalnum() or c in "-_" else "_"
+            for c in result.project_name.lower()
+        )
+        project_dir = (self.workspace_dir / safe).resolve()
+        skip = {".git", "__pycache__", "node_modules"}
+
+        def get_all_files_fn() -> dict:
+            files = {}
+            for path in sorted(project_dir.rglob("*")):
+                if any(part in skip for part in path.parts):
+                    continue
+                if path.is_file() and path.suffix not in {".pyc", ".pyo"}:
+                    try:
+                        files[str(path.relative_to(project_dir))] = path.read_text(
+                            encoding="utf-8", errors="replace"
+                        )
+                    except OSError:
+                        pass
+            return files
+
+        def write_files_fn(patches: dict) -> None:
+            for filepath, content in patches.items():
+                full_path = project_dir / filepath
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_text(content, encoding="utf-8")
+
+        def commit_fn(attempt: int, patches: dict) -> bool:
+            if self.target_github and result.branch:
+                for filepath, content in patches.items():
+                    self.target_github.commit_file(
+                        path=filepath,
+                        content=content,
+                        message=f"fix(auto): deploy retry {attempt}/{self.max_deploy_retries}",
+                        branch=result.branch,
+                    )
+            return True
+
+        def post_comment_fn(message: str) -> None:
+            if self.target_github and result.pr_number:
+                self.target_github.add_pr_comment(result.pr_number, message)
+
+        def fix_fn(failure_output: str, all_files: dict) -> dict:
+            return self.engineer.fix_failures(
+                failure_output=failure_output,
+                all_files=all_files,
+                design=result.design,
+                project_name=result.project_name,
+            )
+
+        # Temporarily alias deploy fields to the standard names the mixin expects,
+        # then restore. This lets us reuse run_test_fix_loop without modification.
+        _orig_passed = result.tests_passed
+        _orig_results = result.test_results
+        _orig_count = result.test_retry_count
+        _orig_history = result.test_fix_history
+        result.tests_passed = result.deploy_tests_passed
+        result.test_results = result.deploy_test_results
+        result.test_retry_count = result.deploy_retry_count
+        result.test_fix_history = result.deploy_fix_history
+
+        def run_deploy_tests(r):
+            self._stage_deploy_test_runner(r)
+            # Mirror deploy fields back to standard names for mixin
+            r.tests_passed = r.deploy_tests_passed
+            r.test_results = r.deploy_test_results
+
+        self.run_test_fix_loop(
+            result=result,
+            run_tests_fn=run_deploy_tests,
+            get_all_files_fn=get_all_files_fn,
+            write_files_fn=write_files_fn,
+            commit_fn=commit_fn,
+            post_comment_fn=post_comment_fn,
+            fix_fn=fix_fn,
+            max_retries=self.max_deploy_retries,
+        )
+
+        # Restore and sync deploy fields
+        result.deploy_retry_count = result.test_retry_count
+        result.deploy_fix_history = result.test_fix_history
+        result.tests_passed = _orig_passed
+        result.test_results = _orig_results
+        result.test_retry_count = _orig_count
+        result.test_fix_history = _orig_history
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
