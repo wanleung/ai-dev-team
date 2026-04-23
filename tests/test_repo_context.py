@@ -250,3 +250,63 @@ def test_orchestrator_tree_injection_is_idempotent():
     prompt_after_second = orch.architect.system_prompt or ""
 
     assert prompt_after_first == prompt_after_second
+
+
+# ── RepoAutoIndexer ───────────────────────────────────────────────────────────
+
+def test_auto_indexer_calls_subprocess_with_codebase_source(tmp_path):
+    """RepoAutoIndexer should call indexer.py with --source codebase."""
+    from repo_context import RepoAutoIndexer
+
+    indexer = RepoAutoIndexer(indexer_script="rag-mcp/indexer.py")
+
+    with patch("repo_context.subprocess.run") as mock_run, \
+         patch("repo_context.RepoAutoIndexer._download_repo_zip") as mock_dl:
+        mock_dl.return_value = str(tmp_path)
+        mock_run.return_value = MagicMock(returncode=0)
+        indexer.index(repo="owner/myrepo", github_token="tok", repo_dir=str(tmp_path))
+
+    mock_run.assert_called_once()
+    call_args = mock_run.call_args[0][0]  # First positional arg (the command list)
+    assert "--source" in call_args
+    assert "codebase" in call_args
+    assert "--path" in call_args
+    assert "--clean" in call_args
+
+
+def test_auto_indexer_skips_when_no_rag_script(tmp_path):
+    """If the indexer script does not exist, index() should return without error."""
+    from repo_context import RepoAutoIndexer
+
+    indexer = RepoAutoIndexer(indexer_script="/nonexistent/path/indexer.py")
+    # Should not raise
+    indexer.index(repo="owner/repo", github_token="tok", repo_dir=str(tmp_path))
+
+
+def test_orchestrator_calls_auto_index_when_rag_configured():
+    """repo_auto_indexer.index() should be called in run() when rag_registry is set."""
+    from orchestrator import Orchestrator
+
+    orch = Orchestrator(model="gpt-4.1", use_github=False)
+    # Inject a fake rag_registry and auto_indexer
+    orch._rag_registry = MagicMock()
+    orch.repo_auto_indexer = MagicMock()
+    orch.target_github = MagicMock()
+    orch.target_github.repo = "owner/myrepo"
+
+    with patch.object(orch, "_stage_pm"), \
+         patch.object(orch, "_stage_pm_reviewer"), \
+         patch.object(orch, "_stage_architect"), \
+         patch.object(orch, "_stage_architect_reviewer"), \
+         patch.object(orch, "_stage_engineer"), \
+         patch.object(orch, "_stage_reviewer"), \
+         patch.object(orch, "_stage_qa_planner"), \
+         patch.object(orch, "_stage_qa"), \
+         patch.object(orch, "_stage_test_fix_loop"), \
+         patch.object(orch, "_stage_deployment_tester"), \
+         patch.object(orch, "_stage_deploy_fix_loop"), \
+         patch.object(orch, "_stage_summary", create=True), \
+         patch.object(orch, "_stage_memory_update", create=True):
+        orch.run("Add login feature")
+
+    orch.repo_auto_indexer.index.assert_called_once()
