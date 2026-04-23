@@ -176,8 +176,8 @@ def test_orchestrator_injects_tree_into_architect_prompt():
          patch.object(orch, "_stage_test_fix_loop"), \
          patch.object(orch, "_stage_deployment_tester"), \
          patch.object(orch, "_stage_deploy_fix_loop"), \
-         patch.object(orch, "_stage_summary"), \
-         patch.object(orch, "_stage_memory_update"):
+         patch.object(orch, "_stage_summary", create=True), \
+         patch.object(orch, "_stage_memory_update", create=True):
         orch.run("Add login feature")
 
     assert "## Repo File Tree" in (orch.architect.system_prompt or "")
@@ -203,8 +203,50 @@ def test_orchestrator_no_injection_when_loader_absent():
          patch.object(orch, "_stage_test_fix_loop"), \
          patch.object(orch, "_stage_deployment_tester"), \
          patch.object(orch, "_stage_deploy_fix_loop"), \
-         patch.object(orch, "_stage_summary"), \
-         patch.object(orch, "_stage_memory_update"):
+         patch.object(orch, "_stage_summary", create=True), \
+         patch.object(orch, "_stage_memory_update", create=True):
         orch.run("Add login feature")
 
     assert orch.architect.system_prompt == original_prompt
+
+
+def test_orchestrator_tree_injection_is_idempotent():
+    """Calling run() twice should not stack the tree block twice."""
+    import contextlib
+    from unittest.mock import patch, MagicMock
+    from orchestrator import Orchestrator
+
+    orch = Orchestrator(model="gpt-4.1", use_github=False)
+
+    mock_ctx = RepoContext(
+        file_count=5,
+        is_large=False,
+        tree_text="## Repo File Tree\n  src/main.py",
+        paths=[],
+    )
+    mock_loader = MagicMock()
+    mock_loader.build.return_value = mock_ctx
+    orch.repo_context_loader = mock_loader
+    orch.target_github = MagicMock()
+
+    stage_names = [
+        "_stage_pm", "_stage_pm_reviewer", "_stage_architect",
+        "_stage_architect_reviewer", "_stage_engineer", "_stage_reviewer",
+        "_stage_qa_planner", "_stage_qa", "_stage_test_fix_loop",
+        "_stage_deployment_tester", "_stage_deploy_fix_loop",
+        "_stage_summary", "_stage_memory_update",
+    ]
+
+    def run_once():
+        patches = [patch.object(orch, name, create=True) for name in stage_names]
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            orch.run("Add login feature")
+
+    run_once()
+    prompt_after_first = orch.architect.system_prompt or ""
+    run_once()
+    prompt_after_second = orch.architect.system_prompt or ""
+
+    assert prompt_after_first == prompt_after_second
