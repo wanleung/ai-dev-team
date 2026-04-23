@@ -6,9 +6,12 @@ file commits, pull requests, and comments.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import re
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 import requests
 
@@ -323,10 +326,11 @@ class GitHubClient:
         """Return the full recursive file tree of the repo.
 
         Uses the git tree API with recursive=1 for efficiency.
+        Returns [] if the tree is truncated (repo too large) or on any error.
 
         Returns:
             List of dicts with keys: path (str), type ('blob'|'tree'), size (int).
-            Returns [] on any error.
+            Returns [] on any error or if the response is truncated.
         """
         try:
             sha = ref or self.get_default_branch()
@@ -334,11 +338,14 @@ class GitHubClient:
                 "GET", f"/repos/{self.repo}/git/trees/{sha}",
                 params={"recursive": "1"},
             )
+            if tree_data.get("truncated"):
+                return []
             return [
                 {"path": e["path"], "type": e["type"], "size": e.get("size", 0)}
                 for e in tree_data.get("tree", [])
             ]
-        except Exception:
+        except Exception as exc:
+            log.warning("get_full_tree failed for %s: %s", self.repo, exc)
             return []
 
     def search_files(self, pattern: str, ref: Optional[str] = None) -> list[str]:
