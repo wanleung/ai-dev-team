@@ -167,6 +167,15 @@ pipeline:
   max_test_retries: 5
   max_deploy_retries: 5
 
+# ── Repo Context Awareness ──────────────────────────────────────────────────
+# Controls how the pipeline reads the target repo's existing code structure.
+#
+# large_repo_threshold: repos with >= this many files are considered "large".
+#   Large repos: only top-2-level tree injected into prompts; RAG auto-index triggered.
+#   Small repos: full file tree injected into prompts.
+repo_context:
+  large_repo_threshold: 50
+
 # ── Skills System ────────────────────────────────────────────────────────────
 skills:
   # Skills that are always loaded regardless of project context

@@ -144,3 +144,67 @@ def test_get_full_tree_returns_empty_when_truncated():
     gh.get_default_branch = MagicMock(return_value="main")
     result = gh.get_full_tree()
     assert result == []
+
+# ── Orchestrator integration ──────────────────────────────────────────────────
+
+def test_orchestrator_injects_tree_into_architect_prompt():
+    """Tree text should be prepended to Architect system_prompt in run()."""
+    from unittest.mock import patch, MagicMock
+    from orchestrator import Orchestrator
+
+    orch = Orchestrator(model="gpt-4.1", use_github=False)
+
+    mock_ctx = RepoContext(
+        file_count=5,
+        is_large=False,
+        tree_text="## Repo File Tree\n  src/main.py\n  README.md",
+        paths=[],
+    )
+    mock_loader = MagicMock()
+    mock_loader.build.return_value = mock_ctx
+    orch.repo_context_loader = mock_loader
+    orch.target_github = MagicMock()
+
+    with patch.object(orch, "_stage_pm"), \
+         patch.object(orch, "_stage_pm_reviewer"), \
+         patch.object(orch, "_stage_architect"), \
+         patch.object(orch, "_stage_architect_reviewer"), \
+         patch.object(orch, "_stage_engineer"), \
+         patch.object(orch, "_stage_reviewer"), \
+         patch.object(orch, "_stage_qa_planner"), \
+         patch.object(orch, "_stage_qa"), \
+         patch.object(orch, "_stage_test_fix_loop"), \
+         patch.object(orch, "_stage_deployment_tester"), \
+         patch.object(orch, "_stage_deploy_fix_loop"), \
+         patch.object(orch, "_stage_summary"), \
+         patch.object(orch, "_stage_memory_update"):
+        orch.run("Add login feature")
+
+    assert "## Repo File Tree" in (orch.architect.system_prompt or "")
+
+
+def test_orchestrator_no_injection_when_loader_absent():
+    """If repo_context_loader is None, no tree text should be added."""
+    from unittest.mock import patch
+    from orchestrator import Orchestrator
+
+    orch = Orchestrator(model="gpt-4.1", use_github=False)
+    orch.repo_context_loader = None
+    original_prompt = orch.architect.system_prompt or ""
+
+    with patch.object(orch, "_stage_pm"), \
+         patch.object(orch, "_stage_pm_reviewer"), \
+         patch.object(orch, "_stage_architect"), \
+         patch.object(orch, "_stage_architect_reviewer"), \
+         patch.object(orch, "_stage_engineer"), \
+         patch.object(orch, "_stage_reviewer"), \
+         patch.object(orch, "_stage_qa_planner"), \
+         patch.object(orch, "_stage_qa"), \
+         patch.object(orch, "_stage_test_fix_loop"), \
+         patch.object(orch, "_stage_deployment_tester"), \
+         patch.object(orch, "_stage_deploy_fix_loop"), \
+         patch.object(orch, "_stage_summary"), \
+         patch.object(orch, "_stage_memory_update"):
+        orch.run("Add login feature")
+
+    assert orch.architect.system_prompt == original_prompt
