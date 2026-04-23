@@ -186,6 +186,53 @@ class EngineerAgent(BaseAgent):
         result["pr_url"] = pr["html_url"]
         return result
 
+    def fix_failures(
+        self,
+        failure_output: str,
+        all_files: dict,
+        design: str,
+        project_name: str = "Project",
+        framework_context: str = "",
+    ) -> dict:
+        """Produce targeted code fixes for failing tests.
+
+        Args:
+            failure_output: The test failure output (e.g. pytest stderr/stdout).
+            all_files: {filepath: content} of all current project source files.
+            design: Full system design markdown.
+            project_name: Project name for context.
+            framework_context: Optional framework documentation to prepend to the prompt.
+
+        Returns:
+            {filepath: content} of ONLY the files that need to change.
+            Empty dict if the LLM returns no parseable file blocks.
+        """
+        framework_section = (
+            f"## Framework Documentation\n\n{framework_context}\n\n"
+            if framework_context else ""
+        )
+        files_section = "\n\n".join(
+            f"## File: {path}\n\n```\n{content}\n```"
+            for path, content in all_files.items()
+        )
+        prompt = (
+            f"{framework_section}"
+            f"You are fixing test failures in the project '{project_name}'.\n\n"
+            f"## Test Failure Output\n\n```\n{failure_output}\n```\n\n"
+            f"## Current Project Files\n\n{files_section}\n\n"
+            f"## System Design\n\n{design}\n\n"
+            f"Read the test failure output carefully. Identify the root cause.\n"
+            f"Fix ONLY the broken source files. Do NOT modify test files.\n"
+            f"Return ONLY the files that need to change, using the '### FILE: path/to/file.py' format.\n"
+            f"Do not return files that do not need to change."
+        )
+        response = self.call(prompt)
+        # Only parse if the response contains explicit FILE markers;
+        # do not apply the _parse_files fallback that wraps plain text as main.py.
+        if "### FILE:" not in response:
+            return {}
+        return self._parse_files(response)
+
     @staticmethod
     def _parse_files(response: str) -> dict[str, str]:
         """Parse '### FILE: path' sections from the LLM response into a dict."""
