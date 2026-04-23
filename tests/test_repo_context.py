@@ -78,9 +78,9 @@ def test_small_repo_tree_text_contains_all_files():
 def test_large_repo_tree_text_only_top_two_levels():
     # Files deeper than 2 levels should not appear
     paths = [
-        "src/main.py",                        # depth 1 — visible
-        "src/utils/helper.py",                 # depth 2 — visible (dir shown)
-        "src/utils/deep/nested/file.py",       # depth 4 — should NOT appear
+        "src/main.py",                        # depth 2 — visible as file
+        "src/utils/helper.py",                 # depth 3 — shown as dir summary
+        "src/utils/deep/nested/file.py",       # depth 5 — omitted (parent dir already shown)
     ]
     gh = _make_gh(paths)
     loader = RepoContextLoader(threshold=2)   # threshold=2 → large
@@ -124,3 +124,23 @@ def test_build_returns_empty_context_when_github_unavailable():
     assert ctx.file_count == 0
     assert ctx.is_large is False
     assert ctx.tree_text == ""
+
+
+def test_large_repo_deep_only_directory_shows_summary():
+    """A dir with ONLY depth-4+ files (no depth-3 sibling) must still show a summary line."""
+    paths = ["src/deep/nested/very/file.py"]  # depth 5, no depth-3 sibling
+    gh = _make_gh(paths)
+    loader = RepoContextLoader(threshold=1)
+    ctx = loader.build(gh)
+    assert "src/deep" in ctx.tree_text
+
+
+def test_get_full_tree_returns_empty_when_truncated():
+    """When GitHub returns truncated=true, get_full_tree should return []."""
+    from github_client import GitHubClient
+    gh = GitHubClient.__new__(GitHubClient)
+    gh.repo = "test/repo"
+    gh._request = MagicMock(return_value={"truncated": True, "tree": [{"path": "file.py", "type": "blob", "size": 100}]})
+    gh.get_default_branch = MagicMock(return_value="main")
+    result = gh.get_full_tree()
+    assert result == []

@@ -72,6 +72,7 @@ class RepoContextLoader:
 
         Depth is the number of '/' separators + 1.
         e.g. 'src/main.py' → depth 2 (shown), 'src/utils/helper.py' → depth 3 (hidden).
+        Any file deeper than depth 2 contributes its depth-2 parent as a summary line.
         """
         lines = ["## Repo File Tree (top-level, large repo)\n"]
         seen_dirs: set[str] = set()
@@ -81,10 +82,10 @@ class RepoContextLoader:
             depth = len(parts)
             if depth <= 2:
                 lines.append(f"  {path}")
-            elif depth == 3:
-                # Show parent dir as a summary line once
+            else:
+                # Show the depth-2 parent dir exactly once
                 parent = "/".join(parts[:2])
                 if parent not in seen_dirs:
                     seen_dirs.add(parent)
-                    lines.append(f"  {parent}/  (... {depth-2}+ levels deep)")
+                    lines.append(f"  {parent}/  (...)")
         return "\n".join(lines)
