@@ -213,12 +213,14 @@ class BugFixOrchestrator(TestFixLoopMixin):
         # ── Stage 4: Regression Tests ────────────────────────────────────────
         self._run_stage("🧪 QA Engineer", "Writing regression tests...", result, lambda: self._stage_qa(result))
 
-        # ── Stage 5: Run Regression Tests ────────────────────────────────────
-        self._run_stage("🏃 Test Runner", "Running regression tests…", result, lambda: self._stage_test_runner(result))
-
-        # ── Stage 6: Test Fix Loop ────────────────────────────────────────────
-        if result.test_files and result.tests_passed is False:
-            self._run_stage("🔁 Test Fix Loop", "Auto-fixing regression test failures…", result, lambda: self._stage_test_fix_loop(result))
+        # ── Stage 5: Test Runner + Fix Loop ──────────────────────────────────
+        if result.test_files:
+            self._run_stage(
+                "🏃 Test Runner + Fix Loop",
+                "Running regression tests (with auto-fix)…",
+                result,
+                lambda: self._stage_test_fix_loop(result),
+            )
 
         return self._finish(result, start_time)
 
@@ -321,6 +323,21 @@ class BugFixOrchestrator(TestFixLoopMixin):
 
         project_dir = self.workspace_dir / f"fix-issue-{result.issue_number}"
 
+        # Install test requirements if present
+        req_file = project_dir / "requirements-test.txt"
+        if not req_file.exists():
+            # Fallback: write a minimal one
+            project_dir.mkdir(parents=True, exist_ok=True)
+            req_file.write_text("pytest\npytest-cov\npytest-timeout\nhttpx\n", encoding="utf-8")
+
+        console.print("    📦 Installing test dependencies…")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q",
+             "pytest-timeout"],  # always ensure timeout plugin is available
+            check=False,
+            timeout=120,
+        )
+
         # Write test files to disk if not already present
         tests_dir = project_dir / "tests"
         if result.test_files:
@@ -343,7 +360,7 @@ class BugFixOrchestrator(TestFixLoopMixin):
                 [
                     sys.executable, "-m", "pytest", str(tests_dir), "-v", "--tb=short",
                     f"--rootdir={project_dir}", "-p", "no:cacheprovider",
-                ] + _timeout_flag,
+                ] + _timeout_flag,  # --timeout=30 only if pytest-timeout is available
                 capture_output=True,
                 text=True,
                 cwd=str(project_dir),
@@ -410,7 +427,7 @@ class BugFixOrchestrator(TestFixLoopMixin):
                         message=f"fix(auto): regression test retry {attempt}/{self.max_test_retries}",
                         branch=result.branch,
                     )
-            return True
+            return True  # GitHub API always commits; cannot detect "no diff" to short-circuit
 
         def post_comment_fn(message: str) -> None:
             # Post on the tracker issue (self.github), not the code PR

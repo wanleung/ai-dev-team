@@ -67,3 +67,4 @@ def test_stage_test_fix_loop_called_after_qa(tmp_path):
         orch._stage_test_fix_loop(result)
 
     assert len(run_loop_calls) == 1
+    assert run_loop_calls[0]["max_retries"] == orch.max_test_retries
