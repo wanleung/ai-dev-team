@@ -93,7 +93,10 @@ def test_flutter_rag_hint_injected(tmp_project):
 
 def test_check_agents_md_disabled(tmp_project):
     (tmp_project / "AGENTS.md").write_text("should be ignored")
-    loader = FrameworkDocsLoader(config={"framework_docs": {"check_agents_md": False}})
+    # Use _loader with override that disables agents_md but keeps framework config
+    loader = _loader({"framework_docs": {"check_agents_md": False, "frameworks": {
+        "nextjs": {"detect_file": "package.json", "detect_key": '"next"'}
+    }}})
     ctx = loader.load(tmp_project)
     assert ctx == ""
 
@@ -103,3 +106,26 @@ def test_framework_docs_disabled_entirely(tmp_project):
     loader = FrameworkDocsLoader(config={})
     ctx = loader.load(tmp_project)
     assert ctx == ""
+
+
+def test_agents_md_and_framework_both_included(tmp_project):
+    """AGENTS.md content AND framework docs are both included when both are present."""
+    (tmp_project / "AGENTS.md").write_text("# AGENTS\nRead bundled docs first.")
+    pkg = {"dependencies": {"next": "^14.0.0"}}
+    (tmp_project / "package.json").write_text(json.dumps(pkg))
+    loader = _loader()
+    ctx = loader.load(tmp_project)
+    assert "Read bundled docs first." in ctx
+    assert "next" in ctx.lower()
+
+
+def test_bundled_docs_respects_total_char_limit(tmp_project):
+    """_read_bundled_docs must not exceed _MAX_TOTAL_BUNDLED chars total."""
+    from framework_docs import _read_bundled_docs, _MAX_TOTAL_BUNDLED
+    docs_dir = tmp_project / "docs"
+    docs_dir.mkdir()
+    for i in range(10):
+        (docs_dir / f"doc{i:02d}.md").write_text("x" * 5000)
+    result = _read_bundled_docs(docs_dir)
+    # Allow some overhead for "### filename\n\n" headers
+    assert len(result) <= _MAX_TOTAL_BUNDLED + 200
