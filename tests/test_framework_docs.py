@@ -1,5 +1,6 @@
 """Tests for FrameworkDocsLoader."""
 import json
+import os
 from pathlib import Path
 import pytest
 from framework_docs import FrameworkDocsLoader, _MAX_TOTAL_BUNDLED, _SCAFFOLD_HINT
@@ -187,6 +188,7 @@ def test_agents_md_found_in_parent_dir(tmp_path):
     assert "Parent instructions." in ctx
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason="chmod(0o000) does not restrict root")
 def test_agents_md_unreadable_is_skipped(tmp_path):
     """OSError when reading AGENTS.md should be caught and logged, walk-up continues."""
     project = tmp_path / "project"
