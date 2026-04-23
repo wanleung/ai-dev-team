@@ -26,13 +26,20 @@ class EngineerAgent(BaseAgent):
         super().__init__(*args, **kwargs)
         self._tool_registry = tool_registry
 
-    def run_module(self, design: str, module: dict, project_name: str = "Project") -> dict:
+    def run_module(
+        self,
+        design: str,
+        module: dict,
+        project_name: str = "Project",
+        framework_context: str = "",
+    ) -> dict:
         """Implement a single module.
 
         Args:
             design: Full system design markdown.
             module: Module dict with 'name' and 'description' keys.
             project_name: Project name for context.
+            framework_context: Optional framework documentation to inject into the prompt.
 
         Returns:
             dict with keys:
@@ -40,12 +47,16 @@ class EngineerAgent(BaseAgent):
                 - files (dict): {filepath: file_content} for all generated files
                 - raw_response (str): Full LLM response
         """
+        framework_section = f"## Framework Documentation\n\n{framework_context}\n\n" if framework_context else ""
+        scaffold_hint = "\n\n> Note: If you scaffold a new project, check for AGENTS.md afterwards for framework-specific guidance." if not framework_context else ""
         prompt = (
+            f"{framework_section}"
             f"You are implementing the '{module['name']}' module for the project '{project_name}'.\n\n"
             f"Module description: {module.get('description', '')}\n\n"
             f"Full System Design:\n---\n{design}\n---\n\n"
             f"Please implement ALL files for this module. "
             f"Output each file using the '### FILE: path/to/file.py' format as instructed."
+            f"{scaffold_hint}"
         )
 
         if self._tool_registry is not None:
@@ -73,6 +84,7 @@ class EngineerAgent(BaseAgent):
         modules: list[dict],
         project_name: str = "Project",
         max_workers: int = 3,
+        framework_context: str = "",
     ) -> dict:
         """Implement multiple modules in parallel using a thread pool.
 
@@ -81,6 +93,7 @@ class EngineerAgent(BaseAgent):
             modules: List of module dicts from the Architect.
             project_name: Project name for context.
             max_workers: Maximum parallel LLM calls.
+            framework_context: Optional framework documentation to inject into each module's prompt.
 
         Returns:
             dict with keys:
@@ -95,7 +108,7 @@ class EngineerAgent(BaseAgent):
                 if i > 0:
                     # Small stagger to avoid burst rate limits (60k tokens/min window)
                     time.sleep(2)
-                futures.append(executor.submit(self.run_module, design, mod, project_name))
+                futures.append(executor.submit(self.run_module, design, mod, project_name, framework_context))
             for future in futures:
                 result = future.result()
                 results.append(result)
@@ -116,6 +129,7 @@ class EngineerAgent(BaseAgent):
         branch_prefix: str = "feature/agent",
         issue_number: Optional[int] = None,
         max_workers: int = 3,
+        framework_context: str = "",
     ) -> dict:
         """Run all modules and commit code to GitHub on a feature branch, then open a PR.
 
@@ -127,6 +141,7 @@ class EngineerAgent(BaseAgent):
             branch_prefix: Prefix for the feature branch name.
             issue_number: PRD issue number to reference in the PR.
             max_workers: Parallel engineer workers.
+            framework_context: Optional framework documentation to inject into each module's prompt.
 
         Returns:
             run_all_modules() result plus:
@@ -134,7 +149,7 @@ class EngineerAgent(BaseAgent):
                 - pr_number (int): Pull request number
                 - pr_url (str): Pull request URL
         """
-        result = self.run_all_modules(design, modules, project_name, max_workers)
+        result = self.run_all_modules(design, modules, project_name, max_workers, framework_context=framework_context)
 
         # Create feature branch
         safe_name = re.sub(r"[^a-z0-9-]", "-", project_name.lower())[:40]
