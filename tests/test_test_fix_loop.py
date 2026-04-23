@@ -1,7 +1,7 @@
 """Tests for TestFixLoopMixin.run_test_fix_loop()."""
 from dataclasses import dataclass, field
 from typing import Optional
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 import pytest
 from test_fix_loop import TestFixLoopMixin
 
@@ -147,6 +147,7 @@ def test_breaks_on_empty_patch():
     mixin = _make_mixin()
     result = FakeResult()
     fix_fn = MagicMock(return_value={})
+    post_fn = MagicMock()
     run_count = [0]
 
     def run_tests(r):
@@ -159,14 +160,43 @@ def test_breaks_on_empty_patch():
         get_all_files_fn=lambda: {},
         write_files_fn=MagicMock(),
         commit_fn=MagicMock(return_value=True),
-        post_comment_fn=MagicMock(),
+        post_comment_fn=post_fn,
         fix_fn=fix_fn,
         max_retries=5,
     )
 
     # Only the initial run + 1 fix attempt (which returned {}) — loop breaks
     assert run_count[0] == 1
-    assert result.test_retry_count == 0
+    assert result.test_retry_count == 1
+    assert len(result.test_fix_history) == 1
+    assert "engineer returned no patches" in result.test_fix_history[0]
+    post_fn.assert_called_once()
+
+
+def test_breaks_when_commit_returns_false():
+    mixin = _make_mixin()
+    result = FakeResult()
+    post_fn = MagicMock()
+    commit_fn = MagicMock(return_value=False)
+    fix_fn = MagicMock(return_value={"app/foo.py": "fix"})
+
+    mixin.run_test_fix_loop(
+        result=result,
+        run_tests_fn=lambda r: _run_tests_fail(r),
+        get_all_files_fn=lambda: {},
+        write_files_fn=MagicMock(),
+        commit_fn=commit_fn,
+        post_comment_fn=post_fn,
+        fix_fn=fix_fn,
+        max_retries=5,
+    )
+
+    commit_fn.assert_called_once()
+    fix_fn.assert_called_once()
+    post_fn.assert_called_once()
+    assert result.test_retry_count == 1
+    assert len(result.test_fix_history) == 1
+    assert "commit produced no diff" in result.test_fix_history[0]
 
 
 def test_retry_count_and_history_accurate():
