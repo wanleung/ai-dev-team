@@ -319,6 +319,28 @@ class GitHubClient:
         # Single file returned (happens when path points to a file, not dir)
         return [{"name": result["name"], "type": result["type"], "path": result["path"]}]
 
+    def get_full_tree(self, ref: Optional[str] = None) -> list[dict]:
+        """Return the full recursive file tree of the repo.
+
+        Uses the git tree API with recursive=1 for efficiency.
+
+        Returns:
+            List of dicts with keys: path (str), type ('blob'|'tree'), size (int).
+            Returns [] on any error.
+        """
+        try:
+            sha = ref or self.get_default_branch()
+            tree_data = self._request(
+                "GET", f"/repos/{self.repo}/git/trees/{sha}",
+                params={"recursive": "1"},
+            )
+            return [
+                {"path": e["path"], "type": e["type"], "size": e.get("size", 0)}
+                for e in tree_data.get("tree", [])
+            ]
+        except Exception:
+            return []
+
     def search_files(self, pattern: str, ref: Optional[str] = None) -> list[str]:
         """Return all file paths in the repo matching a glob pattern.
 
