@@ -38,6 +38,7 @@ from agents.refactor_agent import RefactorAgent
 from agents.memory_consolidator import MemoryConsolidatorAgent
 from framework_docs import FrameworkDocsLoader
 from github_client import GitHubClient, parse_target_repo
+from repo_context import RepoContext, RepoContextLoader
 from memory_store import MemoryStore
 from skills_loader import SkillContext, SkillLoader
 from test_fix_loop import TestFixLoopMixin
@@ -216,6 +217,7 @@ class Orchestrator(TestFixLoopMixin):
         max_test_retries: int = 5,
         max_deploy_retries: int = 5,
         framework_docs_loader: Optional["FrameworkDocsLoader"] = None,
+        repo_context_loader: Optional["RepoContextLoader"] = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -233,6 +235,7 @@ class Orchestrator(TestFixLoopMixin):
         self.max_deploy_retries = max_deploy_retries
         self.skill_loader: Optional[SkillLoader] = skill_loader
         self.framework_docs_loader: FrameworkDocsLoader = framework_docs_loader or FrameworkDocsLoader(config={})
+        self.repo_context_loader: Optional[RepoContextLoader] = repo_context_loader
 
         # Build combined tool registry (builtin + optional MCP servers)
         if mcp_servers:
@@ -349,6 +352,11 @@ class Orchestrator(TestFixLoopMixin):
 
         framework_docs_loader = FrameworkDocsLoader(config=cfg)
 
+        repo_ctx_cfg = cfg.get("repo_context", {})
+        repo_context_loader = RepoContextLoader(
+            threshold=repo_ctx_cfg.get("large_repo_threshold", 50)
+        )
+
         repo = gh.get("repo", "")
         use_github = bool(repo) and repo != "your-username/your-repo"
 
@@ -374,6 +382,7 @@ class Orchestrator(TestFixLoopMixin):
             max_test_retries=pipeline.get("max_test_retries", 5),
             max_deploy_retries=pipeline.get("max_deploy_retries", 5),
             framework_docs_loader=framework_docs_loader,
+            repo_context_loader=repo_context_loader,
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
@@ -652,9 +661,23 @@ class Orchestrator(TestFixLoopMixin):
         elif not self.target_github:
             self.target_github = self.github
 
+        # ── Fetch repo context (file tree) ────────────────────────────────────
+        repo_context: Optional[RepoContext] = None
+        if self.repo_context_loader and self.target_github:
+            repo_context = self.repo_context_loader.build(self.target_github)
+            if repo_context.tree_text:
+                size_label = "large" if repo_context.is_large else "small"
+                console.print(
+                    f"  🗂️  [dim]Repo tree loaded ({repo_context.file_count} files, {size_label})[/dim]"
+                )
+                tree_block = repo_context.tree_text + "\n\n---\n\n"
+                for agent in (self.pm, self.architect, self.pm_reviewer, self.architect_reviewer):
+                    if agent.system_prompt is not None:
+                        agent.system_prompt = tree_block + agent.system_prompt
+
         # ── Inject long-term memory into agents ───────────────────────────────
-        active_repo = (self.target_github.repo if self.target_github else
-                       (self.github.repo if self.github else "local"))
+        active_repo = str(self.target_github.repo if self.target_github else
+                          (self.github.repo if self.github else "local"))
         memory_context = self.memory.recall(active_repo)
         if memory_context:
             console.print(f"  🧠 [dim]Loaded memory from {active_repo}[/dim]")
@@ -845,6 +868,14 @@ class Orchestrator(TestFixLoopMixin):
         return self._finish(result, start_time)
 
     # ── Stage implementations ────────────────────────────────────────────────
+
+    def _stage_summary(self, result: "PipelineResult") -> None:
+        """Stub hook for post-pipeline summary generation (used in testing/extensions)."""
+        pass
+
+    def _stage_memory_update(self, result: "PipelineResult") -> None:
+        """Stub hook for long-term memory update (used in testing/extensions)."""
+        pass
 
     def _stage_pm(self, result: PipelineResult, requirement: str) -> None:
         ctx = self._build_clarification_context(result.clarification_history, stage="pm")
