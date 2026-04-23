@@ -60,6 +60,10 @@ class TestFixLoopMixin:
 
             patches = fix_fn(failure_output, all_files)
             if not patches:
+                result.test_fix_history.append(
+                    f"Attempt {attempt}: engineer returned no patches — aborted"
+                )
+                result.test_retry_count += 1
                 console.print(
                     "    ⚠️  Engineer returned no patches — stopping retry loop."
                 )
@@ -69,6 +73,10 @@ class TestFixLoopMixin:
 
             committed = commit_fn(attempt, patches)
             if not committed:
+                result.test_fix_history.append(
+                    f"Attempt {attempt}: commit produced no diff — aborted"
+                )
+                result.test_retry_count += 1
                 console.print(
                     "    ⚠️  No code changes after fix — stopping retry loop."
                 )
