@@ -261,9 +261,8 @@ def test_auto_indexer_calls_subprocess_with_codebase_source(tmp_path):
     indexer = RepoAutoIndexer(indexer_script="rag-mcp/indexer.py")
 
     with patch("repo_context.subprocess.run") as mock_run, \
-         patch("repo_context.RepoAutoIndexer._download_repo_zip") as mock_dl:
-        mock_dl.return_value = str(tmp_path)
-        mock_run.return_value = MagicMock(returncode=0)
+         patch("repo_context.Path.exists", return_value=True):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
         indexer.index(repo="owner/myrepo", github_token="tok", repo_dir=str(tmp_path))
 
     mock_run.assert_called_once()

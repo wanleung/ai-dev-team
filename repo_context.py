@@ -5,6 +5,7 @@ and renders an appropriate tree text for injection into agent prompts.
 """
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from github_client import GitHubClient
@@ -151,7 +154,8 @@ class RepoAutoIndexer:
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 zip_path.write_bytes(resp.read())
-        except Exception:
+        except Exception as exc:
+            log.warning("RAG repo download failed (%s): %s", repo, exc)
             return None
 
         extract_dir = Path(tmpdir) / "repo"
@@ -168,8 +172,12 @@ class RepoAutoIndexer:
 
     def _run_indexer(self, path: str) -> None:
         """Run rag-mcp/indexer.py --source codebase --path <path> --clean."""
-        subprocess.run(
+        proc = subprocess.run(
             [sys.executable, self.indexer_script, "--source", "codebase", "--path", path, "--clean"],
             check=False,
             timeout=300,
+            capture_output=True,
+            text=True,
         )
+        if proc.returncode != 0:
+            log.warning("RAG indexer exited %d: %s", proc.returncode, proc.stderr[:200])
