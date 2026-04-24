@@ -96,3 +96,37 @@ def test_run_revision_pm_agent():
     assert "Missing acceptance criteria" in captured["prompt"]
     assert "Draft PRD by reviewer" in captured["prompt"]
     assert "Revised PRD" in result["prd"]
+
+
+def test_run_revision_architect_agent():
+    """ArchitectAgent.run_revision() sends original design, review, draft, and PRD to the LLM."""
+    from agents.architect import ArchitectAgent
+
+    agent = ArchitectAgent.__new__(ArchitectAgent)
+    agent._tool_registry = None
+    captured = {}
+
+    def fake_call(prompt):
+        captured["prompt"] = prompt
+        return (
+            "# Revised Design\n## Overview\nFixed.\n"
+            "## Implementation Modules\n1. **api**: REST layer\n2. **db**: Database layer\n"
+        )
+
+    agent.call = fake_call
+
+    result = agent.run_revision(
+        original_design="# Original Design",
+        review="Missing database schema.",
+        draft_revision="# Draft Design by reviewer",
+        prd="# PRD content",
+        project_name="Todo App",
+    )
+
+    assert "design" in result
+    assert "modules" in result
+    assert "Original Design" in captured["prompt"]
+    assert "Missing database schema" in captured["prompt"]
+    assert "Draft Design by reviewer" in captured["prompt"]
+    assert "Revised Design" in result["design"]
+    assert len(result["modules"]) >= 1

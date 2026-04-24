@@ -40,17 +40,7 @@ class ArchitectAgent(BaseAgent):
             f"module/file that needs to be implemented."
         )
 
-        if self._tool_registry is not None:
-            rag_hint = (
-                "\n\nYou have access to RAG search tools: `search_memory` and `search_docs`. "
-                "Use them to find relevant past designs and documentation before producing the system design."
-            )
-            try:
-                design = self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
-            except NotImplementedError:
-                design = self.call(prompt)
-        else:
-            design = self.call(prompt)
+        design = self._call_with_tools_or_fallback(prompt)
         modules = self._parse_modules(design)
 
         return {
@@ -113,19 +103,32 @@ class ArchitectAgent(BaseAgent):
             f"Make sure to include an 'Implementation Modules' section."
         )
 
-        if self._tool_registry is not None:
-            try:
-                design = self.call_with_tools(prompt, tools=self._tool_registry)
-            except NotImplementedError:
-                design = self.call(prompt)
-        else:
-            design = self.call(prompt)
-
+        design = self._call_with_tools_or_fallback(prompt)
         modules = self._parse_modules(design)
         return {
             "design": design,
             "modules": modules,
         }
+
+    def _call_with_tools_or_fallback(self, prompt: str) -> str:
+        """Call LLM with optional RAG tool registry support, falling back to plain call.
+
+        Args:
+            prompt: The prompt to send to the LLM.
+
+        Returns:
+            str: The LLM's response text.
+        """
+        if self._tool_registry is not None:
+            rag_hint = (
+                "\n\nYou have access to RAG search tools: `search_memory` and `search_docs`. "
+                "Use them to find relevant past designs and documentation before producing the system design."
+            )
+            try:
+                return self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
+            except NotImplementedError:
+                return self.call(prompt)
+        return self.call(prompt)
 
     @staticmethod
     def _parse_modules(design: str) -> list[dict]:
