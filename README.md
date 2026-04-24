@@ -25,6 +25,7 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - 🌙 **Refactor / dream mode** — `--refactor` flag analyses and cleans up workspace code, opens a cleanup PR
 - 🤖 **6 LLM backends** — GitHub Models (default), Anthropic Claude, Ollama (local), OpenCode CLI, OpenCode Zen API, and OpenCode Go API; switch per-agent with a model prefix
 - **Resilient checkpoints** — atomic writes prevent corruption on Ctrl+C; best-checkpoint-wins logic survives bad config runs
+- 🗺️ **Repo context awareness** — before engineering, the pipeline injects the full repo file tree into PM/Architect prompts (small repos) or auto-indexes the codebase into RAG (large repos), so agents understand what already exists before writing code
 
 ---
 
@@ -277,7 +278,8 @@ python main.py --file requirements/my-app.txt --repo owner/target-repo --no-resu
 2.  📝 PM Reviewer        — reviews PRD; optionally revises before architecture
 3.  🏗️  Architect          — PRD → system design + module list
 4.  🔎 Arch Reviewer      — reviews design; optionally revises before engineering
-5.  💻 Engineers ×N       — parallel code generation → feature branch + PR
+5.  🗺️ Repo Indexer       — injects repo tree into prompts (small repos) or auto-indexes codebase into RAG (large repos)
+6.  💻 Engineers ×N       — parallel code generation → feature branch + PR
 6.  🔍 Code Reviewer      — reviews code → PR comment with verdict
 7.  📋 QA Planner         — PRD + design + code → structured test plan + acceptance criteria
 8.  🧪 QA Engineer        — implements tests guided by QA Planner's test plan → PR
@@ -942,10 +944,12 @@ ai-software-house/
 ├── main.py                    # CLI entry point for full pipeline
 ├── fix_issue.py               # CLI entry point for bug fix pipeline
 ├── build_feature.py           # GitHub Actions entry point
-├── orchestrator.py            # Full pipeline (12 stages)
+├── orchestrator.py            # Full pipeline (13 stages)
 ├── bug_fix_orchestrator.py    # Bug fix pipeline
 ├── github_client.py           # GitHub API wrapper (Issues, PRs, commits)
 ├── memory_store.py            # Tiered SQLite memory store (run/monthly/quarterly)
+├── repo_context.py            # RepoContextLoader (tree injection) + RepoAutoIndexer (RAG auto-index)
+├── skills_loader.py           # SkillLoader — detects + injects role-scoped skills per agent
 ├── watcher.py                 # Hourly cron poller — dispatches pipelines for new issues
 ├── repos.yaml                 # Repos to watch + parallel/model settings
 ├── setup_cron.sh              # One-command cron job installer
@@ -1016,6 +1020,8 @@ Skills are markdown files in `skills/` that inject domain-specific guidance into
 
 ### Bundled starter skills
 
+**Tech-stack skills** — auto-detected from repo languages and issue keywords:
+
 | Skill | File | Auto-detects on |
 |---|---|---|
 | Flutter | `skills/flutter.md` | `flutter`, `dart`, `mobile`, `riverpod`, `drift` |
@@ -1023,6 +1029,18 @@ Skills are markdown files in `skills/` that inject domain-specific guidance into
 | React | `skills/react.md` | `react`, `typescript`, `frontend`, `nextjs`, `vite` |
 | Security Audit | `skills/security-audit.md` | `security`, `auth`, `jwt`, `oauth` |
 | Docker | `skills/docker.md` | `docker`, `container`, `kubernetes`, `helm` |
+
+**Process skills** — distilled engineering best-practices; auto-detected or always-loaded:
+
+| Skill | File | Roles | Auto-detects on |
+|---|---|---|---|
+| TDD | `skills/tdd.md` | Engineer, Code Reviewer, QA Engineer | `tdd`, `testing`, `pytest`, `jest` |
+| Debugging | `skills/debugging.md` | Engineer, QA Engineer | `debugging`, `bug-fix`, `triage` |
+| API Design | `skills/api-design.md` | Architect, Engineer, Code Reviewer, Arch Reviewer | `api`, `rest`, `interface`, `contract` |
+| Incremental Implementation | `skills/incremental-implementation.md` | Engineer, Code Reviewer | `implementation`, `slicing`, `incremental` |
+| Code Review Quality | `skills/code-review-quality.md` | Code Reviewer, Arch Reviewer | `code-review`, `quality` |
+| Source-Driven Dev | `skills/source-driven.md` | Architect, Engineer, Code Reviewer, Arch Reviewer | `documentation`, `frameworks`, `sources` |
+| Architecture Decision Records | `skills/adrs.md` | Architect, Arch Reviewer | `adr`, `architecture`, `decisions` |
 
 ### Writing a custom skill
 
@@ -1176,6 +1194,34 @@ mcp:
 **Install:** `pip install mcp` (or add `mcp>=1.0.0` to `requirements.txt` — already included).
 
 > ⚠️ MCP tool-calling requires a tool-calling-capable backend. The `opencode` CLI backend does **not** support tool calls. Use `github_models`, `anthropic`, `opencode-zen/` (non-Claude), or `opencode-go/` (non-MiniMax) backends.
+
+---
+
+## 🗺️ Repo Context Awareness
+
+Before the Engineer stage runs, the pipeline gives agents awareness of the existing codebase so they build on what's already there rather than re-inventing it.
+
+### How it decides
+
+| Repo size | Strategy | What agents see |
+|---|---|---|
+| **Small** (RAG not configured) | Tree injection | Full `git ls-tree` file listing injected into PM, Architect, PM Reviewer, and Arch Reviewer prompts |
+| **Large** (RAG enabled) | Auto-index | `RepoAutoIndexer` downloads the repo zip, indexes it into the RAG `codebase` collection, then Engineer/QA agents query it via `search_codebase` |
+
+### How it works (small repos)
+
+`RepoContextLoader` fetches the repository file tree from GitHub and injects it as a fenced block into the four planning-stage agents. The tree is idempotent — re-running the pipeline will not inject it twice.
+
+### How it works (large repos / RAG enabled)
+
+`RepoAutoIndexer` runs a `_stage_repo_index` step immediately before the Engineer stage:
+
+1. If a local `repo_dir` path is configured → uses it directly
+2. Otherwise → downloads the GitHub repo zip → extracts to a temp dir
+3. Runs `rag-mcp/indexer.py --source codebase --path <extracted> --clean`
+4. The index stage is checkpoint-guarded — it will not re-index on pipeline resume
+
+This stage is skipped entirely when `rag_registry` is not configured in `config.yaml`.
 
 ---
 
