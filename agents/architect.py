@@ -78,6 +78,55 @@ class ArchitectAgent(BaseAgent):
         )
         return result
 
+    def run_revision(
+        self,
+        original_design: str,
+        review: str,
+        draft_revision: str,
+        prd: str,
+        project_name: str,
+    ) -> dict:
+        """Rewrite the system design incorporating reviewer feedback and the reviewer's draft.
+
+        Args:
+            original_design: The system design that was reviewed.
+            review: Reviewer's feedback text.
+            draft_revision: Reviewer's suggested rewrite (use as direction, not copy-paste).
+            prd: Current PRD (for context).
+            project_name: Current project name.
+
+        Returns:
+            dict with keys:
+                - design (str): Improved system design markdown
+                - modules (list[dict]): Re-parsed implementation modules
+        """
+        prompt = (
+            f"You previously wrote a System Design for the project '{project_name}' that was "
+            f"reviewed and needs improvement.\n\n"
+            f"## PRD (unchanged)\n---\n{prd}\n---\n\n"
+            f"## Your Original System Design\n---\n{original_design}\n---\n\n"
+            f"## Reviewer Feedback\n---\n{review}\n---\n\n"
+            f"## Reviewer's Suggested Draft (use as direction, not copy-paste)\n"
+            f"---\n{draft_revision}\n---\n\n"
+            f"Rewrite the System Design addressing the reviewer's concerns. Preserve correct "
+            f"decisions. Output a complete, improved System Design following your role instructions. "
+            f"Make sure to include an 'Implementation Modules' section."
+        )
+
+        if self._tool_registry is not None:
+            try:
+                design = self.call_with_tools(prompt, tools=self._tool_registry)
+            except NotImplementedError:
+                design = self.call(prompt)
+        else:
+            design = self.call(prompt)
+
+        modules = self._parse_modules(design)
+        return {
+            "design": design,
+            "modules": modules,
+        }
+
     @staticmethod
     def _parse_modules(design: str) -> list[dict]:
         """Extract the list of modules from the system design document."""
