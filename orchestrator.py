@@ -774,31 +774,13 @@ class Orchestrator(TestFixLoopMixin):
             border_style="cyan",
         ))
 
-        # ── Stage 1: Product Manager ─────────────────────────────────────────
-        if "pm" not in result.completed_stages:
-            try:
-                self._run_stage("📋 Product Manager", "Analyzing requirements & writing PRD...", result, lambda: self._stage_pm(result, requirement))
-            except ClarificationNeeded as exc:
-                self._pause_for_clarification(result, "pm", exc.questions)
+        # ── Stage 1: PM + PM Reviewer revision loop ───────────────────────────
+        if "pm_review_loop" not in result.completed_stages:
+            ok = self._prd_revision_loop(result, requirement)
+            if not ok:
                 return self._finish(result, start_time)
-            if result.errors:
-                self._save_checkpoint(result)
-                return self._finish(result, start_time)
-            result.completed_stages.append("pm")
-            self._save_checkpoint(result)
         else:
-            console.print("  ⏭️  [dim]📋 Product Manager — skipped (checkpoint)[/dim]")
-
-        # ── Stage 1b: PM Reviewer ─────────────────────────────────────────────
-        if "pm_reviewer" not in result.completed_stages:
-            self._run_stage("📝 PM Reviewer", "Reviewing PRD for completeness...", result, lambda: self._stage_pm_reviewer(result, requirement))
-            if result.errors:
-                self._save_checkpoint(result)
-                return self._finish(result, start_time)
-            result.completed_stages.append("pm_reviewer")
-            self._save_checkpoint(result)
-        else:
-            console.print("  ⏭️  [dim]📝 PM Reviewer — skipped (checkpoint)[/dim]")
+            console.print("  ⏭️  [dim]PRD revision loop — skipped (checkpoint)[/dim]")
 
         # ── Stage 2: Architect ────────────────────────────────────────────────
         if "architect" not in result.completed_stages:
@@ -946,9 +928,137 @@ class Orchestrator(TestFixLoopMixin):
         result.prd_review = rev_result["review"]
         result.prd_verdict = rev_result["verdict"]
 
-        if rev_result["needs_revision"] and rev_result["revised_prd"]:
+        # Store reviewer's draft for use in run_revision() (new revision loop)
+        result.prd_reviewer_draft = rev_result.get("revised_prd") or ""
+        # Legacy single-pass behaviour preserved when loop is disabled (max_prd_revisions == 0)
+        if getattr(self, "max_prd_revisions", 3) == 0 and rev_result["needs_revision"] and rev_result["revised_prd"]:
             result.prd = rev_result["revised_prd"]
             result.project_name = rev_result["revised_project_name"]
+
+    def _stage_pm_revision(self, result: PipelineResult, requirement: str, round_num: int) -> None:
+        """PM rewrites the PRD using reviewer feedback and reviewer's draft."""
+        pm_result = self.pm.run_revision(
+            original_prd=result.prd,
+            review=result.prd_review,
+            draft_revision=result.prd_reviewer_draft,
+            requirement=requirement,
+            project_name=result.project_name,
+        )
+        result.prd = pm_result["prd"]
+        result.project_name = pm_result["project_name"]
+        result.prd_revision_count = round_num
+
+    def _prd_revision_loop(self, result: PipelineResult, requirement: str) -> bool:
+        """Run PM → PM Reviewer revision loop (up to max_prd_revisions rounds).
+
+        Returns True if pipeline should continue, False if it should halt.
+        """
+        # Step 1: PM writes initial PRD
+        if "pm" not in result.completed_stages:
+            try:
+                self._run_stage(
+                    "📋 Product Manager",
+                    "Analyzing requirements & writing PRD...",
+                    result,
+                    lambda: self._stage_pm(result, requirement),
+                )
+            except ClarificationNeeded as exc:
+                self._pause_for_clarification(result, "pm", exc.questions)
+                return False
+            if result.errors:
+                self._save_checkpoint(result)
+                return False
+            result.completed_stages.append("pm")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]📋 Product Manager — skipped (checkpoint)[/dim]")
+
+        # Step 2: Initial PM Reviewer pass
+        if "pm_reviewer" not in result.completed_stages:
+            self._run_stage(
+                "📝 PM Reviewer",
+                "Reviewing PRD for completeness...",
+                result,
+                lambda: self._stage_pm_reviewer(result, requirement),
+            )
+            if result.errors:
+                self._save_checkpoint(result)
+                return False
+            result.completed_stages.append("pm_reviewer")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]📝 PM Reviewer — skipped (checkpoint)[/dim]")
+
+        # Step 3: Revision loop (skip if disabled)
+        if self.max_prd_revisions == 0:
+            result.completed_stages.append("pm_review_loop")
+            self._save_checkpoint(result)
+            return True
+
+        for round_num in range(1, self.max_prd_revisions + 1):
+            if result.prd_verdict != PMReviewerAgent.VERDICT_REVISION:
+                break  # Already approved
+
+            key = f"prd_revision_{round_num}"
+            if key in result.completed_stages:
+                console.print(f"  ⏭️  [dim]PRD revision round {round_num} — skipped (checkpoint)[/dim]")
+                continue
+
+            # PM rewrites PRD
+            console.print(
+                f"  🔄 [yellow]PRD NEEDS REVISION (round {round_num}/{self.max_prd_revisions})"
+                f" — sending back to PM...[/yellow]"
+            )
+            self._run_stage(
+                "📋 Product Manager",
+                f"Revising PRD based on reviewer feedback (round {round_num})...",
+                result,
+                lambda rn=round_num: self._stage_pm_revision(result, requirement, rn),
+            )
+            if result.errors:
+                self._save_checkpoint(result)
+                return False
+
+            # Reviewer re-checks
+            self._run_stage(
+                "📝 PM Reviewer",
+                f"Re-reviewing revised PRD (round {round_num})...",
+                result,
+                lambda: self._stage_pm_reviewer(result, requirement),
+            )
+            if result.errors:
+                self._save_checkpoint(result)
+                return False
+
+            result.completed_stages.append(key)
+            self._save_checkpoint(result)
+        else:
+            # for-else: exited without break → max rounds hit, still NEEDS REVISION
+            console.print(
+                f"  ⚠️  [yellow]Max PRD revisions reached ({self.max_prd_revisions}/"
+                f"{self.max_prd_revisions}). "
+                + ("Halting pipeline." if self.stop_on_prd_issues else "Continuing with current best.")
+                + "[/yellow]"
+            )
+            if self.stop_on_prd_issues:
+                if self.github and result.issue_number:
+                    self.github.add_issue_comment(
+                        result.issue_number,
+                        f"⚠️ PRD revision limit reached after {self.max_prd_revisions} rounds. "
+                        f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
+                    )
+                result.completed_stages.append("pm_review_loop")
+                self._save_checkpoint(result)
+                return False
+
+        if result.prd_verdict != PMReviewerAgent.VERDICT_REVISION:
+            console.print(
+                f"  ✅ [green]PRD APPROVED (round {result.prd_revision_count})[/green]"
+            )
+
+        result.completed_stages.append("pm_review_loop")
+        self._save_checkpoint(result)
+        return True
 
     def _stage_architect_reviewer(self, result: PipelineResult) -> None:
         """Review the Architect's design. If revision needed, update design + modules."""

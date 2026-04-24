@@ -165,8 +165,11 @@ def test_orchestrator_injects_tree_into_architect_prompt():
     orch.repo_context_loader = mock_loader
     orch.target_github = MagicMock()
 
-    with patch.object(orch, "_stage_pm"), \
-         patch.object(orch, "_stage_pm_reviewer"), \
+    def mock_prd_loop(result, requirement):
+        result.completed_stages.append("pm_review_loop")
+        return True
+
+    with patch.object(orch, "_prd_revision_loop", side_effect=mock_prd_loop), \
          patch.object(orch, "_stage_architect"), \
          patch.object(orch, "_stage_architect_reviewer"), \
          patch.object(orch, "_stage_engineer"), \
@@ -192,8 +195,11 @@ def test_orchestrator_no_injection_when_loader_absent():
     orch.repo_context_loader = None
     original_prompt = orch.architect.system_prompt or ""
 
-    with patch.object(orch, "_stage_pm"), \
-         patch.object(orch, "_stage_pm_reviewer"), \
+    def mock_prd_loop(result, requirement):
+        result.completed_stages.append("pm_review_loop")
+        return True
+
+    with patch.object(orch, "_prd_revision_loop", side_effect=mock_prd_loop), \
          patch.object(orch, "_stage_architect"), \
          patch.object(orch, "_stage_architect_reviewer"), \
          patch.object(orch, "_stage_engineer"), \
@@ -229,8 +235,12 @@ def test_orchestrator_tree_injection_is_idempotent():
     orch.repo_context_loader = mock_loader
     orch.target_github = MagicMock()
 
+    def mock_prd_loop(result, requirement):
+        result.completed_stages.append("pm_review_loop")
+        return True
+
     stage_names = [
-        "_stage_pm", "_stage_pm_reviewer", "_stage_architect",
+        "_stage_architect",
         "_stage_architect_reviewer", "_stage_engineer", "_stage_reviewer",
         "_stage_qa_planner", "_stage_qa", "_stage_test_fix_loop",
         "_stage_deployment_tester", "_stage_deploy_fix_loop",
@@ -238,7 +248,8 @@ def test_orchestrator_tree_injection_is_idempotent():
     ]
 
     def run_once():
-        patches = [patch.object(orch, name, create=True) for name in stage_names]
+        patches = [patch.object(orch, "_prd_revision_loop", side_effect=mock_prd_loop)]
+        patches.extend([patch.object(orch, name, create=True) for name in stage_names])
         with contextlib.ExitStack() as stack:
             for p in patches:
                 stack.enter_context(p)
@@ -293,8 +304,11 @@ def test_orchestrator_calls_auto_index_when_rag_configured():
     orch.target_github = MagicMock()
     orch.target_github.repo = "owner/myrepo"
 
-    with patch.object(orch, "_stage_pm"), \
-         patch.object(orch, "_stage_pm_reviewer"), \
+    def mock_prd_loop(result, requirement):
+        result.completed_stages.append("pm_review_loop")
+        return True
+
+    with patch.object(orch, "_prd_revision_loop", side_effect=mock_prd_loop), \
          patch.object(orch, "_stage_architect"), \
          patch.object(orch, "_stage_architect_reviewer"), \
          patch.object(orch, "_stage_engineer"), \
