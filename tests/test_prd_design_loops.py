@@ -134,13 +134,13 @@ def test_run_revision_architect_agent():
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def _make_orch(max_prd=3, stop=False, max_design_revisions=3):
+def _make_orch(max_prd=3, stop=False, max_design_revisions=3, stop_design=False):
     """Minimal orchestrator for loop testing."""
     o = Orchestrator.__new__(Orchestrator)
     o.max_prd_revisions = max_prd
     o.max_design_revisions = max_design_revisions
     o.stop_on_prd_issues = stop
-    o.stop_on_design_issues = False
+    o.stop_on_design_issues = stop_design
     o.github = None
     o.target_github = None
     o._github_token = "tok"
@@ -323,3 +323,122 @@ def test_design_revision_loop_approves_on_round_1():
     assert "architect_review_loop" in result.completed_stages
     assert call_count["n"] == 2  # initial + 1 re-review
     assert result.design_revision_count == 1
+
+
+def test_design_revision_loop_max_revisions_no_halt():
+    """When max rounds hit and stop_on_design_issues=False, loop continues (returns True)."""
+    from agents.architect_reviewer import ArchitectReviewerAgent
+
+    orch = _make_orch(max_design_revisions=2, stop_design=False)
+    result = _make_result()
+    result.prd = "PRD text"
+    result.design = "initial design"
+
+    def fake_architect_reviewer(r):
+        r.design_review = "not good enough"
+        r.design_reviewer_draft = r.design
+        r.design_verdict = ArchitectReviewerAgent.VERDICT_REVISION
+
+    def fake_architect(r):
+        r.design = "initial design"
+        r.modules = []
+
+    def fake_arch_revision(r, rn):
+        r.design = f"revised {rn}"
+        r.design_revision_count = rn
+
+    with patch.object(orch, "_stage_architect", side_effect=fake_architect), \
+         patch.object(orch, "_stage_architect_reviewer", side_effect=fake_architect_reviewer), \
+         patch.object(orch, "_stage_arch_revision", side_effect=fake_arch_revision), \
+         patch.object(orch, "_save_checkpoint"):
+        ok = orch._design_revision_loop(result)
+
+    assert ok is True
+    assert "architect_review_loop" in result.completed_stages
+
+
+def test_design_revision_loop_max_revisions_halt():
+    """When max rounds hit and stop_on_design_issues=True, pipeline halts (returns False)."""
+    from agents.architect_reviewer import ArchitectReviewerAgent
+
+    orch = _make_orch(max_design_revisions=2, stop_design=True)
+    result = _make_result()
+    result.prd = "PRD text"
+    result.design = "initial design"
+
+    def fake_architect_reviewer(r):
+        r.design_review = "not good"
+        r.design_reviewer_draft = r.design
+        r.design_verdict = ArchitectReviewerAgent.VERDICT_REVISION
+
+    def fake_architect(r):
+        r.design = "initial design"
+        r.modules = []
+
+    def fake_arch_revision(r, rn):
+        r.design = f"revised {rn}"
+        r.design_revision_count = rn
+
+    with patch.object(orch, "_stage_architect", side_effect=fake_architect), \
+         patch.object(orch, "_stage_architect_reviewer", side_effect=fake_architect_reviewer), \
+         patch.object(orch, "_stage_arch_revision", side_effect=fake_arch_revision), \
+         patch.object(orch, "_save_checkpoint"):
+        ok = orch._design_revision_loop(result)
+
+    assert ok is False
+    assert "architect_review_loop" in result.completed_stages
+
+
+def test_design_revision_loop_max_zero_bypasses_loop():
+    """When max_design_revisions=0, the loop is bypassed entirely."""
+    orch = _make_orch(max_design_revisions=0)
+    result = _make_result()
+    result.prd = "PRD text"
+    result.design = "initial design"
+
+    reviewer_calls = []
+
+    def fake_architect_reviewer(r):
+        reviewer_calls.append(1)
+        r.design_review = "reviewed"
+        r.design_reviewer_draft = r.design
+        r.design_verdict = "APPROVED"
+
+    def fake_architect(r):
+        r.design = "design"
+        r.modules = []
+
+    with patch.object(orch, "_stage_architect", side_effect=fake_architect), \
+         patch.object(orch, "_stage_architect_reviewer", side_effect=fake_architect_reviewer), \
+         patch.object(orch, "_save_checkpoint"):
+        ok = orch._design_revision_loop(result)
+
+    assert ok is True
+    assert "architect_review_loop" in result.completed_stages
+    assert len(reviewer_calls) == 1  # Only initial pass, no revision loop
+
+
+def test_design_revision_loop_checkpoint_resume_no_duplicate_halt():
+    """Resuming with all rounds already checkpointed should NOT trigger the halt logic again."""
+    from agents.architect_reviewer import ArchitectReviewerAgent
+
+    orch = _make_orch(max_design_revisions=2, stop_design=True)
+    result = _make_result()
+    result.prd = "PRD text"
+    result.design = "initial design"
+    result.design_verdict = ArchitectReviewerAgent.VERDICT_REVISION
+    # Simulate: both rounds already completed but sentinel not yet written
+    result.completed_stages = ["architect", "architect_reviewer", "design_revision_1", "design_revision_2"]
+
+    def fake_architect_reviewer(r):
+        pass  # Should not be called (already checkpointed)
+
+    orch.github = None  # No GitHub in test
+
+    with patch.object(orch, "_stage_architect_reviewer", side_effect=fake_architect_reviewer), \
+         patch.object(orch, "_save_checkpoint"):
+        ok = orch._design_revision_loop(result)
+
+    # Should complete without halting (all rounds were already done)
+    assert ok is True
+    assert "architect_review_loop" in result.completed_stages

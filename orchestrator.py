@@ -977,6 +977,7 @@ class Orchestrator(TestFixLoopMixin):
             self._save_checkpoint(result)
             return True
 
+        any_round_ran = False
         for round_num in range(1, self.max_prd_revisions + 1):
             if result.prd_verdict != PMReviewerAgent.VERDICT_REVISION:
                 break  # Already approved
@@ -986,6 +987,7 @@ class Orchestrator(TestFixLoopMixin):
                 console.print(f"  ⏭️  [dim]PRD revision round {round_num} — skipped (checkpoint)[/dim]")
                 continue
 
+            any_round_ran = True
             # PM rewrites PRD
             console.print(
                 f"  🔄 [yellow]PRD NEEDS REVISION (round {round_num}/{self.max_prd_revisions})"
@@ -1016,22 +1018,23 @@ class Orchestrator(TestFixLoopMixin):
             self._save_checkpoint(result)
         else:
             # for-else: exited without break → max rounds hit, still NEEDS REVISION
-            console.print(
-                f"  ⚠️  [yellow]Max PRD revisions reached ({self.max_prd_revisions}/"
-                f"{self.max_prd_revisions}). "
-                + ("Halting pipeline." if self.stop_on_prd_issues else "Continuing with current best.")
-                + "[/yellow]"
-            )
-            if self.stop_on_prd_issues:
-                if self.github and result.issue_number:
-                    self.github.add_issue_comment(
-                        result.issue_number,
-                        f"⚠️ PRD revision limit reached after {self.max_prd_revisions} rounds. "
-                        f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
-                    )
-                result.completed_stages.append("pm_review_loop")
-                self._save_checkpoint(result)
-                return False
+            if any_round_ran:
+                console.print(
+                    f"  ⚠️  [yellow]Max PRD revisions reached ({self.max_prd_revisions}/"
+                    f"{self.max_prd_revisions}). "
+                    + ("Halting pipeline." if self.stop_on_prd_issues else "Continuing with current best.")
+                    + "[/yellow]"
+                )
+                if self.stop_on_prd_issues:
+                    if self.github and result.issue_number:
+                        self.github.add_issue_comment(
+                            result.issue_number,
+                            f"⚠️ PRD revision limit reached after {self.max_prd_revisions} rounds. "
+                            f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
+                        )
+                    result.completed_stages.append("pm_review_loop")
+                    self._save_checkpoint(result)
+                    return False
 
         if result.prd_verdict != PMReviewerAgent.VERDICT_REVISION:
             console.print(
@@ -1097,6 +1100,7 @@ class Orchestrator(TestFixLoopMixin):
             self._save_checkpoint(result)
             return True
 
+        any_round_ran = False
         for round_num in range(1, self.max_design_revisions + 1):
             if result.design_verdict != ArchitectReviewerAgent.VERDICT_REVISION:
                 break  # Already approved
@@ -1106,6 +1110,7 @@ class Orchestrator(TestFixLoopMixin):
                 console.print(f"  ⏭️  [dim]Design revision round {round_num} — skipped (checkpoint)[/dim]")
                 continue
 
+            any_round_ran = True
             # Architect rewrites design
             console.print(
                 f"  🔄 [yellow]DESIGN NEEDS REVISION (round {round_num}/{self.max_design_revisions})"
@@ -1136,22 +1141,23 @@ class Orchestrator(TestFixLoopMixin):
             self._save_checkpoint(result)
         else:
             # for-else: exited without break → max rounds hit, still NEEDS REVISION
-            console.print(
-                f"  ⚠️  [yellow]Max design revisions reached ({self.max_design_revisions}/"
-                f"{self.max_design_revisions}). "
-                + ("Halting pipeline." if self.stop_on_design_issues else "Continuing with current best.")
-                + "[/yellow]"
-            )
-            if self.stop_on_design_issues:
-                if self.github and result.issue_number:
-                    self.github.add_issue_comment(
-                        result.issue_number,
-                        f"⚠️ Design revision limit reached after {self.max_design_revisions} rounds. "
-                        f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
-                    )
-                result.completed_stages.append("architect_review_loop")
-                self._save_checkpoint(result)
-                return False
+            if any_round_ran:
+                console.print(
+                    f"  ⚠️  [yellow]Max design revisions reached ({self.max_design_revisions}/"
+                    f"{self.max_design_revisions}). "
+                    + ("Halting pipeline." if self.stop_on_design_issues else "Continuing with current best.")
+                    + "[/yellow]"
+                )
+                if self.stop_on_design_issues:
+                    if self.github and result.issue_number:
+                        self.github.add_issue_comment(
+                            result.issue_number,
+                            f"⚠️ Design revision limit reached after {self.max_design_revisions} rounds. "
+                            f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
+                        )
+                    result.completed_stages.append("architect_review_loop")
+                    self._save_checkpoint(result)
+                    return False
 
         if result.design_verdict != ArchitectReviewerAgent.VERDICT_REVISION:
             console.print(
