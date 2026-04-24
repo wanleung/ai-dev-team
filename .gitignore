@@ -17,3 +17,7 @@ logs/
 # Local config overrides (private network settings, never commit)
 config.local.yaml
 **/config.local.yaml
+
+# Active config files — copy from *.example.yaml and customise locally
+config.yaml
+repos.yaml

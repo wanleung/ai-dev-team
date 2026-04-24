@@ -1,0 +1,309 @@
+# AI Software House Configuration
+# Copy this file and edit to match your setup.
+
+# ── LLM Settings ───────────────────────────────────────────────────────────
+llm:
+  # Default model for all agents (used when no per-agent override is set)
+  #
+  # ── GitHub Models API (GITHUB_TOKEN required) ──────────────────────────
+  #   OpenAI   : openai/gpt-4.1, openai/gpt-4.1-mini, openai/gpt-4.1-nano
+  #   Mistral  : mistral-ai/mistral-small-2503
+  #   DeepSeek : deepseek/deepseek-r1
+  #   Meta     : meta-llama-3.1-405b-instruct
+  #
+  # ── Anthropic Claude API (ANTHROPIC_API_KEY required) ──────────────────
+  #   claude-3-5-sonnet-20241022   (fast, smart — recommended)
+  #   claude-3-7-sonnet-20250219   (extended thinking)
+  #   claude-3-5-haiku-20241022    (fastest, cheapest)
+  #   claude-3-opus-20240229       (most capable)
+  #
+  # ── Ollama (local server, no API key needed) ───────────────────────────
+  #   ollama/llama3.2, ollama/qwen2.5-coder, ollama/mistral, etc.
+  #   Set ollama_url below to point at your Ollama instance.
+  #
+  # ── OpenCode CLI (opencode must be installed and authenticated) ─────────
+  #   opencode/<provider>/<model>  e.g. opencode/anthropic/claude-sonnet-4-5
+  #                                     opencode/openai/gpt-4o
+  #                                     opencode/google/gemini-2.0-flash
+  #   OpenCode auto-selects the underlying provider from its own auth config.
+  #   Run `opencode auth login` first. Override binary with OPENCODE_BIN env var.
+  #
+  # ── OpenCode Zen API (direct HTTP, OPENCODE_ZEN_API_KEY required) ──────
+  #   opencode-zen/<model-id>  e.g. opencode-zen/claude-sonnet-4-6
+  #                                 opencode-zen/gpt-5.3-codex
+  #                                 opencode-zen/gemini-3-flash
+  #   Sign up at https://opencode.ai/auth to get your API key.
+  #   Set env var: OPENCODE_ZEN_API_KEY=<your-key>
+  #   Claude models use the Anthropic Messages endpoint (/messages).
+  #   All other models use the OpenAI chat/completions endpoint (supports tool-calling).
+  #   Override base URL with OPENCODE_ZEN_BASE_URL env var.
+  #
+  # ── OpenCode Go plan API (direct HTTP, OPENCODE_ZEN_API_KEY required) ──
+  #   opencode-go/<model-id>   e.g. opencode-go/kimi-k2.5
+  #                                 opencode-go/qwen3.6-plus
+  #                                 opencode-go/glm-5.1
+  #                                 opencode-go/minimax-m2.7
+  #   Same API key as Zen (OPENCODE_ZEN_API_KEY). Get it at https://opencode.ai/auth
+  #   MiniMax models use the Anthropic Messages endpoint (no tool-calling).
+  #   All other Go models use chat/completions — supports tool-calling (fixes Code Reviewer).
+  #   Override base URL with OPENCODE_GO_BASE_URL env var.
+  #
+  # ── NVIDIA NIM API (OpenAI-compatible, NVIDIA_API_KEY required) ──────────
+  #   nvidia-nim/<model-id>    e.g. nvidia-nim/nvidia/glm-4.1-9b-ea
+  #                                 nvidia-nim/meta/llama-3.3-70b-instruct
+  #                                 nvidia-nim/mistralai/mistral-7b-instruct-v0.3
+  #   Set NVIDIA_API_KEY env var. Get your key at https://build.nvidia.com/
+  #   Override base URL with NVIDIA_NIM_BASE_URL env var (default: https://integrate.api.nvidia.com/v1)
+  #
+  # ── GitHub Copilot API (COPILOT_OAUTH_TOKEN or auto-discovered) ───────────
+  #   copilot/<model-id>   e.g. copilot/gpt-4o
+  #                             copilot/claude-sonnet-4.6
+  #                             copilot/gpt-4o-mini
+  #   Auth: set COPILOT_OAUTH_TOKEN=<gho_...> env var, OR the token is
+  #   auto-discovered from ~/.copilot/config.json if you are logged in to
+  #   GitHub Copilot CLI. The backend exchanges the OAuth token for a
+  #   short-lived session token automatically (refreshed every ~30 min).
+  #   OpenAI-compatible — supports tool-calling (code_reviewer, qa_engineer).
+  #
+  # Claude models are auto-detected by name prefix "claude-" and will use
+  # the Anthropic API automatically. No extra config needed.
+  model: "ollama/llama4"
+
+  # ── Ollama-specific settings ───────────────────────────────────────────────
+  ollama_url: "http://localhost:11434"   # URL of your Ollama instance
+
+  # Set to false to suppress chain-of-thought (recommended for qwen3, deepseek-r1)
+  # When false, passes think=false to Ollama API — much faster responses
+  ollama_think: false
+
+  # Set to true to stream tokens over HTTP (recommended when Ollama is on a remote host)
+  # Prevents TCP idle timeouts on NAT/firewall between this machine and Ollama
+  ollama_stream: true
+
+  # Per-agent model overrides — mix backends freely per agent.
+  # Example: use Claude for reasoning-heavy roles, GPT-4.1-mini for repetitive ones.
+  overrides:
+    # Each override can be a model string (simple) or a dict (per-agent settings):
+    #
+    # Simple form (model name only):
+    #   architect: "ollama/qwen3.6"
+    #
+    # Dict form (model + per-agent Ollama settings):
+    #   architect:
+    #     model: "ollama/qwen3.6"
+    #     ollama_think: true    # override global ollama_think for this agent
+    #     ollama_stream: false  # override global ollama_stream for this agent
+    #
+    # ── Copilot backend examples ──────────────────────────────────────────
+    # product_manager: "copilot/gpt-4o"
+    # architect: "copilot/claude-sonnet-4.6"
+    # engineer: "copilot/gpt-4o-mini"
+    # ─────────────────────────────────────────────────────────────────────
+    product_manager: "openai/gpt-4.1"          # or "claude-3-5-sonnet-20241022"
+    pm_reviewer: "openai/gpt-4.1"
+    architect: "openai/gpt-4.1"                # or "claude-3-5-sonnet-20241022"
+    architect_reviewer: "openai/gpt-4.1"
+    engineer: "openai/gpt-4.1-mini"            # Code writing — runs many times
+    code_reviewer: "openai/gpt-4.1"
+    qa_planner: "openai/gpt-4.1"
+    qa_engineer: "openai/gpt-4.1-mini"
+    deployment_tester: "openai/gpt-4.1-mini"
+    summariser: "openai/gpt-4.1"
+    memory_bank_updater: "openai/gpt-4.1"
+
+# ── GitHub Settings ─────────────────────────────────────────────────────────
+github:
+  # Target repository in 'owner/repo' format
+  # This is where the team will create issues, branches, PRs
+  repo: "your-username/your-repo"
+
+  # Branch prefix for engineer feature branches
+  branch_prefix: "feature/agent"
+
+# ── Team Composition ────────────────────────────────────────────────────────
+team:
+  # Number of parallel Engineer agents (each handles a separate module)
+  num_engineers: 1
+
+  # Enable/disable specific agents
+  agents:
+    product_manager: true
+    pm_reviewer: true
+    architect: true
+    engineer: true
+    code_reviewer: true
+    qa_planner: true
+    qa_engineer: true
+    deployment_tester: true
+
+# ── Pipeline Settings ────────────────────────────────────────────────────────
+pipeline:
+  # Directory where generated code workspace will be written locally
+  workspace_dir: "./workspace"
+
+  # Stop the pipeline if the code reviewer requests changes
+  stop_on_review_issues: false
+
+  # Maximum retries per agent call on API failure
+  max_retries: 2
+
+  # Maximum automated revision rounds per PR (0 = disabled)
+  max_revisions: 3
+
+  # Revision loop rounds for PRD (PM ↔ PM Reviewer back-and-forth). 0 = disable loop.
+  max_prd_revisions: 3
+  # Revision loop rounds for System Design (Architect ↔ Architect Reviewer). 0 = disable.
+  max_design_revisions: 3
+  # If true, halt the pipeline when max PRD revisions hit without APPROVED.
+  stop_on_prd_issues: false
+  # If true, halt the pipeline when max Design revisions hit without APPROVED.
+  stop_on_design_issues: false
+
+  # API retry settings — increase retry_delay if using a rate-limited backend
+  # (e.g. opencode-go plan which throttles frequent calls)
+  # retry_delay: base wait in seconds before first retry; doubles each attempt
+  #   e.g. retry_delay: 30  →  waits 30s, 60s, 120s, 240s
+  # max_api_retries: total attempts per call (including the first)
+  retry_delay: 300
+  max_api_retries: 5
+
+  # Fixed pause (seconds) before every LLM API call — prevents "too frequent"
+  # throttling. Set to 5–10 for opencode-go Go plan.
+  inter_call_delay: 0
+
+  # Auto-fix retry loop: maximum engineer fix attempts when tests fail.
+  # Set to 0 to disable. Applies to both unit tests and deployment tests.
+  max_test_retries: 5
+  max_deploy_retries: 5
+
+# ── Repo Context Awareness ──────────────────────────────────────────────────
+# Controls how the pipeline reads the target repo's existing code structure.
+#
+# large_repo_threshold: repos with >= this many files are considered "large".
+#   Large repos: only top-2-level tree injected into prompts; RAG auto-index triggered.
+#   Small repos: full file tree injected into prompts.
+repo_context:
+  large_repo_threshold: 50
+
+# ── Skills System ────────────────────────────────────────────────────────────
+skills:
+  # Skills that are always loaded regardless of project context
+  always_load: []
+
+  # GitHub repo for the skills marketplace (e.g. "myorg/skills-repo")
+  marketplace_repo: ""
+
+  # Local directory for caching marketplace skills (defaults to ~/.ai-software-house/skills/)
+  cache_dir: ""
+
+  # Timeout in seconds for marketplace HTTP requests
+  fetch_timeout: 5
+
+# ── MCP Servers ────────────────────────────────────────────────────────────────
+# Configure external MCP servers whose tools will be available to all agents
+# that support tool-calling (Code Reviewer, QA Planner).
+# Leave servers as an empty list (default) to disable MCP.
+#
+# Supported types: stdio (local process) and sse (remote HTTP/SSE URL).
+# Env vars in values are expanded: ${GITHUB_TOKEN} → value of $GITHUB_TOKEN.
+#
+# Example:
+#   mcp:
+#     servers:
+#       - name: github
+#         type: stdio
+#         command: npx
+#         args: ["-y", "@modelcontextprotocol/server-github"]
+#         env:
+#           GITHUB_TOKEN: "${GITHUB_TOKEN}"
+#
+#       - name: search
+#         type: sse
+#         url: "https://mcp.example.com/sse"
+#         headers:
+#           Authorization: "Bearer ${MCP_API_KEY}"
+mcp:
+  servers: 
+   - name: google_search
+     type: http
+     url: "http://localhost:8000/mcp"
+
+    # RAG MCP server — enables search_codebase, search_memory, search_docs tools.
+    # Start with: cd rag-mcp && docker compose up -d
+    # Apply migration: docker exec <container> psql $DATABASE_URL -f migrations/001_create_rag_embeddings.sql
+    # Then uncomment the entry below:
+    # - name: rag
+    #   type: http
+    #   url: "http://localhost:8001/mcp"
+
+# ── Framework Docs Awareness ───────────────────────────────────────────────────
+framework_docs:
+  check_agents_md: true   # walk up project dir looking for AGENTS.md / CLAUDE.md
+  frameworks:
+    - name: nextjs
+      detect:
+        - "package.json"
+        - "next.config.*"
+      summary: |
+        This project uses Next.js (App Router). Key conventions:
+        - Use the App Router (`app/` directory), not Pages Router.
+        - Server Components by default; add `"use client"` only when needed.
+        - Data fetching: use `fetch()` in Server Components or React `use()` hook.
+        - Routing: file-based via `app/` directory structure.
+        - Refer to bundled docs at `node_modules/next/dist/docs/` if present.
+      bundled_docs_path: "node_modules/next/dist/docs"
+
+    - name: nuxt
+      detect:
+        - "nuxt.config.*"
+      summary: |
+        This project uses Nuxt 3. Key conventions:
+        - Auto-imports for composables, components, and utils.
+        - `server/` for API routes; `pages/` for file-based routing.
+        - `useFetch` / `useAsyncData` for data fetching.
+        - Nitro server engine; `useRuntimeConfig()` for env vars.
+
+    - name: react-native
+      detect:
+        - "app.json"
+        - "metro.config.*"
+      summary: |
+        This project uses React Native. Key conventions:
+        - Use functional components with hooks.
+        - Navigation: React Navigation (`@react-navigation/native`).
+        - Styling: `StyleSheet.create()`; no CSS.
+        - Platform branching: `Platform.OS` or `.ios.tsx` / `.android.tsx` file suffixes.
+
+    - name: flutter
+      detect:
+        - "pubspec.yaml"
+      summary: |
+        This project uses Flutter/Dart. Key conventions:
+        - State management: Riverpod (watch providers in build, use ref.read in callbacks).
+        - Local DB: Drift (code-gen required after schema changes — run build_runner).
+        - Navigation: GoRouter.
+        - After editing pubspec.yaml run `flutter pub get`.
+        - After model/provider changes run `flutter pub run build_runner build --delete-conflicting-outputs`.
+
+    - name: fastapi
+      detect:
+        - "requirements*.txt"
+        - "pyproject.toml"
+      summary: |
+        This project uses FastAPI. Key conventions:
+        - Route handlers are async; use `async def`.
+        - Pydantic models for request/response validation.
+        - Dependency injection via `Depends()`.
+        - Use `APIRouter` for modular routes.
+        - Alembic for database migrations.
+
+    - name: django
+      detect:
+        - "manage.py"
+      summary: |
+        This project uses Django. Key conventions:
+        - MTV pattern (Models, Templates, Views).
+        - ORM: `Model.objects.filter(...)` / `select_related` / `prefetch_related`.
+        - Class-based views preferred; `APIView` for DRF endpoints.
+        - `settings.py` for config; use `django-environ` for env vars.
+        - Run `python manage.py migrate` after model changes.
