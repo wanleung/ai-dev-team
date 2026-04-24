@@ -130,3 +130,156 @@ def test_run_revision_architect_agent():
     assert "Draft Design by reviewer" in captured["prompt"]
     assert "Revised Design" in result["design"]
     assert len(result["modules"]) >= 1
+
+
+# ── helpers ────────────────────────────────────────────────────────────────
+
+def _make_orch(max_prd=3, stop=False):
+    """Minimal orchestrator for loop testing."""
+    o = Orchestrator.__new__(Orchestrator)
+    o.max_prd_revisions = max_prd
+    o.max_design_revisions = 3
+    o.stop_on_prd_issues = stop
+    o.stop_on_design_issues = False
+    o.github = None
+    o.target_github = None
+    o._github_token = "tok"
+    # Stub agents
+    o.pm = MagicMock()
+    o.pm_reviewer = MagicMock()
+    o.architect = MagicMock()
+    o.architect_reviewer = MagicMock()
+    return o
+
+
+def _make_result(stages=None):
+    r = PipelineResult(requirement="build a todo app")
+    r.prd = "# Initial PRD"
+    r.project_name = "Todo App"
+    r.completed_stages = list(stages or [])
+    return r
+
+
+# ── PRD revision loop ──────────────────────────────────────────────────────
+
+def test_prd_revision_loop_approves_on_round_2():
+    """Reviewer returns NEEDS_REVISION on first review, APPROVED on round 2."""
+    o = _make_orch()
+    r = _make_result(stages=["pm"])
+
+    # First pm_reviewer call → NEEDS REVISION
+    o.pm_reviewer.run.side_effect = [
+        {
+            "review": "Missing AC.",
+            "verdict": PMReviewerAgent.VERDICT_REVISION,
+            "needs_revision": True,
+            "revised_prd": "# Reviewer Draft v1",
+            "revised_project_name": "Todo App",
+        },
+        # After PM rewrites, second review → APPROVED
+        {
+            "review": "Looks good.",
+            "verdict": PMReviewerAgent.VERDICT_APPROVED,
+            "needs_revision": False,
+            "revised_prd": None,
+            "revised_project_name": "Todo App",
+        },
+    ]
+    o.pm.run_revision.return_value = {
+        "prd": "# Revised PRD v1",
+        "project_name": "Todo App",
+        "issue_number": None,
+        "issue_url": None,
+    }
+
+    with patch.object(o, "_save_checkpoint"):
+        ok = o._prd_revision_loop(r, "build a todo app")
+
+    assert ok is True
+    assert r.prd_revision_count == 1
+    assert "pm_review_loop" in r.completed_stages
+    assert r.prd == "# Revised PRD v1"
+
+
+def test_prd_revision_loop_max_rounds_continue():
+    """3 NEEDS_REVISION rounds → loop completes, pipeline continues, prd_revision_count == 3."""
+    o = _make_orch(max_prd=3, stop=False)
+    r = _make_result(stages=["pm"])
+
+    needs_revision_resp = {
+        "review": "Still not good.",
+        "verdict": PMReviewerAgent.VERDICT_REVISION,
+        "needs_revision": True,
+        "revised_prd": "# Reviewer Draft",
+        "revised_project_name": "Todo App",
+    }
+    o.pm_reviewer.run.side_effect = [needs_revision_resp] * 4  # initial + 3 rounds
+    o.pm.run_revision.return_value = {
+        "prd": "# Revised PRD",
+        "project_name": "Todo App",
+        "issue_number": None,
+        "issue_url": None,
+    }
+
+    with patch.object(o, "_save_checkpoint"):
+        ok = o._prd_revision_loop(r, "build a todo app")
+
+    assert ok is True  # continues (stop_on_prd_issues=False)
+    assert r.prd_revision_count == 3
+    assert "pm_review_loop" in r.completed_stages
+
+
+def test_prd_revision_loop_max_rounds_halt():
+    """stop_on_prd_issues=True → pipeline returns False after max rounds."""
+    o = _make_orch(max_prd=2, stop=True)
+    r = _make_result(stages=["pm"])
+
+    needs_revision_resp = {
+        "review": "Needs work.",
+        "verdict": PMReviewerAgent.VERDICT_REVISION,
+        "needs_revision": True,
+        "revised_prd": "# Draft",
+        "revised_project_name": "Todo App",
+    }
+    o.pm_reviewer.run.side_effect = [needs_revision_resp] * 3
+    o.pm.run_revision.return_value = {
+        "prd": "# Revised",
+        "project_name": "Todo App",
+        "issue_number": None,
+        "issue_url": None,
+    }
+
+    with patch.object(o, "_save_checkpoint"):
+        ok = o._prd_revision_loop(r, "build a todo app")
+
+    assert ok is False
+
+
+def test_prd_revision_loop_checkpoint_resume():
+    """Round 1 already in completed_stages → it is skipped on resume."""
+    o = _make_orch(max_prd=3, stop=False)
+    r = _make_result(stages=["pm", "pm_reviewer", "prd_revision_1"])
+    r.prd_verdict = PMReviewerAgent.VERDICT_REVISION  # still needs revision
+
+    # Only one more round should run (round 2)
+    approved_resp = {
+        "review": "LGTM.",
+        "verdict": PMReviewerAgent.VERDICT_APPROVED,
+        "needs_revision": False,
+        "revised_prd": None,
+        "revised_project_name": "Todo App",
+    }
+    o.pm_reviewer.run.return_value = approved_resp
+    o.pm.run_revision.return_value = {
+        "prd": "# Revised v2",
+        "project_name": "Todo App",
+        "issue_number": None,
+        "issue_url": None,
+    }
+
+    with patch.object(o, "_save_checkpoint"):
+        ok = o._prd_revision_loop(r, "build a todo app")
+
+    # run_revision called once (round 2 only, not round 1)
+    assert o.pm.run_revision.call_count == 1
+    assert ok is True
