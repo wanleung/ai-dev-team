@@ -124,6 +124,11 @@ class PipelineResult:
     test_fix_history: list[str] = field(default_factory=list)
     deploy_retry_count: int = 0
     deploy_fix_history: list[str] = field(default_factory=list)
+    # PRD/Design revision loop tracking
+    prd_revision_count: int = 0
+    design_revision_count: int = 0
+    prd_reviewer_draft: str = ""      # reviewer's suggested PRD (for PM.run_revision)
+    design_reviewer_draft: str = ""   # reviewer's suggested design (for Architect.run_revision)
 
     def to_dict(self) -> dict:
         return {
@@ -161,6 +166,10 @@ class PipelineResult:
             "test_fix_history": self.test_fix_history,
             "deploy_retry_count": self.deploy_retry_count,
             "deploy_fix_history": self.deploy_fix_history,
+            "prd_revision_count": self.prd_revision_count,
+            "design_revision_count": self.design_revision_count,
+            "prd_reviewer_draft": self.prd_reviewer_draft,
+            "design_reviewer_draft": self.design_reviewer_draft,
         }
 
     @classmethod
@@ -175,7 +184,9 @@ class PipelineResult:
                     "pr_number", "pr_url", "branch", "completed_stages",
                     "pending_clarification", "clarification_history",
                     "test_retry_count", "test_fix_history",
-                    "deploy_retry_count", "deploy_fix_history"]:
+                    "deploy_retry_count", "deploy_fix_history",
+                    "prd_revision_count", "design_revision_count",
+                    "prd_reviewer_draft", "design_reviewer_draft"]:
             setattr(r, key, data.get(key, getattr(r, key)))
         return r
 
