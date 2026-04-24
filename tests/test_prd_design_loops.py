@@ -67,3 +67,32 @@ def test_from_config_reads_new_keys(tmp_path, monkeypatch):
     assert o.max_design_revisions == 1
     assert o.stop_on_prd_issues is True
     assert o.stop_on_design_issues is False
+
+
+def test_run_revision_pm_agent():
+    """ProductManagerAgent.run_revision() sends original PRD, review, and draft to the LLM."""
+    from agents.product_manager import ProductManagerAgent
+
+    agent = ProductManagerAgent.__new__(ProductManagerAgent)
+    captured = {}
+
+    def fake_call(prompt):
+        captured["prompt"] = prompt
+        return "# Revised PRD\n## Project Name\nTodo App\n## Overview\nFixed version."
+
+    agent.call = fake_call
+
+    result = agent.run_revision(
+        original_prd="# Original PRD",
+        review="Missing acceptance criteria.",
+        draft_revision="# Draft PRD by reviewer",
+        requirement="Build a todo app",
+        project_name="Todo App",
+    )
+
+    assert "prd" in result
+    assert "project_name" in result
+    assert "Original PRD" in captured["prompt"]
+    assert "Missing acceptance criteria" in captured["prompt"]
+    assert "Draft PRD by reviewer" in captured["prompt"]
+    assert "Revised PRD" in result["prd"]
