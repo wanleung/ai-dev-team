@@ -782,31 +782,13 @@ class Orchestrator(TestFixLoopMixin):
         else:
             console.print("  ⏭️  [dim]PRD revision loop — skipped (checkpoint)[/dim]")
 
-        # ── Stage 2: Architect ────────────────────────────────────────────────
-        if "architect" not in result.completed_stages:
-            try:
-                self._run_stage("🏗️  Architect", "Designing system architecture...", result, lambda: self._stage_architect(result))
-            except ClarificationNeeded as exc:
-                self._pause_for_clarification(result, "architect", exc.questions)
+        # ── Stage 2: Architect + Architect Reviewer revision loop ─────────────
+        if "architect_review_loop" not in result.completed_stages:
+            ok = self._design_revision_loop(result)
+            if not ok:
                 return self._finish(result, start_time)
-            if result.errors:
-                self._save_checkpoint(result)
-                return self._finish(result, start_time)
-            result.completed_stages.append("architect")
-            self._save_checkpoint(result)
         else:
-            console.print("  ⏭️  [dim]🏗️  Architect — skipped (checkpoint)[/dim]")
-
-        # ── Stage 2b: Architect Reviewer ──────────────────────────────────────
-        if "architect_reviewer" not in result.completed_stages:
-            self._run_stage("🔎 Architect Reviewer", "Reviewing system design...", result, lambda: self._stage_architect_reviewer(result))
-            if result.errors:
-                self._save_checkpoint(result)
-                return self._finish(result, start_time)
-            result.completed_stages.append("architect_reviewer")
-            self._save_checkpoint(result)
-        else:
-            console.print("  ⏭️  [dim]🔎 Architect Reviewer — skipped (checkpoint)[/dim]")
+            console.print("  ⏭️  [dim]Design revision loop — skipped (checkpoint)[/dim]")
 
         # ── Auto-index repo into RAG (before Engineer) ───────────────────────
         if self.repo_auto_indexer and self.target_github and "rag_index" not in result.completed_stages:
@@ -1060,8 +1042,128 @@ class Orchestrator(TestFixLoopMixin):
         self._save_checkpoint(result)
         return True
 
+    def _stage_arch_revision(self, result: PipelineResult, round_num: int) -> None:
+        """Ask ArchitectAgent to revise the design based on reviewer feedback."""
+        rev_result = self.architect.run_revision(
+            design=result.design,
+            prd=result.prd,
+            review=result.design_review or "",
+            draft_revision=result.design_reviewer_draft or "",
+        )
+        result.design = rev_result["design"]
+        if rev_result.get("modules"):
+            result.modules = rev_result["modules"]
+        result.design_revision_count = round_num
+
+    def _design_revision_loop(self, result: PipelineResult) -> bool:
+        """Run Architect + Architect Reviewer in a feedback loop, up to max_design_revisions rounds.
+
+        Returns True if pipeline should continue, False if it should halt.
+        """
+        # Step 1: Architect
+        if "architect" not in result.completed_stages:
+            try:
+                self._run_stage("🏗️  Architect", "Designing system architecture...", result, lambda: self._stage_architect(result))
+            except ClarificationNeeded as exc:
+                self._pause_for_clarification(result, "architect", exc.questions)
+                return False
+            if result.errors:
+                self._save_checkpoint(result)
+                return False
+            result.completed_stages.append("architect")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]🏗️  Architect — skipped (checkpoint)[/dim]")
+
+        # Step 2: Initial Architect Reviewer pass
+        if "architect_reviewer" not in result.completed_stages:
+            self._run_stage(
+                "🔎 Architect Reviewer",
+                "Reviewing system design...",
+                result,
+                lambda: self._stage_architect_reviewer(result),
+            )
+            if result.errors:
+                self._save_checkpoint(result)
+                return False
+            result.completed_stages.append("architect_reviewer")
+            self._save_checkpoint(result)
+        else:
+            console.print("  ⏭️  [dim]🔎 Architect Reviewer — skipped (checkpoint)[/dim]")
+
+        # Step 3: Revision loop (skip if disabled)
+        if self.max_design_revisions == 0:
+            result.completed_stages.append("architect_review_loop")
+            self._save_checkpoint(result)
+            return True
+
+        for round_num in range(1, self.max_design_revisions + 1):
+            if result.design_verdict != ArchitectReviewerAgent.VERDICT_REVISION:
+                break  # Already approved
+
+            key = f"design_revision_{round_num}"
+            if key in result.completed_stages:
+                console.print(f"  ⏭️  [dim]Design revision round {round_num} — skipped (checkpoint)[/dim]")
+                continue
+
+            # Architect rewrites design
+            console.print(
+                f"  🔄 [yellow]DESIGN NEEDS REVISION (round {round_num}/{self.max_design_revisions})"
+                f" — sending back to Architect...[/yellow]"
+            )
+            self._run_stage(
+                "🏗️  Architect",
+                f"Revising design based on reviewer feedback (round {round_num})...",
+                result,
+                lambda rn=round_num: self._stage_arch_revision(result, rn),
+            )
+            if result.errors:
+                self._save_checkpoint(result)
+                return False
+
+            # Reviewer re-checks
+            self._run_stage(
+                "🔎 Architect Reviewer",
+                f"Re-reviewing revised design (round {round_num})...",
+                result,
+                lambda: self._stage_architect_reviewer(result),
+            )
+            if result.errors:
+                self._save_checkpoint(result)
+                return False
+
+            result.completed_stages.append(key)
+            self._save_checkpoint(result)
+        else:
+            # for-else: exited without break → max rounds hit, still NEEDS REVISION
+            console.print(
+                f"  ⚠️  [yellow]Max design revisions reached ({self.max_design_revisions}/"
+                f"{self.max_design_revisions}). "
+                + ("Halting pipeline." if self.stop_on_design_issues else "Continuing with current best.")
+                + "[/yellow]"
+            )
+            if self.stop_on_design_issues:
+                if self.github and result.issue_number:
+                    self.github.add_issue_comment(
+                        result.issue_number,
+                        f"⚠️ Design revision limit reached after {self.max_design_revisions} rounds. "
+                        f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
+                    )
+                result.completed_stages.append("architect_review_loop")
+                self._save_checkpoint(result)
+                return False
+
+        if result.design_verdict != ArchitectReviewerAgent.VERDICT_REVISION:
+            console.print(
+                f"  ✅ [green]DESIGN APPROVED (round {result.design_revision_count})[/green]"
+            )
+
+        result.completed_stages.append("architect_review_loop")
+        self._save_checkpoint(result)
+        return True
+
     def _stage_architect_reviewer(self, result: PipelineResult) -> None:
-        """Review the Architect's design. If revision needed, update design + modules."""
+        """Review the Architect's design. Store draft; only self-patch when max_design_revisions == 0."""
         if self.github and result.issue_number:
             rev_result = self.architect_reviewer.run_with_github(
                 result.design, result.prd, result.project_name, self.github, result.issue_number
@@ -1071,9 +1173,10 @@ class Orchestrator(TestFixLoopMixin):
 
         result.design_review = rev_result["review"]
         result.design_verdict = rev_result["verdict"]
+        result.design_reviewer_draft = rev_result.get("revised_design") or result.design
 
-        # If revision was produced, use the updated design and modules for engineering
-        if rev_result.get("revised_design"):
+        if self.max_design_revisions == 0 and rev_result.get("revised_design"):
+            # Legacy single-pass: apply reviewer's draft directly
             console.print(
                 f"  🔄 [yellow]Design revised by reviewer "
                 f"({rev_result['verdict']})[/yellow]"

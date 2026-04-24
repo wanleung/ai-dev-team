@@ -63,6 +63,21 @@ watchers:
       - ai-fix
     doc_label: documentation
     enabled: true
+
+  - tracker_repo: wanleung/mybooking
+    default_target: ~
+    feature_label:
+      - feature-request
+      - ai-build
+      - enhancement
+      - ai-feature
+    bug_label:
+      - bug
+      - ai-fix
+    doc_label: documentation
+    enabled: true
+
+
 settings:
   # Maximum parallel pipeline runs (one per issue)
   max_parallel: 3
