@@ -1,0 +1,33 @@
+<h2>What should RAG retrieve from?</h2>
+<p class="subtitle">This defines the knowledge base — what the agents search when generating code, plans, or reviews</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Your Codebase</h3>
+      <p>Index existing source files so the Engineer and Architect agents can find relevant code, patterns, and APIs before generating new code. Best for projects building on top of an existing repo.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Past Pipeline Runs (Memory)</h3>
+      <p>Semantically search past PRDs, designs, and summaries stored in the MemoryStore. Agents recall what worked before. Best for teams running many pipeline cycles and wanting institutional memory.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>External Docs / Knowledge Base</h3>
+      <p>Index external documentation (API docs, internal wikis, architecture guides) so agents reference authoritative specs rather than hallucinating. Best for domain-specific or regulated projects.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="d" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>All of the Above</h3>
+      <p>A unified retrieval layer that indexes codebase + past runs + external docs. Agents query a single endpoint and get ranked results from all sources. Most powerful, most complex to set up.</p>
+    </div>
+  </div>
+</div>

@@ -169,9 +169,12 @@ def test_orchestrator_injects_tree_into_architect_prompt():
         result.completed_stages.append("pm_review_loop")
         return True
 
+    def mock_design_loop(result):
+        result.completed_stages.append("architect_review_loop")
+        return True
+
     with patch.object(orch, "_prd_revision_loop", side_effect=mock_prd_loop), \
-         patch.object(orch, "_stage_architect"), \
-         patch.object(orch, "_stage_architect_reviewer"), \
+         patch.object(orch, "_design_revision_loop", side_effect=mock_design_loop), \
          patch.object(orch, "_stage_engineer"), \
          patch.object(orch, "_stage_reviewer"), \
          patch.object(orch, "_stage_qa_planner"), \
@@ -180,7 +183,8 @@ def test_orchestrator_injects_tree_into_architect_prompt():
          patch.object(orch, "_stage_deployment_tester"), \
          patch.object(orch, "_stage_deploy_fix_loop"), \
          patch.object(orch, "_stage_summary", create=True), \
-         patch.object(orch, "_stage_memory_update", create=True):
+         patch.object(orch, "_stage_memory_update", create=True), \
+         patch.object(orch.summariser, "summarise", return_value="summary"):
         orch.run("Add login feature")
 
     assert "## Repo File Tree" in (orch.architect.system_prompt or "")
@@ -199,9 +203,12 @@ def test_orchestrator_no_injection_when_loader_absent():
         result.completed_stages.append("pm_review_loop")
         return True
 
+    def mock_design_loop(result):
+        result.completed_stages.append("architect_review_loop")
+        return True
+
     with patch.object(orch, "_prd_revision_loop", side_effect=mock_prd_loop), \
-         patch.object(orch, "_stage_architect"), \
-         patch.object(orch, "_stage_architect_reviewer"), \
+         patch.object(orch, "_design_revision_loop", side_effect=mock_design_loop), \
          patch.object(orch, "_stage_engineer"), \
          patch.object(orch, "_stage_reviewer"), \
          patch.object(orch, "_stage_qa_planner"), \
@@ -210,7 +217,8 @@ def test_orchestrator_no_injection_when_loader_absent():
          patch.object(orch, "_stage_deployment_tester"), \
          patch.object(orch, "_stage_deploy_fix_loop"), \
          patch.object(orch, "_stage_summary", create=True), \
-         patch.object(orch, "_stage_memory_update", create=True):
+         patch.object(orch, "_stage_memory_update", create=True), \
+         patch.object(orch.summariser, "summarise", return_value="summary"):
         orch.run("Add login feature")
 
     assert orch.architect.system_prompt == original_prompt
@@ -239,9 +247,12 @@ def test_orchestrator_tree_injection_is_idempotent():
         result.completed_stages.append("pm_review_loop")
         return True
 
+    def mock_design_loop(result):
+        result.completed_stages.append("architect_review_loop")
+        return True
+
     stage_names = [
-        "_stage_architect",
-        "_stage_architect_reviewer", "_stage_engineer", "_stage_reviewer",
+        "_stage_engineer", "_stage_reviewer",
         "_stage_qa_planner", "_stage_qa", "_stage_test_fix_loop",
         "_stage_deployment_tester", "_stage_deploy_fix_loop",
         "_stage_summary", "_stage_memory_update",
@@ -249,7 +260,9 @@ def test_orchestrator_tree_injection_is_idempotent():
 
     def run_once():
         patches = [patch.object(orch, "_prd_revision_loop", side_effect=mock_prd_loop)]
+        patches.append(patch.object(orch, "_design_revision_loop", side_effect=mock_design_loop))
         patches.extend([patch.object(orch, name, create=True) for name in stage_names])
+        patches.append(patch.object(orch.summariser, "summarise", return_value="summary"))
         with contextlib.ExitStack() as stack:
             for p in patches:
                 stack.enter_context(p)
@@ -308,9 +321,12 @@ def test_orchestrator_calls_auto_index_when_rag_configured():
         result.completed_stages.append("pm_review_loop")
         return True
 
+    def mock_design_loop(result):
+        result.completed_stages.append("architect_review_loop")
+        return True
+
     with patch.object(orch, "_prd_revision_loop", side_effect=mock_prd_loop), \
-         patch.object(orch, "_stage_architect"), \
-         patch.object(orch, "_stage_architect_reviewer"), \
+         patch.object(orch, "_design_revision_loop", side_effect=mock_design_loop), \
          patch.object(orch, "_stage_engineer"), \
          patch.object(orch, "_stage_reviewer"), \
          patch.object(orch, "_stage_qa_planner"), \
@@ -319,7 +335,8 @@ def test_orchestrator_calls_auto_index_when_rag_configured():
          patch.object(orch, "_stage_deployment_tester"), \
          patch.object(orch, "_stage_deploy_fix_loop"), \
          patch.object(orch, "_stage_summary", create=True), \
-         patch.object(orch, "_stage_memory_update", create=True):
+         patch.object(orch, "_stage_memory_update", create=True), \
+         patch.object(orch.summariser, "summarise", return_value="summary"):
         orch.run("Add login feature")
 
     orch.repo_auto_indexer.index.assert_called_once()
