@@ -1048,10 +1048,11 @@ class Orchestrator(TestFixLoopMixin):
     def _stage_arch_revision(self, result: PipelineResult, round_num: int) -> None:
         """Ask ArchitectAgent to revise the design based on reviewer feedback."""
         rev_result = self.architect.run_revision(
-            design=result.design,
+            original_design=result.design,
             prd=result.prd,
             review=result.design_review or "",
             draft_revision=result.design_reviewer_draft or "",
+            project_name=result.project_name or "",
         )
         result.design = rev_result["design"]
         if rev_result.get("modules"):
