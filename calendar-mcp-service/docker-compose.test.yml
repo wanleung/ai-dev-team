@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  calendar-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - TESTING=true
+      - DEFAULT_PROVIDER=google
+      - GOOGLE_CLIENT_ID=test-client-id
+      - GOOGLE_CLIENT_SECRET=test-client-secret
+      - OUTLOOK_CLIENT_ID=test-outlook-client-id
+      - OUTLOOK_CLIENT_SECRET=test-outlook-client-secret
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s

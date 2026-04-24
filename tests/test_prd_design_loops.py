@@ -134,11 +134,11 @@ def test_run_revision_architect_agent():
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def _make_orch(max_prd=3, stop=False):
+def _make_orch(max_prd=3, stop=False, max_design_revisions=3):
     """Minimal orchestrator for loop testing."""
     o = Orchestrator.__new__(Orchestrator)
     o.max_prd_revisions = max_prd
-    o.max_design_revisions = 3
+    o.max_design_revisions = max_design_revisions
     o.stop_on_prd_issues = stop
     o.stop_on_design_issues = False
     o.github = None
@@ -283,3 +283,43 @@ def test_prd_revision_loop_checkpoint_resume():
     # run_revision called once (round 2 only, not round 1)
     assert o.pm.run_revision.call_count == 1
     assert ok is True
+
+
+def test_design_revision_loop_approves_on_round_1():
+    """Loop exits after round 1 if reviewer approves on re-check."""
+    from agents.architect_reviewer import ArchitectReviewerAgent
+
+    orch = _make_orch(max_design_revisions=3)
+    result = _make_result()
+    result.prd = "PRD text"
+    result.design = "initial design"
+
+    call_count = {"n": 0}
+
+    def fake_architect_reviewer(r):
+        call_count["n"] += 1
+        r.design_review = "looks good"
+        r.design_reviewer_draft = r.design
+        if call_count["n"] == 1:
+            r.design_verdict = ArchitectReviewerAgent.VERDICT_REVISION
+        else:
+            r.design_verdict = "APPROVED"
+
+    def fake_architect(r):
+        r.design = "revised design"
+        r.modules = [{"name": "module1", "description": "desc"}]
+
+    def fake_arch_revision(r, rn):
+        r.design = f"revised design round {rn}"
+        r.design_revision_count = rn
+
+    with patch.object(orch, "_stage_architect", side_effect=fake_architect), \
+         patch.object(orch, "_stage_architect_reviewer", side_effect=fake_architect_reviewer), \
+         patch.object(orch, "_stage_arch_revision", side_effect=fake_arch_revision), \
+         patch.object(orch, "_save_checkpoint"):
+        ok = orch._design_revision_loop(result)
+
+    assert ok is True
+    assert "architect_review_loop" in result.completed_stages
+    assert call_count["n"] == 2  # initial + 1 re-review
+    assert result.design_revision_count == 1

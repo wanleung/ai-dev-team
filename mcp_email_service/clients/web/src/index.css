@@ -1,0 +1,367 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+  color: #213547;
+  background-color: #f5f5f5;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 0;
+  border-bottom: 1px solid #ddd;
+  margin-bottom: 1rem;
+}
+
+.app-header h1 {
+  font-size: 1.5rem;
+}
+
+.app-header nav button {
+  background: none;
+  border: none;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-size: 1rem;
+  color: #666;
+}
+
+.app-header nav button.active {
+  color: #213547;
+  border-bottom: 2px solid #213547;
+}
+
+.app-main {
+  min-height: 60vh;
+}
+
+.email-view {
+  display: flex;
+  gap: 1rem;
+  height: 70vh;
+}
+
+.email-view-sidebar {
+  width: 350px;
+  min-width: 250px;
+  overflow-y: auto;
+  border-right: 1px solid #ddd;
+  padding-right: 1rem;
+}
+
+.email-view-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.email-search-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.email-search-form input {
+  flex: 1;
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+.email-search-form button {
+  padding: 0.5rem 1rem;
+  background: #213547;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.email-list {
+  list-style: none;
+}
+
+.email-list-item {
+  padding: 0.75rem;
+  border-bottom: 1px solid #eee;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.email-list-item:hover {
+  background: #f0f0f0;
+}
+
+.email-list-item.selected {
+  background: #e0e7ff;
+}
+
+.email-list-item.unread {
+  font-weight: 600;
+}
+
+.email-list-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 0.25rem;
+}
+
+.email-sender {
+  font-size: 0.9rem;
+}
+
+.email-date {
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.email-subject {
+  font-size: 0.85rem;
+  color: #444;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.email-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.email-actions button {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  background: #e8e8e8;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.attachment-badge {
+  font-size: 0.7rem;
+  color: #888;
+  background: #f0f0f0;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+}
+
+.email-detail {
+  padding: 1rem;
+}
+
+.email-detail-header h2 {
+  margin-bottom: 0.5rem;
+}
+
+.email-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+  color: #555;
+  margin-bottom: 1rem;
+}
+
+.email-attachments {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: #f9f9f9;
+  border-radius: 4px;
+}
+
+.email-attachments h3 {
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+}
+
+.email-attachments ul {
+  list-style: none;
+}
+
+.email-attachments li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.25rem 0;
+}
+
+.email-attachments button {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.8rem;
+  background: #213547;
+  color: white;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.email-body {
+  margin-top: 1rem;
+  border-top: 1px solid #ddd;
+  padding-top: 1rem;
+}
+
+.email-body-text {
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.email-body-html {
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.account-list {
+  padding: 1rem 0;
+}
+
+.account-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.account-list-header button {
+  padding: 0.5rem 1rem;
+  background: #213547;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.accounts {
+  list-style: none;
+}
+
+.account-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  border-bottom: 1px solid #eee;
+}
+
+.account-info {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.account-email {
+  font-weight: 600;
+}
+
+.account-host {
+  color: #666;
+  font-size: 0.85rem;
+}
+
+.account-status {
+  font-size: 0.8rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 3px;
+}
+
+.account-status.active {
+  background: #d4edda;
+  color: #155724;
+}
+
+.account-status.inactive {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.account-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.account-actions button {
+  padding: 0.4rem 0.75rem;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.account-actions button:first-child {
+  background: #007bff;
+  color: white;
+}
+
+.account-actions button:last-child {
+  background: #dc3545;
+  color: white;
+}
+
+.add-account-form {
+  padding: 1rem;
+  background: #f9f9f9;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+}
+
+.add-account-form h3 {
+  margin-bottom: 0.75rem;
+}
+
+.form-group {
+  margin-bottom: 0.75rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+.add-account-form button[type="submit"] {
+  padding: 0.5rem 1rem;
+  background: #213547;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.form-error {
+  color: #dc3545;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+.error {
+  color: #dc3545;
+}
+
+.email-count {
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 0.5rem;
+}
