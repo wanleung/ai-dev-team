@@ -220,6 +220,10 @@ class Orchestrator(TestFixLoopMixin):
         nvidia_nim_api_key: Optional[str] = None,
         nvidia_nim_base_url: Optional[str] = None,
         max_revisions: int = 3,
+        max_prd_revisions: int = 3,
+        max_design_revisions: int = 3,
+        stop_on_prd_issues: bool = False,
+        stop_on_design_issues: bool = False,
         skill_loader: Optional["SkillLoader"] = None,
         mcp_servers: list[dict] | None = None,
         retry_delay: int = 15,
@@ -242,6 +246,10 @@ class Orchestrator(TestFixLoopMixin):
         self.ollama_think = ollama_think
         self.ollama_stream = ollama_stream
         self.max_revisions = max_revisions
+        self.max_prd_revisions = max_prd_revisions
+        self.max_design_revisions = max_design_revisions
+        self.stop_on_prd_issues = stop_on_prd_issues
+        self.stop_on_design_issues = stop_on_design_issues
         self.max_test_retries = max_test_retries
         self.max_deploy_retries = max_deploy_retries
         self.skill_loader: Optional[SkillLoader] = skill_loader
@@ -392,6 +400,10 @@ class Orchestrator(TestFixLoopMixin):
             ollama_think=llm.get("ollama_think", False),
             ollama_stream=llm.get("ollama_stream", True),
             max_revisions=pipeline.get("max_revisions", 3),
+            max_prd_revisions=pipeline.get("max_prd_revisions", 3),
+            max_design_revisions=pipeline.get("max_design_revisions", 3),
+            stop_on_prd_issues=pipeline.get("stop_on_prd_issues", False),
+            stop_on_design_issues=pipeline.get("stop_on_design_issues", False),
             skill_loader=skill_loader,
             mcp_servers=mcp_servers,
             retry_delay=pipeline.get("retry_delay", 15),

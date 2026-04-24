@@ -150,6 +150,15 @@ pipeline:
   # Maximum automated revision rounds per PR (0 = disabled)
   max_revisions: 3
 
+  # Revision loop rounds for PRD (PM ↔ PM Reviewer back-and-forth). 0 = disable loop.
+  max_prd_revisions: 3
+  # Revision loop rounds for System Design (Architect ↔ Architect Reviewer). 0 = disable.
+  max_design_revisions: 3
+  # If true, halt the pipeline when max PRD revisions hit without APPROVED.
+  stop_on_prd_issues: false
+  # If true, halt the pipeline when max Design revisions hit without APPROVED.
+  stop_on_design_issues: false
+
   # API retry settings — increase retry_delay if using a rate-limited backend
   # (e.g. opencode-go plan which throttles frequent calls)
   # retry_delay: base wait in seconds before first retry; doubles each attempt
