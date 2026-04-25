@@ -140,6 +140,8 @@ team:
   #     tier: junior
   #   - pattern: "*/services*"
   #     tier: senior
+  # senior_engineer_use_mcp: true  # give senior engineers MCP/RAG tools (set false for LLMs without tool-calling)
+  # junior_engineer_use_mcp: true  # give junior engineers MCP/RAG tools (set false to save tokens on simple modules)
 
   # Enable/disable specific agents
   agents:

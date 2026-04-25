@@ -224,6 +224,8 @@ class Orchestrator(TestFixLoopMixin):
         junior_quality_gate: bool = True,
         junior_test_retries: int = 3,
         tier_override_rules: list[dict] | None = None,
+        senior_engineer_use_mcp: bool = True,
+        junior_engineer_use_mcp: bool = True,
         branch_prefix: str = "feature/agent",
         workspace_dir: str = "./workspace",
         stop_on_review_issues: bool = False,
@@ -260,6 +262,8 @@ class Orchestrator(TestFixLoopMixin):
         self.junior_quality_gate = junior_quality_gate
         self.junior_test_retries = junior_test_retries
         self.tier_override_rules = tier_override_rules or []
+        self.senior_engineer_use_mcp = senior_engineer_use_mcp
+        self.junior_engineer_use_mcp = junior_engineer_use_mcp
         self.branch_prefix = branch_prefix
         self.workspace_dir = Path(workspace_dir)
         self.stop_on_review_issues = stop_on_review_issues
@@ -353,12 +357,12 @@ class Orchestrator(TestFixLoopMixin):
 
         self.junior_engineer = JuniorEngineerAgent(
             model=_junior_model,
-            tool_registry=rag_registry,
+            tool_registry=rag_registry if self.junior_engineer_use_mcp else None,
             **{**agent_kwargs, **_agent_ollama_kwargs("junior_engineer")},
         )
         self.senior_engineer = SeniorEngineerAgent(
             model=_senior_model,
-            tool_registry=rag_registry,
+            tool_registry=rag_registry if self.senior_engineer_use_mcp else None,
             **{**agent_kwargs, **_agent_ollama_kwargs("senior_engineer")},
         )
         self.tier_reviewer = TierReviewerAgent(
@@ -445,6 +449,8 @@ class Orchestrator(TestFixLoopMixin):
             junior_quality_gate=team.get("junior_quality_gate", True),
             junior_test_retries=team.get("junior_test_retries", 3),
             tier_override_rules=team.get("tier_override_rules", []),
+            senior_engineer_use_mcp=team.get("senior_engineer_use_mcp", True),
+            junior_engineer_use_mcp=team.get("junior_engineer_use_mcp", True),
             branch_prefix=gh.get("branch_prefix", "feature/agent"),
             workspace_dir=pipeline.get("workspace_dir", "./workspace"),
             stop_on_review_issues=pipeline.get("stop_on_review_issues", False),
