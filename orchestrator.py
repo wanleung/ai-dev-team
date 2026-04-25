@@ -859,20 +859,62 @@ class Orchestrator(TestFixLoopMixin):
             result.completed_stages.append("rag_index")
 
         # ── Stage 3: Engineers ────────────────────────────────────────────────
-        if "engineer" not in result.completed_stages:
-            self._run_stage(
-                f"💻 Engineers (×{self.num_engineers})",
-                f"Implementing {len(result.modules)} module(s) in parallel...",
-                result,
-                lambda: self._stage_engineer(result),
-            )
-            if result.errors:
-                self._save_checkpoint(result)
-                return self._finish(result, start_time)
-            result.completed_stages.append("engineer")
-            self._save_checkpoint(result)
-        else:
+        # ── Backward-compat: old checkpoints that completed "engineer" skip both tiers ──
+        if "engineer" in result.completed_stages:
             console.print("  ⏭️  [dim]💻 Engineers — skipped (checkpoint)[/dim]")
+        else:
+            # Stage 3a: Tier review
+            if "tier_review" not in result.completed_stages:
+                self._run_stage(
+                    "🏷️  Tier Review",
+                    f"Classifying {len(result.modules)} module(s) into junior/senior tiers...",
+                    result,
+                    lambda: self._stage_tier_review(result),
+                )
+                if result.errors:
+                    self._save_checkpoint(result)
+                    return self._finish(result, start_time)
+                result.completed_stages.append("tier_review")
+                self._save_checkpoint(result)
+            else:
+                console.print("  ⏭️  [dim]🏷️  Tier Review — skipped (checkpoint)[/dim]")
+
+            junior_count = sum(1 for m in result.modules if m.get("tier") == "junior")
+            senior_count = len(result.modules) - junior_count
+
+            # Stage 3b: Junior batch
+            if "junior_engineer" not in result.completed_stages:
+                self._run_stage(
+                    f"🟢 Junior Engineers (×{self.num_junior_engineers})",
+                    f"Implementing {junior_count} junior module(s)...",
+                    result,
+                    lambda: self._stage_junior_engineer(result),
+                )
+                if result.errors:
+                    self._save_checkpoint(result)
+                    return self._finish(result, start_time)
+                result.completed_stages.append("junior_engineer")
+                self._save_checkpoint(result)
+            else:
+                console.print("  ⏭️  [dim]🟢 Junior Engineers — skipped (checkpoint)[/dim]")
+
+            # Stage 3c: Senior batch
+            if "senior_engineer" not in result.completed_stages:
+                self._run_stage(
+                    f"🔵 Senior Engineers (×{self.num_senior_engineers})",
+                    f"Implementing {senior_count} senior module(s) with junior context...",
+                    result,
+                    lambda: self._stage_senior_engineer(result),
+                )
+                if result.errors:
+                    self._save_checkpoint(result)
+                    return self._finish(result, start_time)
+                result.completed_stages.append("senior_engineer")
+                # Also mark "engineer" for backward compat with downstream checkpoint checks
+                result.completed_stages.append("engineer")
+                self._save_checkpoint(result)
+            else:
+                console.print("  ⏭️  [dim]🔵 Senior Engineers — skipped (checkpoint)[/dim]")
 
         # ── Stage 4: Code Reviewer ────────────────────────────────────────────
         if "reviewer" not in result.completed_stages:
@@ -1293,6 +1335,168 @@ class Orchestrator(TestFixLoopMixin):
             )
         result.all_files = eng_result["all_files"]
         self._save_files_locally(result.all_files, result.project_name)
+
+    def _stage_tier_review(self, result: PipelineResult) -> None:
+        """Validate module tier assignments via TierReviewerAgent, then apply config overrides."""
+        revised = self.tier_reviewer.run(result.modules)
+        final = apply_tier_overrides(revised, self.tier_override_rules)
+        result.modules = final
+        result.tier_classifications = final
+
+    def _run_junior_module_tests(self, files: dict[str, str], project_name: str) -> tuple[bool, str]:
+        """Write module files to a temp directory and run pytest on them.
+
+        Returns:
+            (passed: bool, output: str)
+        """
+        test_files = {p: c for p, c in files.items() if "test" in p.lower()}
+        if not test_files:
+            return True, "No test files — skipping junior quality gate for this module"
+
+        with tempfile.TemporaryDirectory(prefix=f"junior_gate_{project_name}_") as tmpdir:
+            for filepath, content in files.items():
+                dest = os.path.join(tmpdir, filepath)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "w") as f:
+                    f.write(content)
+            test_paths = [os.path.join(tmpdir, p) for p in test_files]
+            proc = subprocess.run(
+                ["python", "-m", "pytest"] + test_paths + ["-v", "--tb=short", "-x"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=tmpdir,
+            )
+            passed = proc.returncode == 0
+            output = proc.stdout + proc.stderr
+        return passed, output
+
+    def _stage_junior_engineer(self, result: PipelineResult) -> None:
+        """Implement junior-tier modules with fast model; run quality gate per module."""
+        junior_modules = [m for m in result.modules if m.get("tier") == "junior"]
+        if not junior_modules:
+            console.print("  [dim]No junior modules to implement.[/dim]")
+            return
+
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
+        project_dir = (self.workspace_dir / safe).resolve()
+        framework_context = self.framework_docs_loader.load(project_dir)
+
+        if self.target_github:
+            eng_result = self.junior_engineer.run_with_github(
+                result.design,
+                junior_modules,
+                result.project_name,
+                self.target_github,
+                branch_prefix=self.branch_prefix,
+                issue_number=result.issue_number,
+                max_workers=self.num_junior_engineers,
+                framework_context=framework_context,
+            )
+            result.branch = eng_result.get("branch")
+            result.pr_number = eng_result.get("pr_number")
+            result.pr_url = eng_result.get("pr_url")
+        else:
+            eng_result = self.junior_engineer.run_all_modules(
+                result.design,
+                junior_modules,
+                result.project_name,
+                max_workers=self.num_junior_engineers,
+                framework_context=framework_context,
+            )
+
+        junior_files: dict[str, str] = eng_result["all_files"]
+        escalated: list[dict] = []
+
+        if self.junior_quality_gate:
+            for mod_result in eng_result["modules"]:
+                mod_files = mod_result["files"]
+                mod_name = mod_result["module_name"]
+                passed, output = self._run_junior_module_tests(mod_files, result.project_name)
+
+                retries = 0
+                while not passed and retries < self.junior_test_retries:
+                    retries += 1
+                    console.print(
+                        f"  🔄 [yellow]Junior gate retry {retries}/{self.junior_test_retries} "
+                        f"for {mod_name}[/yellow]"
+                    )
+                    fixed = self.junior_engineer.fix_failures(
+                        failure_output=output,
+                        all_files=mod_files,
+                        design=result.design,
+                        project_name=result.project_name,
+                    )
+                    mod_files.update(fixed)
+                    junior_files.update(fixed)
+                    passed, output = self._run_junior_module_tests(mod_files, result.project_name)
+
+                if not passed:
+                    console.print(
+                        f"  ⬆️  [yellow]Escalating {mod_name} to senior tier "
+                        f"(failed after {self.junior_test_retries} retries)[/yellow]"
+                    )
+                    for m in result.modules:
+                        if m["name"] == mod_name:
+                            m["tier"] = "senior"
+                            escalated.append(m)
+                            break
+                    for path in list(mod_files.keys()):
+                        junior_files.pop(path, None)
+
+        result.junior_files = junior_files
+        self._save_files_locally(junior_files, result.project_name)
+
+        if escalated:
+            console.print(
+                f"  ⬆️  [dim]{len(escalated)} module(s) escalated to senior tier.[/dim]"
+            )
+
+    def _stage_senior_engineer(self, result: PipelineResult) -> None:
+        """Implement senior-tier modules with expensive model; inject junior code as context."""
+        senior_modules = [m for m in result.modules if m.get("tier") == "senior"]
+        if not senior_modules:
+            console.print("  [dim]No senior modules to implement.[/dim]")
+            result.all_files = dict(result.junior_files)
+            return
+
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
+        project_dir = (self.workspace_dir / safe).resolve()
+        framework_context = self.framework_docs_loader.load(project_dir)
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        senior_results = []
+        with ThreadPoolExecutor(max_workers=self.num_senior_engineers) as executor:
+            futures = [
+                executor.submit(
+                    self.senior_engineer.run_module,
+                    result.design,
+                    mod,
+                    result.project_name,
+                    framework_context,
+                    result.junior_files,
+                )
+                for mod in senior_modules
+            ]
+            for future in futures:
+                senior_results.append(future.result())
+
+        senior_files: dict[str, str] = {}
+        for sr in senior_results:
+            senior_files.update(sr["files"])
+
+        result.all_files = {**result.junior_files, **senior_files}
+        self._save_files_locally(result.all_files, result.project_name)
+
+        if self.target_github and result.branch:
+            for filepath, content in senior_files.items():
+                self.target_github.create_or_update_file(
+                    filepath,
+                    content,
+                    branch=result.branch,
+                    message=f"feat({result.project_name}): implement senior module files",
+                )
 
     def _stage_reviewer(self, result: PipelineResult) -> None:
         if self.target_github and result.pr_number:
