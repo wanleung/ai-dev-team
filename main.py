@@ -21,7 +21,7 @@ console = Console()
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="ai-software-house",
+        prog="ai-dev-team",
         description="🏢 AI Software House — a team of AI agents that builds software from a requirement.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""

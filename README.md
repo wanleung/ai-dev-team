@@ -10,7 +10,7 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 
 - **9 specialised agent types** (10+ agents in parallel): PM → PM Reviewer → Architect → Arch Reviewer → Engineers ×N → Code Reviewer → QA Planner → QA Engineer → Deployment Tester
 - **Checkpoint / resume** — interrupted runs pick up from the last successful stage
-- **Multi-repo routing** — agents push to a target repo; tracking issues live in a central `ai-software-house` repo
+- **Multi-repo routing** — agents push to a target repo; tracking issues live in a central `ai-dev-team` repo
 - **Per-agent LLM config** — assign any GitHub Models model to each agent independently
 - **Actual test execution** — pytest runs locally; results posted back to the PR as a comment
 - **Docker smoke tests** — deployment tester generates and runs container health checks
@@ -36,8 +36,8 @@ The minimal setup to run the core pipeline — no Docker, no GitHub Actions, no 
 ### Step 1 — Clone & install
 
 ```bash
-git clone https://github.com/your-username/ai-software-house
-cd ai-software-house
+git clone https://github.com/your-username/ai-dev-team
+cd ai-dev-team
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -130,8 +130,8 @@ Once the MVP works, turn agents back on one by one in `config.yaml`.
 ### 2. Install
 
 ```bash
-git clone https://github.com/your-username/ai-software-house
-cd ai-software-house
+git clone https://github.com/your-username/ai-dev-team
+cd ai-dev-team
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -501,7 +501,7 @@ from bug_fix_orchestrator import BugFixOrchestrator
 orch = BugFixOrchestrator(
     model="gpt-4.1",
     github_token="ghp_...",
-    tracker_repo="owner/ai-software-house",
+    tracker_repo="owner/ai-dev-team",
     target_repo="owner/my-app",
 )
 
@@ -511,7 +511,7 @@ print(result.pr_url)
 
 **Via CLI (`fix_issue.py`):**
 ```bash
-python fix_issue.py --issue 42 --repo owner/ai-software-house --target owner/my-app
+python fix_issue.py --issue 42 --repo owner/ai-dev-team --target owner/my-app
 ```
 
 ---
@@ -587,8 +587,8 @@ pipeline:
 
 skills:
   always_load: []          # e.g. [security-audit] to always apply
-  marketplace_repo: ""     # e.g. "myorg/ai-software-house-skills"
-  cache_dir: ""            # defaults to ~/.ai-software-house/skills/
+  marketplace_repo: ""     # e.g. "myorg/ai-dev-team-skills"
+  cache_dir: ""            # defaults to ~/.ai-dev-team/skills/
   fetch_timeout: 5
 
 mcp:
@@ -757,7 +757,7 @@ Every hour:
 
 ```yaml
 watchers:
-  - tracker_repo: wanleung/ai-software-house   # where issues are filed
+  - tracker_repo: wanleung/ai-dev-team   # where issues are filed
     default_target: wanleung/my-app            # default target repo for code
     feature_label: feature-request
     bug_label: bug
@@ -807,7 +807,7 @@ Or manually:
 ```bash
 crontab -e
 # Add this line (use the venv python directly — 'source activate' breaks in cron's /bin/sh):
-0 * * * * cd /home/you/ai-software-house && venv/bin/python watcher.py >> logs/watcher/cron.log 2>&1
+0 * * * * cd /home/you/ai-dev-team && venv/bin/python watcher.py >> logs/watcher/cron.log 2>&1
 ```
 
 ### Manual / test runs
@@ -877,7 +877,7 @@ Build iOS and Android apps for rectal cancer patient questionnaires.
 ```
 
 > The `**Target repo:** owner/repo` line routes the code to a different repository.
-> Tracking issues (PRD, reviews) stay in the `ai-software-house` repo.
+> Tracking issues (PRD, reviews) stay in the `ai-dev-team` repo.
 
 ### Triggering a Bug Fix
 
@@ -908,7 +908,7 @@ python main.py --mode revise --pr 42 --repo owner/target-repo
 
 **Option C — API (`repository_dispatch`):**
 ```bash
-gh api repos/owner/ai-software-house/dispatches \
+gh api repos/owner/ai-dev-team/dispatches \
   --method POST \
   -f event_type=ai-pr-revise \
   -f client_payload[pr_number]=42 \
@@ -940,7 +940,7 @@ Maximum revision rounds is controlled by `pipeline.max_revisions` in `config.yam
 ## 📁 Project Structure
 
 ```
-ai-software-house/
+ai-dev-team/
 ├── main.py                    # CLI entry point for full pipeline
 ├── fix_issue.py               # CLI entry point for bug fix pipeline
 ├── build_feature.py           # GitHub Actions entry point
@@ -1088,7 +1088,7 @@ skills:
   # Remote marketplace repo (leave empty to use local only)
   marketplace_repo: ""
 
-  # Marketplace cache dir (defaults to ~/.ai-software-house/skills/)
+  # Marketplace cache dir (defaults to ~/.ai-dev-team/skills/)
   cache_dir: ""
 
   fetch_timeout: 5

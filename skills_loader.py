@@ -65,7 +65,7 @@ class SkillContext:
 
 
 class SkillLoader:
-    """Loads, detects, and injects skills for ai-software-house agents."""
+    """Loads, detects, and injects skills for ai-dev-team agents."""
 
     def __init__(
         self,
@@ -323,7 +323,7 @@ class SkillLoader:
             return []
 
         # Determine cache directory
-        cache_dir = self._cache_dir or Path.home() / ".ai-software-house" / "skills"
+        cache_dir = self._cache_dir or Path.home() / ".ai-dev-team" / "skills"
         cache_dir.mkdir(parents=True, exist_ok=True)
         index_cache = cache_dir / "skills-index.json"
 

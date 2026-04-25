@@ -5,7 +5,7 @@ name: 🔄 AI PR Feedback Loop
 #   2. Via API using repository_dispatch (for automation from target repos)
 #
 # For automatic triggering from the target repo, add a workflow to the target
-# repo that sends a repository_dispatch event to wanleung/ai-software-house
+# repo that sends a repository_dispatch event to wanleung/ai-dev-team
 # when a pull_request_review or pull_request_review_comment event fires.
 on:
   workflow_dispatch:
@@ -36,7 +36,7 @@ jobs:
       issues: write
 
     steps:
-      - name: Checkout ai-software-house
+      - name: Checkout ai-dev-team
         uses: actions/checkout@v4
 
       - name: Set up Python

@@ -211,7 +211,7 @@ skills:
   # GitHub repo for the skills marketplace (e.g. "myorg/skills-repo")
   marketplace_repo: ""
 
-  # Local directory for caching marketplace skills (defaults to ~/.ai-software-house/skills/)
+  # Local directory for caching marketplace skills (defaults to ~/.ai-dev-team/skills/)
   cache_dir: ""
 
   # Timeout in seconds for marketplace HTTP requests
