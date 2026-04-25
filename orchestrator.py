@@ -350,10 +350,19 @@ class Orchestrator(TestFixLoopMixin):
         self.qa = QAEngineerAgent(model=_model("qa_engineer"), tool_registry=rag_registry, **{**agent_kwargs, **_agent_ollama_kwargs("qa_engineer")})
         self.deployment_tester = DeploymentTesterAgent(model=_model("deployment_tester"), **{**agent_kwargs, **_agent_ollama_kwargs("deployment_tester")})
 
-        # Junior/Senior tier agents
-        _junior_model = self.junior_model or self.model
-        _senior_model = self.senior_model or self.model
-        _tier_rev_model = self.tier_reviewer_model or _junior_model
+        # Junior/Senior tier agents — model priority: llm.overrides > team.junior/senior_model > global
+        _junior_model = (
+            _model("junior_engineer") if "junior_engineer" in self.model_overrides
+            else (self.junior_model or self.model)
+        )
+        _senior_model = (
+            _model("senior_engineer") if "senior_engineer" in self.model_overrides
+            else (self.senior_model or self.model)
+        )
+        _tier_rev_model = (
+            _model("tier_reviewer") if "tier_reviewer" in self.model_overrides
+            else (self.tier_reviewer_model or _junior_model)
+        )
 
         self.junior_engineer = JuniorEngineerAgent(
             model=_junior_model,
