@@ -1361,7 +1361,7 @@ class Orchestrator(TestFixLoopMixin):
                     f.write(content)
             test_paths = [os.path.join(tmpdir, p) for p in test_files]
             proc = subprocess.run(
-                ["python", "-m", "pytest"] + test_paths + ["-v", "--tb=short", "-x"],
+                [sys.executable, "-m", "pytest"] + test_paths + ["-v", "--tb=short", "-x"],
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -1440,6 +1440,10 @@ class Orchestrator(TestFixLoopMixin):
                         if m["name"] == mod_name:
                             m["tier"] = "senior"
                             escalated.append(m)
+                            break
+                    for tc in result.tier_classifications:
+                        if tc["name"] == mod_name:
+                            tc["tier"] = "senior"
                             break
                     for path in list(mod_files.keys()):
                         junior_files.pop(path, None)
