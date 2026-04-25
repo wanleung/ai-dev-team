@@ -87,6 +87,20 @@ Setup:
         help="Number of parallel engineer agents (default: 2). Overrides config.yaml.",
     )
     parser.add_argument(
+        "--junior-engineers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of parallel junior engineer agents. Overrides config.yaml num_junior_engineers.",
+    )
+    parser.add_argument(
+        "--senior-engineers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of parallel senior engineer agents. Overrides config.yaml num_senior_engineers.",
+    )
+    parser.add_argument(
         "--no-github",
         action="store_true",
         help="Disable GitHub integration even if repo is configured.",
@@ -217,6 +231,14 @@ def main() -> int:
                 console.print(f"  🔧 {agent_name}: {model_name}")
         if args.engineers:
             orch.num_engineers = args.engineers
+        if args.junior_engineers:
+            orch.num_junior_engineers = args.junior_engineers
+        elif args.engineers:
+            # --engineers shorthand: junior gets 2× senior
+            orch.num_junior_engineers = args.engineers * 2
+            orch.num_senior_engineers = args.engineers
+        if args.senior_engineers:
+            orch.num_senior_engineers = args.senior_engineers
         if args.repo and not args.no_github:
             from github_client import GitHubClient
             orch.github = GitHubClient(repo=args.repo, github_token=github_token)

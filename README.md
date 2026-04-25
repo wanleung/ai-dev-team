@@ -36,8 +36,8 @@ The minimal setup to run the core pipeline — no Docker, no GitHub Actions, no 
 ### Step 1 — Clone & install
 
 ```bash
-git clone https://github.com/your-username/ai-dev-team
-cd ai-dev-team
+git clone https://github.com/your-username/ai-software-house
+cd ai-software-house
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -130,8 +130,8 @@ Once the MVP works, turn agents back on one by one in `config.yaml`.
 ### 2. Install
 
 ```bash
-git clone https://github.com/your-username/ai-dev-team
-cd ai-dev-team
+git clone https://github.com/your-username/ai-software-house
+cd ai-software-house
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -139,8 +139,7 @@ pip install -r requirements.txt
 ### 3. Configure
 
 ```bash
-cp config.example.yaml config.yaml   # copy example, then customise
-cp repos.example.yaml repos.yaml
+cp config.yaml config.local.yaml   # optional — edit as needed
 export GITHUB_TOKEN=ghp_your_classic_pat
 ```
 
