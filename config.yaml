@@ -125,6 +125,22 @@ team:
   # Number of parallel Engineer agents (each handles a separate module)
   num_engineers: 1
 
+  # Senior/Junior tier system
+  # senior_model: gpt-4.1          # expensive model for senior engineers (defaults to model above)
+  # junior_model: gpt-4.1-mini     # fast model for junior engineers (defaults to model above)
+  # tier_reviewer_model: ~         # model for tier reviewer (defaults to junior_model)
+  # num_senior_engineers: 2        # parallel workers for senior tier
+  # num_junior_engineers: 5        # parallel workers for junior tier
+  # junior_quality_gate: true      # run per-module tests on junior output before senior stage
+  # junior_test_retries: 3         # retries before escalating failing junior module to senior
+  # tier_override_rules:           # config-level tier overrides (highest priority)
+  #   - pattern: "*/models*"
+  #     tier: junior
+  #   - pattern: "*/utils*"
+  #     tier: junior
+  #   - pattern: "*/services*"
+  #     tier: senior
+
   # Enable/disable specific agents
   agents:
     product_manager: true

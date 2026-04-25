@@ -32,6 +32,10 @@ from agents import (
     QAEngineerAgent,
     QAPlannerAgent,
 )
+from agents.junior_engineer import JuniorEngineerAgent
+from agents.senior_engineer import SeniorEngineerAgent
+from agents.tier_reviewer import TierReviewerAgent
+from agents.tier_utils import apply_tier_overrides
 from agents.summariser import SummaryAgent
 from agents.memory_bank_updater import MemoryBankUpdaterAgent
 from agents.refactor_agent import RefactorAgent
@@ -96,6 +100,8 @@ class PipelineResult:
     design_verdict: str = ""
     modules: list[dict] = field(default_factory=list)
     all_files: dict[str, str] = field(default_factory=dict)
+    junior_files: dict[str, str] = field(default_factory=dict)
+    tier_classifications: list[dict] = field(default_factory=list)
     test_files: dict[str, str] = field(default_factory=dict)
     deploy_files: dict[str, str] = field(default_factory=dict)
     review: str = ""
@@ -142,6 +148,8 @@ class PipelineResult:
             "design_verdict": self.design_verdict,
             "modules": self.modules,
             "all_files": self.all_files,
+            "junior_files": self.junior_files,
+            "tier_classifications": self.tier_classifications,
             "test_files": self.test_files,
             "deploy_files": self.deploy_files,
             "review": self.review,
@@ -176,7 +184,7 @@ class PipelineResult:
     def from_dict(cls, data: dict) -> "PipelineResult":
         r = cls(requirement=data["requirement"])
         for key in ["project_name", "prd", "prd_review", "prd_verdict", "design", "design_review", "design_verdict",
-                    "modules", "all_files", "test_files",
+                    "modules", "all_files", "junior_files", "tier_classifications", "test_files",
                     "deploy_files", "review", "verdict", "qa_plan", "qa_acceptance_criteria",
                     "test_plan", "deploy_plan",
                     "test_results", "deploy_test_results", "tests_passed", "deploy_tests_passed",
@@ -208,6 +216,14 @@ class Orchestrator(TestFixLoopMixin):
         github_repo: Optional[str] = None,
         github_token: Optional[str] = None,
         num_engineers: int = 2,
+        num_junior_engineers: int = 5,
+        num_senior_engineers: int = 2,
+        junior_model: Optional[str] = None,
+        senior_model: Optional[str] = None,
+        tier_reviewer_model: Optional[str] = None,
+        junior_quality_gate: bool = True,
+        junior_test_retries: int = 3,
+        tier_override_rules: list[dict] | None = None,
         branch_prefix: str = "feature/agent",
         workspace_dir: str = "./workspace",
         stop_on_review_issues: bool = False,
@@ -236,6 +252,14 @@ class Orchestrator(TestFixLoopMixin):
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
+        self.num_junior_engineers = num_junior_engineers
+        self.num_senior_engineers = num_senior_engineers
+        self.junior_model = junior_model
+        self.senior_model = senior_model
+        self.tier_reviewer_model = tier_reviewer_model
+        self.junior_quality_gate = junior_quality_gate
+        self.junior_test_retries = junior_test_retries
+        self.tier_override_rules = tier_override_rules or []
         self.branch_prefix = branch_prefix
         self.workspace_dir = Path(workspace_dir)
         self.stop_on_review_issues = stop_on_review_issues
@@ -322,12 +346,34 @@ class Orchestrator(TestFixLoopMixin):
         self.qa = QAEngineerAgent(model=_model("qa_engineer"), tool_registry=rag_registry, **{**agent_kwargs, **_agent_ollama_kwargs("qa_engineer")})
         self.deployment_tester = DeploymentTesterAgent(model=_model("deployment_tester"), **{**agent_kwargs, **_agent_ollama_kwargs("deployment_tester")})
 
+        # Junior/Senior tier agents
+        _junior_model = self.junior_model or self.model
+        _senior_model = self.senior_model or self.model
+        _tier_rev_model = self.tier_reviewer_model or _junior_model
+
+        self.junior_engineer = JuniorEngineerAgent(
+            model=_junior_model,
+            tool_registry=rag_registry,
+            **{**agent_kwargs, **_agent_ollama_kwargs("junior_engineer")},
+        )
+        self.senior_engineer = SeniorEngineerAgent(
+            model=_senior_model,
+            tool_registry=rag_registry,
+            **{**agent_kwargs, **_agent_ollama_kwargs("senior_engineer")},
+        )
+        self.tier_reviewer = TierReviewerAgent(
+            model=_tier_rev_model,
+            **{**agent_kwargs, **_agent_ollama_kwargs("tier_reviewer")},
+        )
+
+
         # Snapshot original system prompts to prevent stacking on repeated run() calls
         self._original_system_prompts: dict = {
             agent: agent.system_prompt
             for agent in (
                 self.pm, self.pm_reviewer, self.architect, self.architect_reviewer,
-                self.engineer, self.reviewer, self.qa_planner, self.qa,
+                self.engineer, self.junior_engineer, self.senior_engineer,
+                self.reviewer, self.qa_planner, self.qa,
                 self.deployment_tester,
             )
             if agent is not None
@@ -391,6 +437,14 @@ class Orchestrator(TestFixLoopMixin):
             github_repo=repo if use_github else None,
             github_token=github_token,
             num_engineers=team.get("num_engineers", 2),
+            num_junior_engineers=team.get("num_junior_engineers", 5),
+            num_senior_engineers=team.get("num_senior_engineers", 2),
+            junior_model=team.get("junior_model"),
+            senior_model=team.get("senior_model"),
+            tier_reviewer_model=team.get("tier_reviewer_model"),
+            junior_quality_gate=team.get("junior_quality_gate", True),
+            junior_test_retries=team.get("junior_test_retries", 3),
+            tier_override_rules=team.get("tier_override_rules", []),
             branch_prefix=gh.get("branch_prefix", "feature/agent"),
             workspace_dir=pipeline.get("workspace_dir", "./workspace"),
             stop_on_review_issues=pipeline.get("stop_on_review_issues", False),
@@ -714,6 +768,7 @@ class Orchestrator(TestFixLoopMixin):
             console.print(f"  🧠 [dim]Loaded memory from {active_repo}[/dim]")
             # Prepend past-work context to each agent's system prompt
             for agent in (self.pm, self.architect, self.engineer,
+                          self.junior_engineer, self.senior_engineer,
                           self.reviewer, self.qa, self.qa_planner):
                 if agent.system_prompt:
                     agent.system_prompt = memory_context + "\n\n---\n\n" + agent.system_prompt
@@ -741,6 +796,9 @@ class Orchestrator(TestFixLoopMixin):
                 "architect": self.architect,
                 "architect_reviewer": self.architect_reviewer,
                 "engineer": self.engineer,
+                "junior_engineer": self.junior_engineer,
+                "senior_engineer": self.senior_engineer,
+                "tier_reviewer": self.tier_reviewer,
                 "code_reviewer": self.reviewer,
                 "qa_planner": self.qa_planner,
                 "qa_engineer": self.qa,
