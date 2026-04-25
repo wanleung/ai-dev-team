@@ -56,8 +56,11 @@ class [ModelName]:
 | POST | /api/... | ... | {field: type} | {field: type} |
 
 ## Implementation Modules
-1. **[module_name]**: [description] — implements [component]
-2. **[module_name]**: [description]
+
+Classify each module as `junior` (self-contained: models, schemas, utils, config, migrations — no dependencies on other modules in this run) or `senior` (integrates or builds on other modules: service layers, API routes, controllers, auth flows, background tasks).
+
+1. **[module_name]** [tier:junior]: [description] — implements [component]
+2. **[module_name]** [tier:senior]: [description]
 
 ## File Structure
 ```

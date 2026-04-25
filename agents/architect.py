@@ -3,6 +3,8 @@ ArchitectAgent: transforms a PRD into a system design document.
 """
 from __future__ import annotations
 
+import re
+
 from .base_agent import BaseAgent
 
 
@@ -30,7 +32,7 @@ class ArchitectAgent(BaseAgent):
             dict with keys:
                 - design (str): Full system design markdown
                 - modules (list[dict]): Parsed list of modules to implement
-                  Each module: {name: str, description: str}
+                  Each module: {name: str, description: str, tier: str}
         """
         prompt = (
             f"You have received the following PRD for the project '{project_name}':\n\n"
@@ -147,28 +149,44 @@ class ArchitectAgent(BaseAgent):
             if in_modules_section and stripped.startswith("## ") and "module" not in stripped.lower():
                 break
 
-            # Parse numbered list items: "1. **module_name**: description"
+            # Parse numbered list items: "1. **module_name**: description" or "1. **module_name** [tier:X]: description"
             if in_modules_section and stripped and stripped[0].isdigit():
                 # Remove leading "1. " etc.
                 content = stripped.split(". ", 1)[-1] if ". " in stripped else stripped
-                # Split on ":" for name/description
-                if "**" in content and "**:" in content:
-                    parts = content.split("**:", 1)
-                    name = parts[0].strip("* ").strip()
-                    desc = parts[1].strip() if len(parts) > 1 else ""
-                elif ":" in content:
-                    name, _, desc = content.partition(":")
-                    name = name.strip("* ").strip()
-                    desc = desc.strip()
+                # Split on last ":" for name/description (to handle [tier:X] tags)
+                if ":" in content:
+                    # Find the last colon for splitting name and description
+                    last_colon_idx = content.rfind(":")
+                    name_part = content[:last_colon_idx].strip()
+                    desc = content[last_colon_idx + 1:].strip()
+                    
+                    # Extract tier tag BEFORE extracting name from bold markers
+                    tier = "senior"
+                    tier_match = re.search(r'\[tier:(junior|senior)\]', name_part + " " + desc)
+                    if tier_match:
+                        tier = tier_match.group(1)
+                    
+                    # Extract name from **name** if present
+                    bold_match = re.search(r'\*\*(.*?)\*\*', name_part)
+                    if bold_match:
+                        name = bold_match.group(1)
+                    else:
+                        # Fallback: strip * characters from name
+                        name = name_part.strip("* ").strip()
+                    
+                    # Remove tier tag from both name and desc
+                    name = re.sub(r'\s*\[tier:(?:junior|senior)\]', '', name).strip()
+                    desc = re.sub(r'\s*\[tier:(?:junior|senior)\]', '', desc).strip()
                 else:
                     name = content.strip("* ").strip()
                     desc = ""
+                    tier = "senior"
 
                 if name:
-                    modules.append({"name": name, "description": desc})
+                    modules.append({"name": name, "description": desc, "tier": tier})
 
         # Fallback: return a generic single module if parsing fails
         if not modules:
-            modules = [{"name": "main", "description": "Main application module"}]
+            modules = [{"name": "main", "description": "Main application module", "tier": "senior"}]
 
         return modules
