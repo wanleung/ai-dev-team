@@ -76,6 +76,12 @@ llm:
   # When false, passes think=false to Ollama API — much faster responses
   ollama_think: false
 
+  # When ollama_think is true, set this to true to keep <think>...</think> blocks
+  # in the agent output (useful for debugging model reasoning).
+  # When false (default), thinking tokens are stripped from pipeline output.
+  # Can also be set per-agent in overrides: {ollama_preserve_thinking: true}
+  ollama_preserve_thinking: false
+
   # Set to true to stream tokens over HTTP (recommended when Ollama is on a remote host)
   # Prevents TCP idle timeouts on NAT/firewall between this machine and Ollama
   ollama_stream: true
@@ -91,8 +97,9 @@ llm:
     # Dict form (model + per-agent Ollama settings):
     #   architect:
     #     model: "ollama/qwen3.6"
-    #     ollama_think: true    # override global ollama_think for this agent
-    #     ollama_stream: false  # override global ollama_stream for this agent
+    #     ollama_think: true              # override global ollama_think for this agent
+    #     ollama_preserve_thinking: true  # keep <think> blocks in output for this agent
+    #     ollama_stream: false            # override global ollama_stream for this agent
     #
     # ── Copilot backend examples ──────────────────────────────────────────
     # product_manager: "copilot/gpt-4o"

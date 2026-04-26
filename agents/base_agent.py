@@ -297,6 +297,7 @@ class BaseAgent:
         backend: Optional[str] = None,  # "github_models" | "anthropic" | "ollama" | "opencode" | "opencode_zen" | "opencode_go" | "nvidia_nim" | "copilot" | None (auto)
         ollama_url: str = "http://localhost:11434",
         ollama_think: bool = False,
+        ollama_preserve_thinking: bool = False,
         ollama_stream: bool = True,
         opencode_zen_api_key: Optional[str] = None,
         opencode_zen_base_url: Optional[str] = None,
@@ -313,6 +314,7 @@ class BaseAgent:
         self._max_api_retries = max_api_retries
         self._inter_call_delay = inter_call_delay
         self._ollama_think = ollama_think
+        self._ollama_preserve_thinking = ollama_preserve_thinking
         self._ollama_stream = ollama_stream
 
         # Short-term conversation history — persists within a pipeline run.
@@ -490,6 +492,31 @@ class BaseAgent:
     def reset_history(self) -> None:
         """Clear conversation history (call between unrelated pipeline tasks)."""
         self._history = []
+
+    def _ollama_extra_body(self) -> dict:
+        """Return extra_body kwargs for Ollama chat completion calls.
+
+        When thinking is disabled, suppresses thinking tokens via ``think: false``.
+        When thinking is enabled, optionally requests that the thinking tokens are
+        preserved in the response via ``options.preserve_thinking``.
+        """
+        if self._backend != "ollama":
+            return {}
+        if not self._ollama_think:
+            return {"extra_body": {"think": False}}
+        if self._ollama_preserve_thinking:
+            return {"extra_body": {"options": {"preserve_thinking": True}}}
+        return {}
+
+    def _strip_thinking(self, text: str) -> str:
+        """Remove <think>...</think> blocks from model output.
+
+        Skipped when ``ollama_preserve_thinking`` is enabled — in that case the
+        caller wants to see the model's reasoning in the output.
+        """
+        if self._ollama_preserve_thinking:
+            return text.strip()
+        return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
     def _build_copilot_client(self, token: str) -> "OpenAI":
         """Build an OpenAI client configured for the GitHub Copilot Chat API."""
@@ -690,7 +717,7 @@ class BaseAgent:
                     tools=tools.schemas,
                     tool_choice="auto",
                     temperature=0.3,
-                    **({"extra_body": {"think": False}} if self._backend == "ollama" and not self._ollama_think else {}),
+                    **self._ollama_extra_body(),
                 )
             )
 
@@ -700,7 +727,7 @@ class BaseAgent:
             if not msg.tool_calls:
                 final_content = msg.content or ""
                 if self._backend == "ollama":
-                    final_content = re.sub(r"<think>.*?</think>", "", final_content, flags=re.DOTALL).strip()
+                    final_content = self._strip_thinking(final_content)
                 return final_content
 
             # Append assistant message (with tool_calls) to history
@@ -741,12 +768,12 @@ class BaseAgent:
                 model=self._api_model,
                 messages=messages,
                 temperature=0.3,
-                **({"extra_body": {"think": False}} if self._backend == "ollama" and not self._ollama_think else {}),
+                **self._ollama_extra_body(),
             )
         )
         final_reply = response.choices[0].message.content or ""
         if self._backend == "ollama":
-            final_reply = re.sub(r"<think>.*?</think>", "", final_reply, flags=re.DOTALL).strip()
+            final_reply = self._strip_thinking(final_reply)
         return final_reply
 
     def call(self, user_message: str, context: Optional[str] = None) -> str:
@@ -801,7 +828,7 @@ class BaseAgent:
                             messages=messages,
                             temperature=0.3,
                             stream=True,
-                            **({"extra_body": {"think": False}} if not self._ollama_think else {}),
+                            **self._ollama_extra_body(),
                         )
                     )
                 )
@@ -811,12 +838,12 @@ class BaseAgent:
                         model=self._api_model,
                         messages=messages,
                         temperature=0.3,
-                        **({"extra_body": {"think": False}} if not self._ollama_think else {}),
+                        **self._ollama_extra_body(),
                     )
                 )
                 reply = response.choices[0].message.content or ""
-            # Strip <think>...</think> blocks (safety net if model still emits them)
-            reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
+            # Strip <think>...</think> blocks unless preserve_thinking is enabled
+            reply = self._strip_thinking(reply)
         else:
             response = _retry_with_backoff(
                 lambda: self.client.chat.completions.create(
