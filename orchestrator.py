@@ -234,6 +234,7 @@ class Orchestrator(TestFixLoopMixin):
         target_repo: Optional[str] = None,
         ollama_url: str = "http://localhost:11434",
         ollama_think: bool = False,
+        ollama_preserve_thinking: bool = False,
         ollama_stream: bool = True,
         nvidia_nim_api_key: Optional[str] = None,
         nvidia_nim_base_url: Optional[str] = None,
@@ -272,6 +273,7 @@ class Orchestrator(TestFixLoopMixin):
         self._github_token = github_token
         self.ollama_url = ollama_url
         self.ollama_think = ollama_think
+        self.ollama_preserve_thinking = ollama_preserve_thinking
         self.ollama_stream = ollama_stream
         self.max_revisions = max_revisions
         self.max_prd_revisions = max_prd_revisions
@@ -305,7 +307,8 @@ class Orchestrator(TestFixLoopMixin):
 
         # Shared kwargs for all agents
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
-                              "ollama_think": ollama_think, "ollama_stream": ollama_stream,
+                              "ollama_think": ollama_think, "ollama_preserve_thinking": ollama_preserve_thinking,
+                              "ollama_stream": ollama_stream,
                               "nvidia_nim_api_key": nvidia_nim_api_key,
                               "nvidia_nim_base_url": nvidia_nim_base_url,
                               "retry_delay": retry_delay, "max_api_retries": max_api_retries,
@@ -336,9 +339,10 @@ class Orchestrator(TestFixLoopMixin):
             if isinstance(override, dict):
                 return {
                     "ollama_think": override.get("ollama_think", ollama_think),
+                    "ollama_preserve_thinking": override.get("ollama_preserve_thinking", ollama_preserve_thinking),
                     "ollama_stream": override.get("ollama_stream", ollama_stream),
                 }
-            return {"ollama_think": ollama_think, "ollama_stream": ollama_stream}
+            return {"ollama_think": ollama_think, "ollama_preserve_thinking": ollama_preserve_thinking, "ollama_stream": ollama_stream}
 
         self.pm = ProductManagerAgent(model=_model("product_manager"), **{**agent_kwargs, **_agent_ollama_kwargs("product_manager")})
         self.pm_reviewer = PMReviewerAgent(model=_model("pm_reviewer"), **{**agent_kwargs, **_agent_ollama_kwargs("pm_reviewer")})
@@ -467,6 +471,7 @@ class Orchestrator(TestFixLoopMixin):
             use_github=use_github,
             ollama_url=llm.get("ollama_url", "http://localhost:11434"),
             ollama_think=llm.get("ollama_think", False),
+            ollama_preserve_thinking=llm.get("ollama_preserve_thinking", False),
             ollama_stream=llm.get("ollama_stream", True),
             max_revisions=pipeline.get("max_revisions", 3),
             max_prd_revisions=pipeline.get("max_prd_revisions", 3),
