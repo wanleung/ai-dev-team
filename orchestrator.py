@@ -1510,7 +1510,7 @@ class Orchestrator(TestFixLoopMixin):
 
         if self.target_github and result.branch:
             for filepath, content in senior_files.items():
-                self.target_github.create_or_update_file(
+                self.target_github.commit_file(
                     filepath,
                     content,
                     branch=result.branch,
