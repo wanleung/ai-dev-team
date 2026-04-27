@@ -34,6 +34,7 @@ FALLBACK_ERRORS = (
     httpx.TimeoutException,
     _OAIConnError,
     _OAITimeoutError,
+    _OAIServerError,  # covers HTTP 503/502/504 — triggers backend fallback
 )
 
 
@@ -153,6 +154,11 @@ class OpenAICompatibleBackend(LLMBackend):
         self._retry_delay = retry_delay
 
     def _extra_body(self) -> dict:
+        """Return additional kwargs for chat.completions.create().
+
+        E.g. {"extra_body": {"options": {"preserve_thinking": True}}} for Ollama.
+        Subclasses override this to inject backend-specific parameters.
+        """
         return {}
 
     def _post_process(self, text: str) -> str:
@@ -221,7 +227,7 @@ class OpenAICompatibleBackend(LLMBackend):
                 ],
             })
             for tc in msg.tool_calls:
-                print(f"    🔧 Tool call: {tc.function.name}({tc.function.arguments[:80]}…)")
+                _log.info("Tool call: %s(%s…)", tc.function.name, tc.function.arguments[:80])
                 result = tools.call(tc.function.name, tc.function.arguments)
                 messages.append({
                     "role": "tool",
