@@ -68,6 +68,9 @@ def test_copilot_backend_refreshes_expired_session():
 
     assert backend.model == "gpt-4.1"
     assert _COPILOT_SESSION["token"] == "new_token"
+    # Reset shared state so subsequent tests are not affected
+    _COPILOT_SESSION["token"] = ""
+    _COPILOT_SESSION["expires_at"] = 0.0
 
 
 def test_copilot_backend_call_refreshes_before_call():
@@ -91,6 +94,9 @@ def test_copilot_backend_call_refreshes_before_call():
                 assert result == "reply"
                 # Token is still fresh — _pre_call() must NOT have called urlopen
                 assert mock_urlopen.call_count == call_count_after_init
+    # Reset shared state so subsequent tests are not affected
+    _COPILOT_SESSION["token"] = ""
+    _COPILOT_SESSION["expires_at"] = 0.0
 
 
 def test_fetch_session_token_raises_on_null_token():
@@ -157,3 +163,6 @@ def test_copilot_backend_pre_call_refreshes_when_near_expiry():
                 assert result == "reply"
                 # _pre_call() must have fetched a new token exactly once
                 assert mock_urlopen.call_count == call_count_after_init + 1
+    # Reset shared state so subsequent tests are not affected
+    _COPILOT_SESSION["token"] = ""
+    _COPILOT_SESSION["expires_at"] = 0.0

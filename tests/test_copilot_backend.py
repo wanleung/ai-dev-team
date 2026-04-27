@@ -54,6 +54,9 @@ def test_discover_oauth_token_raises_when_missing():
 
 def test_fetch_session_token_success():
     from agents.base_agent import _fetch_copilot_session_token, _COPILOT_SESSION
+    # Reset session so the double-checked locking does not short-circuit
+    _COPILOT_SESSION["token"] = ""
+    _COPILOT_SESSION["expires_at"] = 0.0
     expires = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
@@ -116,7 +119,9 @@ def test_discover_oauth_token_raises_when_config_has_empty_tokens():
 
 def test_fetch_session_token_raises_on_non_json_response():
     """Non-JSON response body raises RuntimeError."""
-    from agents.base_agent import _fetch_copilot_session_token
+    from agents.base_agent import _fetch_copilot_session_token, _COPILOT_SESSION
+    _COPILOT_SESSION["token"] = ""
+    _COPILOT_SESSION["expires_at"] = 0.0
     mock_resp = MagicMock()
     mock_resp.read.return_value = b"<html>Service Unavailable</html>"
     mock_resp.__enter__ = lambda s: s
@@ -155,7 +160,9 @@ def test_fetch_session_token_raises_on_non_string_expires_at():
     """Response with null expires_at raises RuntimeError (AttributeError path)."""
     import json as _json
     import pytest
-    from agents.base_agent import _fetch_copilot_session_token
+    from agents.base_agent import _fetch_copilot_session_token, _COPILOT_SESSION
+    _COPILOT_SESSION["token"] = ""
+    _COPILOT_SESSION["expires_at"] = 0.0
     mock_resp = MagicMock()
     mock_resp.read.return_value = _json.dumps({"token": "abc", "expires_at": None}).encode()
     mock_resp.__enter__ = lambda s: s
@@ -227,7 +234,7 @@ def test_base_agent_copilot_openai_client_base_url():
 
     with patch.dict(os.environ, {"COPILOT_OAUTH_TOKEN": "gho_fake"}):
         with patch("urllib.request.urlopen", return_value=mock_resp):
-            with patch("agents.base_agent.OpenAI") as mock_openai:
+            with patch("agents.backends.copilot.OpenAI") as mock_openai:
                 mock_openai.return_value = MagicMock()
                 from agents.base_agent import BaseAgent, _COPILOT_SESSION
                 _COPILOT_SESSION["expires_at"] = 0.0
@@ -307,3 +314,7 @@ def test_ensure_copilot_session_refreshes_when_stale():
                 # One extra urlopen call for the token refresh
                 assert mock_urlopen.call_count == call_count_after_init + 1
                 assert ba_module._COPILOT_SESSION["token"] == "new_tok"
+
+    # Reset shared session cache so subsequent tests start clean
+    ba_module._COPILOT_SESSION["token"] = ""
+    ba_module._COPILOT_SESSION["expires_at"] = 0.0
