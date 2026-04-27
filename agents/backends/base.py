@@ -189,10 +189,14 @@ class OpenAICompatibleBackend(LLMBackend):
         tools: "ToolRegistry",
         max_turns: int = 8,
     ) -> str:
-        self._pre_call()
         messages = list(messages)  # local copy for tool loop
 
         for _ in range(max_turns):
+            # Fix 2 (Option B): call _pre_call() before every API call so that
+            # backends like CopilotBackend can refresh a short-lived session token
+            # that may expire mid tool-loop.  The default _pre_call() is a no-op,
+            # so this is safe for all other backends.
+            self._pre_call()
             if self._inter_call_delay > 0:
                 time.sleep(self._inter_call_delay)
             response = _retry_with_backoff(

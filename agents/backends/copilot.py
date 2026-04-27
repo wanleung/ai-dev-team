@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -20,6 +21,10 @@ _COPILOT_CONFIG_PATH = os.path.expanduser("~/.copilot/config.json")
 # Module-level session cache — shared across all CopilotBackend instances.
 _COPILOT_SESSION: dict = {"token": "", "expires_at": 0.0}
 
+# Fix 1: RLock (reentrant) allows __init__ / _pre_call to hold the lock while
+# calling _fetch_copilot_session_token, which also acquires it for double-check.
+_COPILOT_SESSION_LOCK = threading.RLock()
+
 
 def _discover_copilot_oauth_token() -> str:
     """Return the Copilot OAuth token from COPILOT_OAUTH_TOKEN env or ~/.copilot/config.json."""
@@ -32,7 +37,8 @@ def _discover_copilot_oauth_token() -> str:
         tokens: dict = cfg.get("copilot_tokens", {})
         if tokens:
             return next(iter(tokens.values()))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
+        # Fix 4: OSError widens FileNotFoundError to also catch PermissionError etc.
         pass
     raise EnvironmentError(
         "No GitHub Copilot OAuth token found. Either:\n"
@@ -42,36 +48,53 @@ def _discover_copilot_oauth_token() -> str:
 
 
 def _fetch_copilot_session_token(oauth_token: str) -> str:
-    """Exchange OAuth token for a short-lived session token. Updates _COPILOT_SESSION."""
-    req = urllib.request.Request(
-        _COPILOT_TOKEN_URL,
-        headers={"Authorization": f"token {oauth_token}"},
-    )
-    try:
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors="replace")[:500]
-        raise RuntimeError(
-            f"Copilot token exchange failed: HTTP {exc.code} — {exc.reason}\n{body}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(
-            f"Copilot token exchange failed: network error — {exc.reason}"
-        ) from exc
+    """Exchange OAuth token for a short-lived session token. Updates _COPILOT_SESSION.
 
-    try:
-        session_token: str = data["token"]
-        expires_str: str = data["expires_at"]
-        dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-    except (KeyError, ValueError) as exc:
-        raise RuntimeError(
-            f"Copilot token exchange failed: unexpected response format — {exc}"
-        ) from exc
+    Fix 1: Acquires _COPILOT_SESSION_LOCK and performs a double-checked test so
+    that concurrent callers (e.g. from multiple threads) only do the HTTP round-
+    trip once per expiry window.
+    """
+    with _COPILOT_SESSION_LOCK:
+        # Double-checked locking: re-test inside the lock so a second thread that
+        # was waiting finds the already-refreshed token and returns immediately.
+        if time.time() < _COPILOT_SESSION["expires_at"] - 60:
+            return _COPILOT_SESSION["token"]
 
-    _COPILOT_SESSION["token"] = session_token
-    _COPILOT_SESSION["expires_at"] = dt.timestamp()
-    return session_token
+        req = urllib.request.Request(
+            _COPILOT_TOKEN_URL,
+            headers={"Authorization": f"token {oauth_token}"},
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")[:500]
+            raise RuntimeError(
+                f"Copilot token exchange failed: HTTP {exc.code} — {exc.reason}\n{body}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"Copilot token exchange failed: network error — {exc.reason}"
+            ) from exc
+
+        try:
+            session_token: str = data["token"]
+            expires_str: str = data["expires_at"]
+            dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+        except (KeyError, ValueError) as exc:
+            raise RuntimeError(
+                f"Copilot token exchange failed: unexpected response format — {exc}"
+            ) from exc
+
+        # Fix 3: Guard against a null or non-string token in the response.
+        if not session_token or not isinstance(session_token, str):
+            raise RuntimeError(
+                f"Copilot token exchange returned an empty or non-string token: {session_token!r}"
+            )
+
+        _COPILOT_SESSION["token"] = session_token
+        _COPILOT_SESSION["expires_at"] = dt.timestamp()
+        return session_token
 
 
 def _build_copilot_client(token: str) -> OpenAI:
@@ -102,9 +125,14 @@ class CopilotBackend(OpenAICompatibleBackend):
         retry_delay: float = _DEFAULT_BASE_DELAY,
     ) -> None:
         self._oauth_token = _discover_copilot_oauth_token()
-        if time.time() >= _COPILOT_SESSION["expires_at"] - 60:
-            _fetch_copilot_session_token(self._oauth_token)
-        client = _build_copilot_client(_COPILOT_SESSION["token"])
+        # Fix 1: Hold the lock for the entire check→fetch→read sequence so no
+        # other thread can mutate _COPILOT_SESSION between the expiry test and
+        # the subsequent token read.  _fetch_copilot_session_token re-acquires
+        # the same RLock (reentrant), performing its own double-check inside.
+        with _COPILOT_SESSION_LOCK:
+            if time.time() >= _COPILOT_SESSION["expires_at"] - 60:
+                _fetch_copilot_session_token(self._oauth_token)
+            client = _build_copilot_client(_COPILOT_SESSION["token"])
         super().__init__(
             model=model.removeprefix("copilot/"),
             client=client,
@@ -114,8 +142,13 @@ class CopilotBackend(OpenAICompatibleBackend):
         )
 
     def _pre_call(self) -> None:
-        """Refresh session token if within 60s of expiry; rebuild client if refreshed."""
-        if time.time() < _COPILOT_SESSION["expires_at"] - 60:
-            return
-        new_token = _fetch_copilot_session_token(self._oauth_token)
-        self._client = _build_copilot_client(new_token)
+        """Refresh session token if within 60s of expiry; rebuild client if refreshed.
+
+        Fix 1: Hold the lock for the full check→fetch→rebuild sequence so a
+        concurrent call cannot race between the expiry read and the client swap.
+        """
+        with _COPILOT_SESSION_LOCK:
+            if time.time() < _COPILOT_SESSION["expires_at"] - 60:
+                return
+            new_token = _fetch_copilot_session_token(self._oauth_token)
+            self._client = _build_copilot_client(new_token)
