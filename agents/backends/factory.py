@@ -39,8 +39,8 @@ def _make_single_backend(cfg: dict, github_token: str | None = None) -> "LLMBack
         from agents.backends.anthropic import AnthropicBackend
         return AnthropicBackend(model=model, **kwargs)
 
-    # Default: GitHub Models (OpenAI-compatible)
-    if "/" not in model or model.startswith("gpt-") or model.startswith("o"):
+    # Default: bare model names (no prefix slash) go to GitHub Models
+    if "/" not in model:
         from agents.backends.github_models import GitHubModelsBackend
         return GitHubModelsBackend(model=model, github_token=github_token, **kwargs)
 
