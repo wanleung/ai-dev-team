@@ -343,28 +343,19 @@ class Orchestrator(TestFixLoopMixin):
             return override
 
         def _mk(agent_name: str, model_fallback: Optional[str] = None) -> dict:
-            """Build per-agent constructor kwargs: model, llm backend, and ollama compat attrs.
+            """Build per-agent constructor kwargs: llm backend only.
 
-            Merges global _llm_cfg with any per-agent override from model_overrides.
-            If no override exists and *model_fallback* is given, that model is used
-            instead of the global default (used for tier agents resolved via team config).
+            Delegates to :meth:`_make_backend_from_model` when *model_fallback* is
+            given (tier agents whose model is resolved via team config), or to
+            :meth:`_make_backend` for all other agents.  The ollama compat attrs
+            (``ollama_think`` etc.) are already present in ``agent_kwargs`` and do
+            not need to be duplicated here.
             """
-            cfg = dict(self._llm_cfg)
-            ov = self.model_overrides.get(agent_name)
-            if isinstance(ov, str):
-                cfg["model"] = ov
-            elif isinstance(ov, dict):
-                cfg = _deep_merge(cfg, ov)
-            elif model_fallback is not None:
-                # Not in model_overrides — use team-level resolved model
-                cfg["model"] = model_fallback
-            return {
-                "model": cfg["model"],
-                "llm": self._build_factory_cfg_and_create(cfg),
-                "ollama_think": cfg.get("ollama_think", ollama_think),
-                "ollama_preserve_thinking": cfg.get("ollama_preserve_thinking", ollama_preserve_thinking),
-                "ollama_stream": cfg.get("ollama_stream", ollama_stream),
-            }
+            if model_fallback:
+                backend = self._make_backend_from_model(model_fallback)
+            else:
+                backend = self._make_backend(agent_name)
+            return {"llm": backend}
 
         self.pm = ProductManagerAgent(**{**agent_kwargs, **_mk("product_manager")})
         self.pm_reviewer = PMReviewerAgent(**{**agent_kwargs, **_mk("pm_reviewer")})

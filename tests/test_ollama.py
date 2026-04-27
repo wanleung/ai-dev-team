@@ -376,7 +376,13 @@ def test_orchestrator_passes_ollama_think_stream():
 # ── Per-agent ollama_think / ollama_stream overrides ─────────────────────────
 
 def test_model_override_dict_form_model():
-    """Dict override: architect gets the dict's model and ollama_think values."""
+    """Dict override: architect gets the dict's model and ollama_think values.
+
+    After the _mk() refactor, per-agent ollama_think overrides are baked into the
+    LLM backend (backend._think) rather than the agent's legacy _ollama_think
+    attribute.  The agent-level attribute still reflects the *global* setting
+    passed via agent_kwargs; the per-agent value is verified via the backend.
+    """
     from orchestrator import Orchestrator
 
     orc = Orchestrator(
@@ -394,8 +400,9 @@ def test_model_override_dict_form_model():
     # the dict's model key, i.e., the agent was NOT created with the global model.
     # We do that by checking the _api_model stored on the agent instance.
     assert orc.architect._api_model == "qwen3.6"
-    # ollama_think=True was specified in the dict override
-    assert orc.architect._ollama_think is True
+    # ollama_think=True was specified in the dict override — it is baked into the
+    # LLM backend (_think), not the legacy agent-level attribute.
+    assert orc.architect._llm._think is True
 
 
 def test_model_override_dict_form_inherits_global():
