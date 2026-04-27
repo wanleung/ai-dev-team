@@ -4,16 +4,21 @@ from unittest.mock import MagicMock
 import pytest
 
 
-def _make_backend(reply: str = "ok", raises=None):
+def _make_backend(reply: str = "ok", raises=None, supports_tools: bool = True):
     """Create a mock LLMBackend."""
     from agents.backends.base import LLMBackend
 
     class MockBackend(LLMBackend):
-        def __init__(self, model, reply, raises):
+        def __init__(self, model, reply, raises, _supports_tools):
             self.model = model
             self._reply = reply
             self._raises = raises
+            self._supports_tools = _supports_tools
             self.call_count = 0
+            self.call_with_tools_count = 0
+
+        def supports_tools(self):
+            return self._supports_tools
 
         def call(self, messages):
             self.call_count += 1
@@ -22,12 +27,12 @@ def _make_backend(reply: str = "ok", raises=None):
             return self._reply
 
         def call_with_tools(self, messages, tools, max_turns=8):
-            self.call_count += 1
+            self.call_with_tools_count += 1
             if self._raises:
                 raise self._raises
             return self._reply
 
-    return MockBackend(model=f"mock/{reply}", reply=reply, raises=raises)
+    return MockBackend(model=f"mock/{reply}", reply=reply, raises=raises, _supports_tools=supports_tools)
 
 
 def test_fallback_uses_first_backend_when_healthy():
@@ -131,3 +136,16 @@ def test_fallback_call_with_tools_switches():
     fb = FallbackLLMBackend([primary, secondary])
     result = fb.call_with_tools([{"role": "user", "content": "hi"}], MagicMock())
     assert result == "tool_reply"
+    # verify the right method was dispatched on each backend
+    assert primary.call_count == 0
+    assert primary.call_with_tools_count == 1
+    assert secondary.call_count == 0
+    assert secondary.call_with_tools_count == 1
+
+
+def test_fallback_mixed_tool_support_raises_value_error():
+    from agents.backends.fallback import FallbackLLMBackend
+    tool_backend = _make_backend("tool_reply", supports_tools=True)
+    non_tool_backend = _make_backend("plain_reply", supports_tools=False)
+    with pytest.raises(ValueError, match="supports_tools"):
+        FallbackLLMBackend([tool_backend, non_tool_backend])

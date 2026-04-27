@@ -23,6 +23,12 @@ class FallbackLLMBackend(LLMBackend):
     def __init__(self, backends: list[LLMBackend]) -> None:
         if not backends:
             raise ValueError("FallbackLLMBackend requires at least one backend")
+        tool_support = [b.supports_tools() for b in backends]
+        if len(set(tool_support)) > 1:
+            raise ValueError(
+                "All backends in FallbackLLMBackend must have the same supports_tools() "
+                "capability. Mix of tool-capable and non-tool backends is not supported."
+            )
         self._backends = backends
 
     @property
@@ -47,7 +53,6 @@ class FallbackLLMBackend(LLMBackend):
                     )
                 else:
                     raise
-        raise last_exc  # type: ignore[misc]
 
     def call_with_tools(
         self,
@@ -69,4 +74,3 @@ class FallbackLLMBackend(LLMBackend):
                     )
                 else:
                     raise
-        raise last_exc  # type: ignore[misc]
