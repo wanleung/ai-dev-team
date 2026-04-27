@@ -482,8 +482,6 @@ class Orchestrator(TestFixLoopMixin):
         through :func:`~agents.backends.factory.create_backend`, which raises
         ``ValueError`` for unknown prefixes.
         """
-        from agents.backends.factory import create_backend
-
         model: str = cfg["model"]
 
         # Prefixes that create_backend understands natively
@@ -510,12 +508,8 @@ class Orchestrator(TestFixLoopMixin):
             ]
             return FallbackLLMBackend(backends)
 
-        # Start with minimal factory cfg
+        # Build translated factory cfg for the primary backend
         factory_cfg: dict = {"model": model}
-
-        # Fallbacks are model-agnostic
-        if "fallbacks" in cfg:
-            factory_cfg["fallbacks"] = cfg["fallbacks"]
 
         if model.startswith("ollama/"):
             factory_cfg["ollama_url"] = cfg.get("ollama_url", "http://localhost:11434")
@@ -527,10 +521,23 @@ class Orchestrator(TestFixLoopMixin):
                 factory_cfg["nvidia_nim_api_key"] = cfg["nvidia_nim_api_key"]
             if cfg.get("nvidia_nim_base_url"):
                 factory_cfg["nvidia_nim_base_url"] = cfg["nvidia_nim_base_url"]
-        # All other backends (github_models, anthropic, copilot, opencode, opencode-zen,
+        # All other backends (anthropic, copilot, opencode, opencode-zen,
         # opencode-go) use env-var auth and need no extra config keys.
 
-        return create_backend(factory_cfg, github_token=self._github_token)
+        from agents.backends.factory import _make_single_backend
+        primary = _make_single_backend(factory_cfg, github_token=self._github_token)
+
+        # Recursively translate and build each fallback through this same method
+        # so that ollama_think/ollama_stream etc. are properly translated for each entry.
+        fallback_cfgs: list[dict] = cfg.get("fallbacks") or []
+        if not fallback_cfgs:
+            return primary
+
+        from agents.backends.fallback import FallbackLLMBackend
+        backends = [primary] + [
+            self._build_factory_cfg_and_create(fb) for fb in fallback_cfgs
+        ]
+        return FallbackLLMBackend(backends)
 
     @classmethod
     def from_config(cls, config_path: str = "config.yaml", github_token: Optional[str] = None) -> "Orchestrator":
