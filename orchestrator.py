@@ -252,6 +252,8 @@ class Orchestrator(TestFixLoopMixin):
         max_deploy_retries: int = 5,
         framework_docs_loader: Optional["FrameworkDocsLoader"] = None,
         repo_context_loader: Optional["RepoContextLoader"] = None,
+        llm_cfg: Optional[dict] = None,
+        llm_fallbacks: Optional[list] = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -305,7 +307,7 @@ class Orchestrator(TestFixLoopMixin):
         self._rag_registry = rag_registry
         self.repo_auto_indexer = RepoAutoIndexer() if rag_registry else None
 
-        # Shared kwargs for all agents
+        # Shared kwargs for all agents (kept for backward compat; tests check agent_kwargs)
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
                               "ollama_think": ollama_think, "ollama_preserve_thinking": ollama_preserve_thinking,
                               "ollama_stream": ollama_stream,
@@ -315,44 +317,64 @@ class Orchestrator(TestFixLoopMixin):
                               "inter_call_delay": inter_call_delay}
         self.agent_kwargs = agent_kwargs
 
-        def _model(agent_name: str) -> str:
-            """Return the model for a given agent, falling back to the global default.
+        # ── Global LLM config dict (used by _make_backend) ────────────────────
+        self._llm_cfg: dict = {
+            "model": model,
+            "ollama_url": ollama_url,
+            "ollama_think": ollama_think,
+            "ollama_preserve_thinking": ollama_preserve_thinking,
+            "ollama_stream": ollama_stream,
+        }
+        if nvidia_nim_api_key is not None:
+            self._llm_cfg["nvidia_nim_api_key"] = nvidia_nim_api_key
+        if nvidia_nim_base_url is not None:
+            self._llm_cfg["nvidia_nim_base_url"] = nvidia_nim_base_url
+        if llm_fallbacks:
+            self._llm_cfg["fallbacks"] = llm_fallbacks
+        if llm_cfg:
+            # Caller supplied a full llm config dict — deep-merge over constructed defaults
+            self._llm_cfg = _deep_merge(self._llm_cfg, llm_cfg)
 
-            Supports both string overrides (model name only) and dict overrides
-            (with optional ``model``, ``ollama_think``, ``ollama_stream`` keys).
-            """
+        def _model(agent_name: str) -> str:
+            """Return the model string for a given agent, falling back to the global default."""
             override = self.model_overrides.get(agent_name, model)
             if isinstance(override, dict):
                 return override.get("model", model)
             return override
 
-        def _agent_ollama_kwargs(agent_name: str) -> dict:
-            """Return ollama_think/ollama_stream for this agent, falling back to global defaults.
+        def _mk(agent_name: str, model_fallback: Optional[str] = None) -> dict:
+            """Build per-agent constructor kwargs: model, llm backend, and ollama compat attrs.
 
-            If the agent's override entry is a dict it may contain per-agent values for
-            ``ollama_think`` and/or ``ollama_stream``; any key absent in the dict falls
-            back to the global values supplied to ``Orchestrator.__init__``.
-            If the override is a plain string (model name only) or absent, the global
-            defaults are returned unchanged.
+            Merges global _llm_cfg with any per-agent override from model_overrides.
+            If no override exists and *model_fallback* is given, that model is used
+            instead of the global default (used for tier agents resolved via team config).
             """
-            override = self.model_overrides.get(agent_name, {})
-            if isinstance(override, dict):
-                return {
-                    "ollama_think": override.get("ollama_think", ollama_think),
-                    "ollama_preserve_thinking": override.get("ollama_preserve_thinking", ollama_preserve_thinking),
-                    "ollama_stream": override.get("ollama_stream", ollama_stream),
-                }
-            return {"ollama_think": ollama_think, "ollama_preserve_thinking": ollama_preserve_thinking, "ollama_stream": ollama_stream}
+            cfg = dict(self._llm_cfg)
+            ov = self.model_overrides.get(agent_name)
+            if isinstance(ov, str):
+                cfg["model"] = ov
+            elif isinstance(ov, dict):
+                cfg = _deep_merge(cfg, ov)
+            elif model_fallback is not None:
+                # Not in model_overrides — use team-level resolved model
+                cfg["model"] = model_fallback
+            return {
+                "model": cfg["model"],
+                "llm": self._build_factory_cfg_and_create(cfg),
+                "ollama_think": cfg.get("ollama_think", ollama_think),
+                "ollama_preserve_thinking": cfg.get("ollama_preserve_thinking", ollama_preserve_thinking),
+                "ollama_stream": cfg.get("ollama_stream", ollama_stream),
+            }
 
-        self.pm = ProductManagerAgent(model=_model("product_manager"), **{**agent_kwargs, **_agent_ollama_kwargs("product_manager")})
-        self.pm_reviewer = PMReviewerAgent(model=_model("pm_reviewer"), **{**agent_kwargs, **_agent_ollama_kwargs("pm_reviewer")})
-        self.architect = ArchitectAgent(model=_model("architect"), tool_registry=rag_registry, **{**agent_kwargs, **_agent_ollama_kwargs("architect")})
-        self.architect_reviewer = ArchitectReviewerAgent(model=_model("architect_reviewer"), **{**agent_kwargs, **_agent_ollama_kwargs("architect_reviewer")})
-        self.engineer = EngineerAgent(model=_model("engineer"), tool_registry=rag_registry, **{**agent_kwargs, **_agent_ollama_kwargs("engineer")})
-        self.reviewer = CodeReviewerAgent(model=_model("code_reviewer"), tool_registry=tool_registry, **{**agent_kwargs, **_agent_ollama_kwargs("code_reviewer")})
-        self.qa_planner = QAPlannerAgent(model=_model("qa_planner"), tool_registry=tool_registry, **{**agent_kwargs, **_agent_ollama_kwargs("qa_planner")})
-        self.qa = QAEngineerAgent(model=_model("qa_engineer"), tool_registry=rag_registry, **{**agent_kwargs, **_agent_ollama_kwargs("qa_engineer")})
-        self.deployment_tester = DeploymentTesterAgent(model=_model("deployment_tester"), **{**agent_kwargs, **_agent_ollama_kwargs("deployment_tester")})
+        self.pm = ProductManagerAgent(**{**agent_kwargs, **_mk("product_manager")})
+        self.pm_reviewer = PMReviewerAgent(**{**agent_kwargs, **_mk("pm_reviewer")})
+        self.architect = ArchitectAgent(tool_registry=rag_registry, **{**agent_kwargs, **_mk("architect")})
+        self.architect_reviewer = ArchitectReviewerAgent(**{**agent_kwargs, **_mk("architect_reviewer")})
+        self.engineer = EngineerAgent(tool_registry=rag_registry, **{**agent_kwargs, **_mk("engineer")})
+        self.reviewer = CodeReviewerAgent(tool_registry=tool_registry, **{**agent_kwargs, **_mk("code_reviewer")})
+        self.qa_planner = QAPlannerAgent(tool_registry=tool_registry, **{**agent_kwargs, **_mk("qa_planner")})
+        self.qa = QAEngineerAgent(tool_registry=rag_registry, **{**agent_kwargs, **_mk("qa_engineer")})
+        self.deployment_tester = DeploymentTesterAgent(**{**agent_kwargs, **_mk("deployment_tester")})
 
         # Junior/Senior tier agents — model priority: llm.overrides > team.junior/senior_model > global
         _junior_model = (
@@ -369,18 +391,15 @@ class Orchestrator(TestFixLoopMixin):
         )
 
         self.junior_engineer = JuniorEngineerAgent(
-            model=_junior_model,
             tool_registry=rag_registry if self.junior_engineer_use_mcp else None,
-            **{**agent_kwargs, **_agent_ollama_kwargs("junior_engineer")},
+            **{**agent_kwargs, **_mk("junior_engineer", model_fallback=_junior_model)},
         )
         self.senior_engineer = SeniorEngineerAgent(
-            model=_senior_model,
             tool_registry=rag_registry if self.senior_engineer_use_mcp else None,
-            **{**agent_kwargs, **_agent_ollama_kwargs("senior_engineer")},
+            **{**agent_kwargs, **_mk("senior_engineer", model_fallback=_senior_model)},
         )
         self.tier_reviewer = TierReviewerAgent(
-            model=_tier_rev_model,
-            **{**agent_kwargs, **_agent_ollama_kwargs("tier_reviewer")},
+            **{**agent_kwargs, **_mk("tier_reviewer", model_fallback=_tier_rev_model)},
         )
 
 
@@ -396,8 +415,8 @@ class Orchestrator(TestFixLoopMixin):
             if agent is not None
         }
 
-        self.summariser = SummaryAgent(model=_model("summariser"), **{**agent_kwargs, **_agent_ollama_kwargs("summariser")})
-        self.refactor_agent = RefactorAgent(model=_model("refactor_agent"), **{**agent_kwargs, **_agent_ollama_kwargs("refactor_agent")})
+        self.summariser = SummaryAgent(**{**agent_kwargs, **_mk("summariser")})
+        self.refactor_agent = RefactorAgent(**{**agent_kwargs, **_mk("refactor_agent")})
 
         # Long-term SQLite memory store
         self.memory = MemoryStore(self.workspace_dir / "memory.db")
@@ -415,6 +434,99 @@ class Orchestrator(TestFixLoopMixin):
             self.target_github = GitHubClient(repo=target_repo, github_token=github_token)
         else:
             self.target_github = self.github
+
+    # ── Backend factory helpers ───────────────────────────────────────────────
+
+    def _make_backend(self, agent_name: str) -> "LLMBackend":
+        """Build an :class:`~agents.backends.base.LLMBackend` for *agent_name*.
+
+        Reads the global ``_llm_cfg`` config, merges any per-agent override from
+        ``model_overrides``, translates orchestrator-level keys to the backend
+        constructor's expected keys, and calls :func:`~agents.backends.factory.create_backend`.
+
+        Supports both string overrides (model name only) and dict overrides
+        (full per-agent settings).
+        """
+        from agents.backends.factory import create_backend
+        from agents.backends.base import LLMBackend as _LLMBackend  # noqa: F401
+
+        # Merge global cfg with per-agent override
+        cfg: dict = dict(self._llm_cfg)
+        override = self.model_overrides.get(agent_name)
+        if isinstance(override, str):
+            cfg["model"] = override
+        elif isinstance(override, dict):
+            cfg = _deep_merge(cfg, override)
+
+        return self._build_factory_cfg_and_create(cfg)
+
+    def _make_backend_from_model(self, model: str) -> "LLMBackend":
+        """Build a backend for an explicit model string, inheriting global llm settings.
+
+        Used for tier agents (junior/senior/tier_reviewer) whose model is resolved
+        via ``team.junior_model`` / ``team.senior_model`` rather than a named
+        ``model_overrides`` entry.
+        """
+        cfg: dict = dict(self._llm_cfg)
+        cfg["model"] = model
+        return self._build_factory_cfg_and_create(cfg)
+
+    def _build_factory_cfg_and_create(self, cfg: dict) -> "LLMBackend":
+        """Translate orchestrator-level config keys → factory keys and call create_backend.
+
+        Handles key-name differences between the YAML/orchestrator config
+        (``ollama_think``, ``ollama_stream``, …) and the backend constructors
+        (``think``, ``stream``, …).
+
+        Models with a provider prefix that is *not* a recognised backend prefix
+        (e.g. ``openai/gpt-4.1``, ``meta/llama-3.1-405b-instruct``) are treated
+        as GitHub Models API calls — matching the legacy ``BaseAgent._build_backend``
+        default fallback.  These are routed directly to
+        :class:`~agents.backends.github_models.GitHubModelsBackend` rather than
+        through :func:`~agents.backends.factory.create_backend`, which raises
+        ``ValueError`` for unknown prefixes.
+        """
+        from agents.backends.factory import create_backend
+
+        model: str = cfg["model"]
+
+        # Prefixes that create_backend understands natively
+        _FACTORY_PREFIXES = (
+            "ollama/", "copilot/", "nvidia-nim/",
+            "opencode/", "opencode-zen/", "opencode-go/",
+            "claude-",
+        )
+        # Route to GitHub Models for bare names OR unknown-prefix names
+        # (e.g. "openai/gpt-4.1", "meta/llama-3.1-405b-instruct").
+        use_factory = ("/" not in model) or any(
+            model.startswith(p) for p in _FACTORY_PREFIXES
+        )
+
+        if not use_factory:
+            from agents.backends.github_models import GitHubModelsBackend
+            return GitHubModelsBackend(model=model, github_token=self._github_token)
+
+        # Start with minimal factory cfg
+        factory_cfg: dict = {"model": model}
+
+        # Fallbacks are model-agnostic
+        if "fallbacks" in cfg:
+            factory_cfg["fallbacks"] = cfg["fallbacks"]
+
+        if model.startswith("ollama/"):
+            factory_cfg["ollama_url"] = cfg.get("ollama_url", "http://localhost:11434")
+            factory_cfg["think"] = cfg.get("ollama_think", False)
+            factory_cfg["preserve_thinking"] = cfg.get("ollama_preserve_thinking", False)
+            factory_cfg["stream"] = cfg.get("ollama_stream", True)
+        elif model.startswith("nvidia-nim/"):
+            if cfg.get("nvidia_nim_api_key"):
+                factory_cfg["nvidia_nim_api_key"] = cfg["nvidia_nim_api_key"]
+            if cfg.get("nvidia_nim_base_url"):
+                factory_cfg["nvidia_nim_base_url"] = cfg["nvidia_nim_base_url"]
+        # All other backends (github_models, anthropic, copilot, opencode, opencode-zen,
+        # opencode-go) use env-var auth and need no extra config keys.
+
+        return create_backend(factory_cfg, github_token=self._github_token)
 
     @classmethod
     def from_config(cls, config_path: str = "config.yaml", github_token: Optional[str] = None) -> "Orchestrator":
@@ -487,6 +599,7 @@ class Orchestrator(TestFixLoopMixin):
             max_deploy_retries=pipeline.get("max_deploy_retries", 5),
             framework_docs_loader=framework_docs_loader,
             repo_context_loader=repo_context_loader,
+            llm_fallbacks=llm.get("fallbacks") or None,
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
