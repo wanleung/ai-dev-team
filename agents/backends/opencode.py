@@ -11,6 +11,15 @@ from agents.backends.base import LLMBackend, _DEFAULT_MAX_RETRIES
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
 
+# Fix 3 — broader ANSI escape stripping (CSI, OSC, and Fe sequences)
+_ANSI_ESCAPE = re.compile(
+    r'\x1b(?:'
+    r'\[[0-9;?]*[A-Za-z]'              # CSI sequences
+    r'|\][^\x07\x1b]*(?:\x07|\x1b\\)'  # OSC sequences
+    r'|[@-_]'                           # Fe escape sequences
+    r')'
+)
+
 
 class OpenCodeBackend(LLMBackend):
     """OpenCode CLI backend — runs opencode subprocess for each call.
@@ -60,18 +69,21 @@ class OpenCodeBackend(LLMBackend):
                 chat_messages.append(m)
 
         history = chat_messages[:-1]
-        user_message = chat_messages[-1]["content"] if chat_messages else ""
+        # Fix 1 — content can be None for assistant messages with only tool calls
+        user_message = (chat_messages[-1].get("content") or "") if chat_messages else ""
 
         if history:
             history_lines = []
             for turn in history:
                 label = "USER" if turn["role"] == "user" else "ASSISTANT"
-                history_lines.append(f"{label}: {turn['content'][:2000]}")
+                # Fix 1 — content can be None for assistant messages with only tool calls
+                history_lines.append(f"{label}: {(turn.get('content') or '')[:2000]}")
             parts.append("[CONVERSATION HISTORY]\n" + "\n\n".join(history_lines))
         parts.append(user_message)
 
         full_prompt = "\n\n".join(parts)
-        cmd = [bin_path, "run", "--model", self.model, full_prompt]
+        # Fix 2 — add "--" separator to terminate option parsing before the prompt
+        cmd = [bin_path, "run", "--model", self.model, "--", full_prompt]
 
         for attempt in range(self._max_retries + 1):
             try:
@@ -88,7 +100,8 @@ class OpenCodeBackend(LLMBackend):
                 output = result.stdout.strip()
                 if not output:
                     raise RuntimeError("Empty response from opencode")
-                output = re.sub(r"\x1b\[[0-9;]*[mGKHF]", "", output).strip()
+                # Fix 3 — use broader ANSI escape regex
+                output = _ANSI_ESCAPE.sub("", output).strip()
                 if not output:
                     raise RuntimeError("Empty response from opencode after stripping ANSI codes")
                 return output
@@ -97,7 +110,8 @@ class OpenCodeBackend(LLMBackend):
                     raise
                 time.sleep(2 ** attempt)
 
-        raise RuntimeError("All opencode retries exhausted")
+        # Fix 4 — removed unreachable RuntimeError("All opencode retries exhausted");
+        # the last loop iteration always does a bare raise, so this line is never reached.
 
     def call_with_tools(
         self,
