@@ -25,13 +25,13 @@ def test_is_copilot_model_without_prefix():
 # ── _discover_copilot_oauth_token ─────────────────────────────────────────────
 
 def test_discover_oauth_token_from_env():
-    from agents.base_agent import _discover_copilot_oauth_token
+    from agents.backends.copilot import _discover_copilot_oauth_token
     with patch.dict(os.environ, {"COPILOT_OAUTH_TOKEN": "gho_test123"}):
         assert _discover_copilot_oauth_token() == "gho_test123"
 
 
 def test_discover_oauth_token_from_config_file():
-    from agents.base_agent import _discover_copilot_oauth_token
+    from agents.backends.copilot import _discover_copilot_oauth_token
     config = {"copilot_tokens": {"https://github.com:testuser": "gho_fromfile"}}
     config_json = json.dumps(config)
     with patch.dict(os.environ, {}, clear=True):
@@ -40,7 +40,7 @@ def test_discover_oauth_token_from_config_file():
 
 
 def test_discover_oauth_token_raises_when_missing():
-    from agents.base_agent import _discover_copilot_oauth_token
+    from agents.backends.copilot import _discover_copilot_oauth_token
     with patch.dict(os.environ, {}, clear=True):
         with patch("builtins.open", side_effect=FileNotFoundError):
             try:
@@ -53,7 +53,10 @@ def test_discover_oauth_token_raises_when_missing():
 # ── _fetch_copilot_session_token ──────────────────────────────────────────────
 
 def test_fetch_session_token_success():
-    from agents.base_agent import _fetch_copilot_session_token, _COPILOT_SESSION
+    from agents.backends.copilot import _fetch_copilot_session_token, _COPILOT_SESSION
+    # Reset session so the double-checked locking does not short-circuit
+    _COPILOT_SESSION["token"] = ""
+    _COPILOT_SESSION["expires_at"] = 0.0
     expires = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
@@ -77,7 +80,7 @@ def test_fetch_session_token_success():
 
 
 def test_fetch_session_token_raises_on_http_error():
-    from agents.base_agent import _fetch_copilot_session_token
+    from agents.backends.copilot import _fetch_copilot_session_token
     import urllib.error
     mock_body = b'{"message":"Bad credentials"}'
     with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
@@ -92,7 +95,7 @@ def test_fetch_session_token_raises_on_http_error():
 
 
 def test_fetch_session_token_raises_on_url_error():
-    from agents.base_agent import _fetch_copilot_session_token
+    from agents.backends.copilot import _fetch_copilot_session_token
     import urllib.error
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
         try:
@@ -103,7 +106,7 @@ def test_fetch_session_token_raises_on_url_error():
 
 
 def test_discover_oauth_token_raises_when_config_has_empty_tokens():
-    from agents.base_agent import _discover_copilot_oauth_token
+    from agents.backends.copilot import _discover_copilot_oauth_token
     config_json = json.dumps({"copilot_tokens": {}})
     with patch.dict(os.environ, {}, clear=True):
         with patch("builtins.open", mock_open(read_data=config_json)):
@@ -116,7 +119,9 @@ def test_discover_oauth_token_raises_when_config_has_empty_tokens():
 
 def test_fetch_session_token_raises_on_non_json_response():
     """Non-JSON response body raises RuntimeError."""
-    from agents.base_agent import _fetch_copilot_session_token
+    from agents.backends.copilot import _fetch_copilot_session_token, _COPILOT_SESSION
+    _COPILOT_SESSION["token"] = ""
+    _COPILOT_SESSION["expires_at"] = 0.0
     mock_resp = MagicMock()
     mock_resp.read.return_value = b"<html>Service Unavailable</html>"
     mock_resp.__enter__ = lambda s: s
@@ -130,7 +135,7 @@ def test_fetch_session_token_raises_on_non_json_response():
 def test_fetch_session_token_raises_on_missing_field():
     """Response missing 'token' field raises RuntimeError."""
     import json as _json
-    from agents.base_agent import _fetch_copilot_session_token
+    from agents.backends.copilot import _fetch_copilot_session_token
     mock_resp = MagicMock()
     mock_resp.read.return_value = _json.dumps({"expires_at": "2099-01-01T00:00:00Z"}).encode()
     mock_resp.__enter__ = lambda s: s
@@ -143,7 +148,7 @@ def test_fetch_session_token_raises_on_missing_field():
 
 def test_discover_oauth_token_raises_when_config_is_corrupted():
     """Corrupted config.json (invalid JSON) falls through to EnvironmentError."""
-    from agents.base_agent import _discover_copilot_oauth_token
+    from agents.backends.copilot import _discover_copilot_oauth_token
     import pytest
     with patch.dict(os.environ, {}, clear=True):
         with patch("builtins.open", mock_open(read_data="not valid json")):
@@ -155,7 +160,9 @@ def test_fetch_session_token_raises_on_non_string_expires_at():
     """Response with null expires_at raises RuntimeError (AttributeError path)."""
     import json as _json
     import pytest
-    from agents.base_agent import _fetch_copilot_session_token
+    from agents.backends.copilot import _fetch_copilot_session_token, _COPILOT_SESSION
+    _COPILOT_SESSION["token"] = ""
+    _COPILOT_SESSION["expires_at"] = 0.0
     mock_resp = MagicMock()
     mock_resp.read.return_value = _json.dumps({"token": "abc", "expires_at": None}).encode()
     mock_resp.__enter__ = lambda s: s
@@ -227,9 +234,10 @@ def test_base_agent_copilot_openai_client_base_url():
 
     with patch.dict(os.environ, {"COPILOT_OAUTH_TOKEN": "gho_fake"}):
         with patch("urllib.request.urlopen", return_value=mock_resp):
-            with patch("agents.base_agent.OpenAI") as mock_openai:
+            with patch("agents.backends.copilot.OpenAI") as mock_openai:
                 mock_openai.return_value = MagicMock()
-                from agents.base_agent import BaseAgent, _COPILOT_SESSION
+                from agents.base_agent import BaseAgent
+                from agents.backends.copilot import _COPILOT_SESSION
                 _COPILOT_SESSION["expires_at"] = 0.0
                 BaseAgent(model="copilot/gpt-4o")
                 call_kwargs = mock_openai.call_args[1]
@@ -280,6 +288,7 @@ def test_ensure_copilot_session_skips_refresh_when_fresh():
 def test_ensure_copilot_session_refreshes_when_stale():
     """Token exchange is triggered when cached token has expired."""
     import agents.base_agent as ba_module
+    import agents.backends.copilot as copilot_module
     from datetime import datetime, timezone, timedelta
     import json as _json
 
@@ -301,9 +310,13 @@ def test_ensure_copilot_session_refreshes_when_stale():
                 call_count_after_init = mock_urlopen.call_count
 
                 # Force expiry so _ensure_copilot_session triggers a refresh
-                ba_module._COPILOT_SESSION["expires_at"] = time.time() - 10
+                copilot_module._COPILOT_SESSION["expires_at"] = time.time() - 10
                 agent._ensure_copilot_session()
 
                 # One extra urlopen call for the token refresh
                 assert mock_urlopen.call_count == call_count_after_init + 1
-                assert ba_module._COPILOT_SESSION["token"] == "new_tok"
+                assert copilot_module._COPILOT_SESSION["token"] == "new_tok"
+
+    # Reset shared session cache so subsequent tests start clean
+    copilot_module._COPILOT_SESSION["token"] = ""
+    copilot_module._COPILOT_SESSION["expires_at"] = 0.0

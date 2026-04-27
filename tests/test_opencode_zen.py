@@ -83,7 +83,7 @@ def test_opencode_zen_custom_base_url():
 def test_opencode_zen_gpt_uses_openai_client():
     """Non-Claude models get an OpenAI client pointed at the zen base URL."""
     with patch.dict("os.environ", {"OPENCODE_ZEN_API_KEY": "zen-test-key"}):
-        with patch("agents.base_agent.OpenAI") as mock_cls:
+        with patch("agents.backends.opencode_zen.OpenAI") as mock_cls:
             from agents.base_agent import BaseAgent
             agent = BaseAgent(model="opencode-zen/gpt-5.3-codex")
     mock_cls.assert_called_once_with(
@@ -122,7 +122,7 @@ def test_opencode_zen_falls_back_to_opencode_api_key():
     import os
     os.environ.pop("OPENCODE_ZEN_API_KEY", None)
     with patch.dict("os.environ", {"OPENCODE_API_KEY": "fallback-key"}, clear=False):
-        with patch("agents.base_agent.OpenAI") as mock_cls:
+        with patch("agents.backends.opencode_zen.OpenAI") as mock_cls:
             from agents.base_agent import BaseAgent
             BaseAgent(model="opencode-zen/gpt-5.3-codex")
     mock_cls.assert_called_once_with(
@@ -148,7 +148,7 @@ def test_call_routes_zen_claude_to_anthropic():
 def test_call_routes_zen_gpt_to_openai():
     """call() routes opencode_zen non-Claude models through OpenAI-compatible path."""
     with patch.dict("os.environ", {"OPENCODE_ZEN_API_KEY": "zen-test-key"}):
-        with patch("agents.base_agent.OpenAI") as mock_cls:
+        with patch("agents.backends.opencode_zen.OpenAI") as mock_cls:
             mock_client = MagicMock()
             mock_cls.return_value = mock_client
             from agents.base_agent import BaseAgent
@@ -178,7 +178,7 @@ def test_call_with_tools_raises_for_zen_claude():
 def test_call_with_tools_allowed_for_zen_gpt():
     """call_with_tools is allowed for opencode_zen + non-Claude (OpenAI-compatible)."""
     with patch.dict("os.environ", {"OPENCODE_ZEN_API_KEY": "zen-test-key"}):
-        with patch("agents.base_agent.OpenAI") as mock_cls:
+        with patch("agents.backends.opencode_zen.OpenAI") as mock_cls:
             mock_client = MagicMock()
             mock_cls.return_value = mock_client
             from agents.base_agent import BaseAgent

@@ -67,7 +67,7 @@ def test_call_opencode_runs_correct_command():
     mock_result.stdout = "Here is the design."
     mock_result.stderr = ""
 
-    with patch("agents.base_agent.subprocess.run", return_value=mock_result) as mock_run:
+    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result) as mock_run:
         agent._call_opencode("Design the system")
 
     call_args = mock_run.call_args[0][0]
@@ -84,7 +84,7 @@ def test_call_opencode_embeds_system_prompt():
     agent.system_prompt = "You are a senior architect."
 
     mock_result = MagicMock(returncode=0, stdout="Design done.", stderr="")
-    with patch("agents.base_agent.subprocess.run", return_value=mock_result) as mock_run:
+    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result) as mock_run:
         agent._call_opencode("Build a REST API")
 
     combined_prompt = mock_run.call_args[0][0][-1]
@@ -102,7 +102,7 @@ def test_call_opencode_embeds_history():
     ]
 
     mock_result = MagicMock(returncode=0, stdout="Second answer.", stderr="")
-    with patch("agents.base_agent.subprocess.run", return_value=mock_result) as mock_run:
+    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result) as mock_run:
         agent._call_opencode("Second question")
 
     combined_prompt = mock_run.call_args[0][0][-1]
@@ -119,7 +119,7 @@ def test_call_opencode_strips_ansi_codes():
         stdout="\x1b[32mHere is the design.\x1b[0m",
         stderr="",
     )
-    with patch("agents.base_agent.subprocess.run", return_value=mock_result):
+    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result):
         result = agent._call_opencode("Design the system")
 
     assert "\x1b" not in result
@@ -131,7 +131,7 @@ def test_call_opencode_updates_history():
     agent = _make_agent()
     mock_result = MagicMock(returncode=0, stdout="Response.", stderr="")
 
-    with patch("agents.base_agent.subprocess.run", return_value=mock_result):
+    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result):
         agent._call_opencode("Prompt text")
 
     assert len(agent._history) == 2
@@ -146,7 +146,7 @@ def test_call_opencode_raises_on_nonzero_exit():
     agent = _make_agent()
     mock_result = MagicMock(returncode=1, stdout="", stderr="opencode: auth error")
 
-    with patch("agents.base_agent.subprocess.run", return_value=mock_result):
+    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result):
         with pytest.raises(RuntimeError, match="opencode exited 1"):
             agent._call_opencode("Design the system", max_retries=0)
 
@@ -156,7 +156,7 @@ def test_call_opencode_raises_on_empty_output():
     agent = _make_agent()
     mock_result = MagicMock(returncode=0, stdout="", stderr="")
 
-    with patch("agents.base_agent.subprocess.run", return_value=mock_result):
+    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result):
         with pytest.raises(RuntimeError, match="Empty response"):
             agent._call_opencode("Design the system", max_retries=0)
 
@@ -167,8 +167,8 @@ def test_call_opencode_retries_on_failure():
     fail_result = MagicMock(returncode=1, stdout="", stderr="transient error")
     ok_result = MagicMock(returncode=0, stdout="Success.", stderr="")
 
-    with patch("agents.base_agent.subprocess.run", side_effect=[fail_result, ok_result]):
-        with patch("agents.base_agent.time.sleep"):
+    with patch("agents.backends.opencode.subprocess.run", side_effect=[fail_result, ok_result]):
+        with patch("agents.backends.opencode.time.sleep"):
             result = agent._call_opencode("Design the system", max_retries=1)
 
     assert result == "Success."
@@ -179,7 +179,7 @@ def test_call_opencode_uses_opencode_bin_env():
     agent = _make_agent()
     mock_result = MagicMock(returncode=0, stdout="Response.", stderr="")
 
-    with patch("agents.base_agent.subprocess.run", return_value=mock_result) as mock_run:
+    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result) as mock_run:
         with patch.dict("os.environ", {"OPENCODE_BIN": "/usr/local/bin/opencode"}):
             agent._call_opencode("Prompt")
 
