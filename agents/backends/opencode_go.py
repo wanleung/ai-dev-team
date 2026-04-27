@@ -1,8 +1,11 @@
 """OpenCode Go plan API backend — OpenAI-compatible or Anthropic-routed for MiniMax models."""
 from __future__ import annotations
+import logging
 import os
 import time
 from typing import TYPE_CHECKING
+
+_log = logging.getLogger(__name__)
 
 from agents.backends.base import (
     LLMBackend, OpenAICompatibleBackend,
@@ -41,11 +44,16 @@ class OpenCodeGoBackend(LLMBackend):
         max_retries: int = _DEFAULT_MAX_RETRIES,
         retry_delay: float = _DEFAULT_BASE_DELAY,
     ) -> None:
-        key = api_key or os.environ.get("OPENCODE_ZEN_API_KEY") or os.environ.get("OPENCODE_API_KEY")
+        key = (
+            api_key
+            or os.environ.get("OPENCODE_GO_API_KEY")
+            or os.environ.get("OPENCODE_ZEN_API_KEY")
+            or os.environ.get("OPENCODE_API_KEY")
+        )
         if not key:
             raise EnvironmentError(
-                "OPENCODE_ZEN_API_KEY environment variable is required for the opencode_go backend. "
-                "Get your key at https://opencode.ai/auth"
+                "OPENCODE_GO_API_KEY (or OPENCODE_ZEN_API_KEY) environment variable is required "
+                "for the opencode_go backend. Get your key at https://opencode.ai/auth"
             )
         base = (
             base_url
@@ -65,6 +73,8 @@ class OpenCodeGoBackend(LLMBackend):
             self._anthropic_client = anthropic.Anthropic(api_key=key, base_url=base)
             self._oai_backend: OpenAICompatibleBackend | None = None
         else:
+            if OpenAI is None:
+                raise ImportError("openai package required: pip install openai")
             client = OpenAI(base_url=base, api_key=key)
             self._oai_backend = OpenAICompatibleBackend(
                 model=bare_model, client=client,
@@ -83,8 +93,13 @@ class OpenCodeGoBackend(LLMBackend):
         system = ""
         chat_messages = []
         for m in messages:
-            if m["role"] == "system" and not chat_messages:
-                system = m["content"]
+            if m["role"] == "system":
+                if not chat_messages:
+                    system = m["content"] or ""
+                else:
+                    _log.warning(
+                        "Ignoring mid-list system message for Anthropic call (model=%s)", self.model
+                    )
             else:
                 chat_messages.append(m)
         if self._inter_call_delay > 0:
@@ -96,6 +111,11 @@ class OpenCodeGoBackend(LLMBackend):
             lambda: self._anthropic_client.messages.create(**kwargs),
             max_retries=self._max_retries, base_delay=self._retry_delay,
         )
+        if not response.content:
+            raise RuntimeError(
+                f"Anthropic returned empty content for model {self.model!r}. "
+                f"stop_reason={response.stop_reason!r}"
+            )
         return response.content[0].text
 
     def call_with_tools(
