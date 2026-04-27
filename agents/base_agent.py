@@ -143,6 +143,8 @@ class BaseAgent:
         # Backward-compat attributes derived from the backend
         self._backend: str = self._detect_backend_name()
         self._api_model: str = self._llm.model
+        # Keep self.model in sync with the injected backend's actual model string
+        self.model = self._llm.model
 
     # ── Backward-compat properties ─────────────────────────────────────────────
 
