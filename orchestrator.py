@@ -503,8 +503,11 @@ class Orchestrator(TestFixLoopMixin):
             if not fallback_cfgs:
                 return primary
             from agents.backends.fallback import FallbackLLMBackend
+            # Each fallback inherits parent settings; its own keys take priority
+            parent_base = {k: v for k, v in cfg.items() if k != "fallbacks"}
             backends = [primary] + [
-                self._build_factory_cfg_and_create(fb) for fb in fallback_cfgs
+                self._build_factory_cfg_and_create(_deep_merge(parent_base, fb))
+                for fb in fallback_cfgs
             ]
             return FallbackLLMBackend(backends)
 
@@ -529,13 +532,17 @@ class Orchestrator(TestFixLoopMixin):
 
         # Recursively translate and build each fallback through this same method
         # so that ollama_think/ollama_stream etc. are properly translated for each entry.
+        # Each fallback inherits parent settings (e.g. ollama_url, ollama_stream) by
+        # default; its own keys take priority via _deep_merge.
         fallback_cfgs: list[dict] = cfg.get("fallbacks") or []
         if not fallback_cfgs:
             return primary
 
+        parent_base = {k: v for k, v in cfg.items() if k != "fallbacks"}
         from agents.backends.fallback import FallbackLLMBackend
         backends = [primary] + [
-            self._build_factory_cfg_and_create(fb) for fb in fallback_cfgs
+            self._build_factory_cfg_and_create(_deep_merge(parent_base, fb))
+            for fb in fallback_cfgs
         ]
         return FallbackLLMBackend(backends)
 
