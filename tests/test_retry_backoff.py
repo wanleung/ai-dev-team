@@ -1,4 +1,4 @@
-"""Tests for the _retry_with_backoff helper in agents/base_agent.py."""
+"""Tests for the _retry_with_backoff helper in agents/backends/base.py."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch, call
@@ -46,11 +46,11 @@ def _timeout_error() -> openai.APITimeoutError:
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 class TestRetryWithBackoff:
-    """Tests for agents.base_agent._retry_with_backoff."""
+    """Tests for agents.backends.base._retry_with_backoff."""
 
     def test_success_on_first_attempt(self):
         """fn() succeeds immediately — no sleep, returns result."""
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         sentinel = object()
         mock_fn = MagicMock(return_value=sentinel)
@@ -64,7 +64,7 @@ class TestRetryWithBackoff:
 
     def test_retry_succeeds_on_second_attempt(self):
         """APIConnectionError on first call, success on second — sleep called once."""
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         valid_response = MagicMock()
         mock_fn = MagicMock(side_effect=[
@@ -81,7 +81,7 @@ class TestRetryWithBackoff:
 
     def test_retry_exhausted_raises(self):
         """After max_retries+1 total attempts, raises the last exception."""
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         # Use a list of 4 exception instances — mock raises each one (max_retries=3 → 4 total calls)
         mock_fn = MagicMock(side_effect=[
@@ -97,7 +97,7 @@ class TestRetryWithBackoff:
 
     def test_no_retry_on_auth_error(self):
         """AuthenticationError raises immediately — no retry, no sleep."""
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         mock_fn = MagicMock(side_effect=[_auth_error()])
 
@@ -110,7 +110,7 @@ class TestRetryWithBackoff:
 
     def test_no_retry_on_bad_request_error(self):
         """BadRequestError raises immediately — no retry, no sleep."""
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         mock_fn = MagicMock(side_effect=[_bad_request_error()])
 
@@ -123,7 +123,7 @@ class TestRetryWithBackoff:
 
     def test_exponential_backoff_delays(self):
         """Three consecutive failures then success — delays ~1.0, ~2.0, ~4.0 (±20%)."""
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         valid_response = MagicMock()
         mock_fn = MagicMock(side_effect=[
@@ -149,7 +149,7 @@ class TestRetryWithBackoff:
 
     def test_rate_limit_retried(self):
         """RateLimitError triggers retry and eventually returns success."""
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         valid_response = MagicMock()
         mock_fn = MagicMock(side_effect=[
@@ -165,7 +165,7 @@ class TestRetryWithBackoff:
 
     def test_internal_server_error_retried(self):
         """InternalServerError (5xx) triggers retry."""
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         valid_response = MagicMock()
         mock_fn = MagicMock(side_effect=[
@@ -181,7 +181,7 @@ class TestRetryWithBackoff:
 
     def test_timeout_error_retried(self):
         """APITimeoutError triggers retry."""
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         valid_response = MagicMock()
         mock_fn = MagicMock(side_effect=[
@@ -197,7 +197,7 @@ class TestRetryWithBackoff:
 
     def test_non_api_exception_raises_immediately(self):
         """A completely unrelated exception is not retried."""
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         mock_fn = MagicMock(side_effect=ValueError("unexpected"))
 
@@ -210,7 +210,7 @@ class TestRetryWithBackoff:
 
     def test_max_retries_zero_raises_immediately(self):
         """With max_retries=0, raises on the first failure without sleeping."""
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         mock_fn = MagicMock(side_effect=[_conn_error()])
 
@@ -224,13 +224,13 @@ class TestRetryWithBackoff:
     def test_warning_logged_on_retry(self, caplog):
         """A WARNING is emitted for each retry attempt."""
         import logging
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         valid_response = MagicMock()
         mock_fn = MagicMock(side_effect=[_conn_error(), valid_response])
 
         with patch("time.sleep"):
-            with caplog.at_level(logging.WARNING, logger="agents.base_agent"):
+            with caplog.at_level(logging.WARNING, logger="agents.backends.base"):
                 _retry_with_backoff(mock_fn, max_retries=3, base_delay=1.0)
 
         assert any("Retrying" in r.message for r in caplog.records)
@@ -241,13 +241,13 @@ class TestRetryWithBackoff:
     def test_error_logged_on_exhaustion(self, caplog):
         """An ERROR is logged when all retries are exhausted."""
         import logging
-        from agents.base_agent import _retry_with_backoff
+        from agents.backends.base import _retry_with_backoff
 
         # max_retries=1 → 2 total calls
         mock_fn = MagicMock(side_effect=[_conn_error(), _conn_error()])
 
         with patch("time.sleep"):
-            with caplog.at_level(logging.ERROR, logger="agents.base_agent"):
+            with caplog.at_level(logging.ERROR, logger="agents.backends.base"):
                 with pytest.raises(openai.APIConnectionError):
                     _retry_with_backoff(mock_fn, max_retries=1, base_delay=1.0)
 
