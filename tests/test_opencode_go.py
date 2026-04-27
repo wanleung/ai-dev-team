@@ -40,7 +40,7 @@ def test_opencode_go_strips_prefix():
 
 def test_opencode_go_uses_openai_client_for_chat_models():
     with patch.dict("os.environ", {"OPENCODE_ZEN_API_KEY": "zen-key"}):
-        with patch("agents.base_agent.OpenAI") as mock_cls:
+        with patch("agents.backends.opencode_go.OpenAI") as mock_cls:
             from agents.base_agent import BaseAgent
             agent = BaseAgent(model="opencode-go/kimi-k2.5")
     mock_cls.assert_called_once_with(
@@ -53,7 +53,7 @@ def test_opencode_go_uses_openai_client_for_chat_models():
 def test_opencode_go_qwen_uses_chat_completions():
     """Qwen models (alibaba SDK) still use chat/completions via OpenAI client."""
     with patch.dict("os.environ", {"OPENCODE_ZEN_API_KEY": "zen-key"}):
-        with patch("agents.base_agent.OpenAI") as mock_cls:
+        with patch("agents.backends.opencode_go.OpenAI") as mock_cls:
             from agents.base_agent import BaseAgent
             BaseAgent(model="opencode-go/qwen3.6-plus")
     mock_cls.assert_called_once_with(
@@ -64,7 +64,7 @@ def test_opencode_go_qwen_uses_chat_completions():
 
 def test_opencode_go_glm_uses_chat_completions():
     with patch.dict("os.environ", {"OPENCODE_ZEN_API_KEY": "zen-key"}):
-        with patch("agents.base_agent.OpenAI") as mock_cls:
+        with patch("agents.backends.opencode_go.OpenAI") as mock_cls:
             from agents.base_agent import BaseAgent
             BaseAgent(model="opencode-go/glm-5.1")
     mock_cls.assert_called_once_with(
@@ -103,7 +103,7 @@ def test_opencode_go_custom_base_url():
         "OPENCODE_GO_BASE_URL": "https://custom-go.example.com/v1",
     }
     with patch.dict("os.environ", env):
-        with patch("agents.base_agent.OpenAI") as mock_cls:
+        with patch("agents.backends.opencode_go.OpenAI") as mock_cls:
             from agents.base_agent import BaseAgent
             BaseAgent(model="opencode-go/kimi-k2.5")
     mock_cls.assert_called_once_with(
@@ -127,7 +127,7 @@ def test_opencode_go_raises_on_missing_key():
 
 def test_call_routes_go_chat_model_to_openai():
     with patch.dict("os.environ", {"OPENCODE_ZEN_API_KEY": "zen-key"}):
-        with patch("agents.base_agent.OpenAI") as mock_cls:
+        with patch("agents.backends.opencode_go.OpenAI") as mock_cls:
             mock_client = MagicMock()
             mock_cls.return_value = mock_client
             from agents.base_agent import BaseAgent
@@ -157,7 +157,7 @@ def test_call_routes_go_minimax_to_anthropic():
 def test_call_with_tools_works_for_go_chat_models():
     """Tool-calling works for Go plan chat/completions models (fixes Code Reviewer)."""
     with patch.dict("os.environ", {"OPENCODE_ZEN_API_KEY": "zen-key"}):
-        with patch("agents.base_agent.OpenAI") as mock_cls:
+        with patch("agents.backends.opencode_go.OpenAI") as mock_cls:
             mock_client = MagicMock()
             mock_cls.return_value = mock_client
             from agents.base_agent import BaseAgent
