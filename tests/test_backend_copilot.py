@@ -73,7 +73,7 @@ def test_copilot_backend_refreshes_expired_session():
 def test_copilot_backend_call_refreshes_before_call():
     from agents.backends.copilot import CopilotBackend, _COPILOT_SESSION
     _COPILOT_SESSION["token"] = "valid_token"
-    _COPILOT_SESSION["expires_at"] = time.time() + 3600  # valid
+    _COPILOT_SESSION["expires_at"] = time.time() + 3600  # valid — well outside 60s window
 
     with patch.dict(os.environ, {"COPILOT_OAUTH_TOKEN": "gho_test"}):
         with patch("agents.backends.copilot.OpenAI") as mock_oai:
@@ -82,7 +82,49 @@ def test_copilot_backend_call_refreshes_before_call():
                 choices=[MagicMock(message=MagicMock(content="reply", tool_calls=None))]
             )
             mock_oai.return_value = mock_client
-            backend = CopilotBackend(model="copilot/gpt-4.1")
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                backend = CopilotBackend(model="copilot/gpt-4.1")
+                call_count_after_init = mock_urlopen.call_count
 
-    result = backend.call([{"role": "user", "content": "hi"}])
-    assert result == "reply"
+                result = backend.call([{"role": "user", "content": "hi"}])
+
+                assert result == "reply"
+                # Token is still fresh — _pre_call() must NOT have called urlopen
+                assert mock_urlopen.call_count == call_count_after_init
+
+
+def test_copilot_backend_pre_call_refreshes_when_near_expiry():
+    """_pre_call() triggers a token refresh when the session expires within 60 s."""
+    from agents.backends.copilot import CopilotBackend, _COPILOT_SESSION
+
+    # Prime the session so __init__ skips the initial fetch
+    _COPILOT_SESSION["token"] = "valid_token"
+    _COPILOT_SESSION["expires_at"] = time.time() + 3600
+
+    refresh_body = json.dumps(
+        {"token": "refreshed_token", "expires_at": _expires_str(30)}
+    ).encode()
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.read.return_value = refresh_body
+
+    with patch.dict(os.environ, {"COPILOT_OAUTH_TOKEN": "gho_test"}):
+        with patch("agents.backends.copilot.OpenAI") as mock_oai:
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content="reply", tool_calls=None))]
+            )
+            mock_oai.return_value = mock_client
+            with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+                backend = CopilotBackend(model="copilot/gpt-4.1")
+                call_count_after_init = mock_urlopen.call_count
+
+                # Push expiry into the 60-second danger window — triggers _pre_call() refresh
+                _COPILOT_SESSION["expires_at"] = time.time() + 30
+
+                result = backend.call([{"role": "user", "content": "hi"}])
+
+                assert result == "reply"
+                # _pre_call() must have fetched a new token exactly once
+                assert mock_urlopen.call_count == call_count_after_init + 1
