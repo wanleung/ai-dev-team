@@ -483,9 +483,13 @@ class BaseAgent:
         messages: list[dict] = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
+        messages.extend(self._history)
         messages.append({"role": "user", "content": full_message})
 
-        return self._llm.call_with_tools(messages, tools, max_turns)
+        reply = self._llm.call_with_tools(messages, tools, max_turns)
+        self._history.append({"role": "user", "content": full_message})
+        self._history.append({"role": "assistant", "content": reply})
+        return reply
 
     # ── Utilities ──────────────────────────────────────────────────────────────
 
