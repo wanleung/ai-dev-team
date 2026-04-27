@@ -368,29 +368,34 @@ class Orchestrator(TestFixLoopMixin):
         self.deployment_tester = DeploymentTesterAgent(**{**agent_kwargs, **_mk("deployment_tester")})
 
         # Junior/Senior tier agents — model priority: llm.overrides > team.junior/senior_model > global
-        _junior_model = (
-            _model("junior_engineer") if "junior_engineer" in self.model_overrides
+        # When an agent has a dict override entry, pass model_fallback=None so _mk routes to
+        # _make_backend() which deep-merges the full dict (preserving extra keys like ollama_think).
+        # When there is no dict override, pass the resolved model string as model_fallback so
+        # _mk routes to _make_backend_from_model() with the correct team/global model.
+        _junior_fallback = (
+            None if "junior_engineer" in self.model_overrides
             else (self.junior_model or self.model)
         )
-        _senior_model = (
-            _model("senior_engineer") if "senior_engineer" in self.model_overrides
+        _senior_fallback = (
+            None if "senior_engineer" in self.model_overrides
             else (self.senior_model or self.model)
         )
-        _tier_rev_model = (
-            _model("tier_reviewer") if "tier_reviewer" in self.model_overrides
-            else (self.tier_reviewer_model or _junior_model)
+        # tier_reviewer fallback must not reference _junior_model (removed); replicate logic inline.
+        _tier_rev_fallback = (
+            None if "tier_reviewer" in self.model_overrides
+            else (self.tier_reviewer_model or self.junior_model or self.model)
         )
 
         self.junior_engineer = JuniorEngineerAgent(
             tool_registry=rag_registry if self.junior_engineer_use_mcp else None,
-            **{**agent_kwargs, **_mk("junior_engineer", model_fallback=_junior_model)},
+            **{**agent_kwargs, **_mk("junior_engineer", model_fallback=_junior_fallback)},
         )
         self.senior_engineer = SeniorEngineerAgent(
             tool_registry=rag_registry if self.senior_engineer_use_mcp else None,
-            **{**agent_kwargs, **_mk("senior_engineer", model_fallback=_senior_model)},
+            **{**agent_kwargs, **_mk("senior_engineer", model_fallback=_senior_fallback)},
         )
         self.tier_reviewer = TierReviewerAgent(
-            **{**agent_kwargs, **_mk("tier_reviewer", model_fallback=_tier_rev_model)},
+            **{**agent_kwargs, **_mk("tier_reviewer", model_fallback=_tier_rev_fallback)},
         )
 
 
@@ -495,7 +500,15 @@ class Orchestrator(TestFixLoopMixin):
 
         if not use_factory:
             from agents.backends.github_models import GitHubModelsBackend
-            return GitHubModelsBackend(model=model, github_token=self._github_token)
+            primary = GitHubModelsBackend(model=model, github_token=self._github_token)
+            fallback_cfgs: list[dict] = cfg.get("fallbacks") or []
+            if not fallback_cfgs:
+                return primary
+            from agents.backends.fallback import FallbackLLMBackend
+            backends = [primary] + [
+                self._build_factory_cfg_and_create(fb) for fb in fallback_cfgs
+            ]
+            return FallbackLLMBackend(backends)
 
         # Start with minimal factory cfg
         factory_cfg: dict = {"model": model}
