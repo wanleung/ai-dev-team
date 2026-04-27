@@ -53,9 +53,13 @@ def test_retry_exhausts_retries_and_raises():
 def test_fallback_errors_includes_connection_errors():
     from agents.backends.base import FALLBACK_ERRORS
     import httpx
+    import openai
     assert issubclass(ConnectionError, FALLBACK_ERRORS)
     assert issubclass(httpx.ConnectError, FALLBACK_ERRORS)
     assert issubclass(httpx.TimeoutException, FALLBACK_ERRORS)
+    assert issubclass(openai.APIConnectionError, FALLBACK_ERRORS)
+    assert issubclass(openai.APITimeoutError, FALLBACK_ERRORS)
+    assert issubclass(openai.InternalServerError, FALLBACK_ERRORS)
 
 
 def test_llm_backend_is_abstract():
@@ -94,3 +98,46 @@ def test_openai_compatible_backend_supports_tools():
     from agents.backends.base import OpenAICompatibleBackend
     backend = OpenAICompatibleBackend(model="x", client=MagicMock())
     assert backend.supports_tools() is True
+
+
+def test_openai_compatible_backend_call_with_tools_executes_tool():
+    from agents.backends.base import OpenAICompatibleBackend
+    mock_client = MagicMock()
+    tool_call = MagicMock()
+    tool_call.id = "tc1"
+    tool_call.function.name = "my_tool"
+    tool_call.function.arguments = '{"x": 1}'
+
+    mock_client.chat.completions.create.side_effect = [
+        MagicMock(choices=[MagicMock(message=MagicMock(content="", tool_calls=[tool_call]))]),
+        MagicMock(choices=[MagicMock(message=MagicMock(content="final", tool_calls=None))]),
+    ]
+    mock_tools = MagicMock()
+    mock_tools.schemas = []
+    mock_tools.call.return_value = "tool_result"
+
+    backend = OpenAICompatibleBackend(model="gpt-4.1", client=mock_client)
+    result = backend.call_with_tools([{"role": "user", "content": "go"}], mock_tools)
+
+    assert result == "final"
+    mock_tools.call.assert_called_once_with("my_tool", '{"x": 1}')
+    assert mock_client.chat.completions.create.call_count == 2
+
+
+def test_openai_compatible_backend_max_turns_forces_final_response():
+    from agents.backends.base import OpenAICompatibleBackend
+    mock_client = MagicMock()
+    tool_call = MagicMock()
+    tool_call.id = "tc1"
+    tool_call.function.name = "tool"
+    tool_call.function.arguments = "{}"
+
+    always_tool = MagicMock(choices=[MagicMock(message=MagicMock(content="", tool_calls=[tool_call]))])
+    final = MagicMock(choices=[MagicMock(message=MagicMock(content="forced", tool_calls=None))])
+    mock_client.chat.completions.create.side_effect = [always_tool] * 2 + [final]
+
+    mock_tools = MagicMock(schemas=[], call=MagicMock(return_value="r"))
+    backend = OpenAICompatibleBackend(model="x", client=mock_client)
+    result = backend.call_with_tools([{"role": "user", "content": "go"}], mock_tools, max_turns=2)
+
+    assert result == "forced"
