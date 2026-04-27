@@ -93,6 +93,35 @@ def test_copilot_backend_call_refreshes_before_call():
                 assert mock_urlopen.call_count == call_count_after_init
 
 
+def test_fetch_session_token_raises_on_null_token():
+    """_fetch_copilot_session_token() raises RuntimeError when the API returns a null token."""
+    from agents.backends.copilot import _fetch_copilot_session_token, _COPILOT_SESSION
+    # Force expiry so the double-checked locking does not short-circuit.
+    _COPILOT_SESSION["token"] = ""
+    _COPILOT_SESSION["expires_at"] = 0.0
+
+    null_response_data = json.dumps({"token": None, "expires_at": "2099-01-01T00:00:00Z"}).encode()
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.read.return_value = null_response_data
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        with pytest.raises(RuntimeError, match="empty or non-string token"):
+            _fetch_copilot_session_token("gho_test")
+
+
+def test_discover_oauth_token_raises_on_permission_error():
+    """_discover_copilot_oauth_token() wraps a PermissionError into EnvironmentError."""
+    from agents.backends.copilot import _discover_copilot_oauth_token
+    import builtins
+
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("builtins.open", side_effect=PermissionError("permission denied")):
+            with pytest.raises(EnvironmentError, match="COPILOT_OAUTH_TOKEN"):
+                _discover_copilot_oauth_token()
+
+
 def test_copilot_backend_pre_call_refreshes_when_near_expiry():
     """_pre_call() triggers a token refresh when the session expires within 60 s."""
     from agents.backends.copilot import CopilotBackend, _COPILOT_SESSION

@@ -244,6 +244,7 @@ class OpenAICompatibleBackend(LLMBackend):
             "role": "user",
             "content": "Please provide your final response based on the tool results above.",
         })
+        self._pre_call()
         response = _retry_with_backoff(
             lambda: self._client.chat.completions.create(
                 model=self.model,
