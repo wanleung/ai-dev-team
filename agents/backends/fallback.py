@@ -39,12 +39,10 @@ class FallbackLLMBackend(LLMBackend):
         return self._backends[0].supports_tools()
 
     def call(self, messages: list[dict]) -> str:
-        last_exc: BaseException | None = None
         for i, backend in enumerate(self._backends):
             try:
                 return backend.call(messages)
             except FALLBACK_ERRORS as exc:
-                last_exc = exc
                 if i < len(self._backends) - 1:
                     next_model = self._backends[i + 1].model
                     print(
@@ -60,12 +58,10 @@ class FallbackLLMBackend(LLMBackend):
         tools: "ToolRegistry",
         max_turns: int = 8,
     ) -> str:
-        last_exc: BaseException | None = None
         for i, backend in enumerate(self._backends):
             try:
                 return backend.call_with_tools(messages, tools, max_turns)
             except FALLBACK_ERRORS as exc:
-                last_exc = exc
                 if i < len(self._backends) - 1:
                     next_model = self._backends[i + 1].model
                     print(
