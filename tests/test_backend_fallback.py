@@ -143,9 +143,20 @@ def test_fallback_call_with_tools_switches():
     assert secondary.call_with_tools_count == 1
 
 
-def test_fallback_mixed_tool_support_raises_value_error():
+def test_fallback_mixed_tool_support_warns_and_skips_in_call_with_tools():
+    """Mixed tool-capability is allowed but non-tool backends are skipped for call_with_tools."""
     from agents.backends.fallback import FallbackLLMBackend
     tool_backend = _make_backend("tool_reply", supports_tools=True)
     non_tool_backend = _make_backend("plain_reply", supports_tools=False)
-    with pytest.raises(ValueError, match="supports_tools"):
-        FallbackLLMBackend([tool_backend, non_tool_backend])
+    # Construction should not raise
+    fb = FallbackLLMBackend([non_tool_backend, tool_backend])
+    assert fb.supports_tools() is False  # first backend determines supports_tools()
+
+    # call_with_tools must skip non-tool backends and use the tool-capable one
+    registry = MagicMock()
+    tool_backend.call_with_tools = MagicMock(return_value="tool result")
+    non_tool_backend.call_with_tools = MagicMock(return_value="should not be called")
+    result = fb.call_with_tools([{"role": "user", "content": "hi"}], registry)
+    assert result == "tool result"
+    tool_backend.call_with_tools.assert_called_once()
+    non_tool_backend.call_with_tools.assert_not_called()
