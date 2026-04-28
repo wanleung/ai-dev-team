@@ -226,3 +226,27 @@ stages:
     with pytest.raises(ValueError, match="nonexistent_inner_stage"):
         o._load_pipeline_yaml(cfg_path)
 
+
+# T2: Invalid YAML syntax raises YAMLError
+def test_load_pipeline_yaml_invalid_yaml_raises():
+    o = _make_orch_full()
+    cfg_path = _write_pipeline_yaml("stages:\n  - [unclosed bracket\n")
+    with pytest.raises(_yaml.YAMLError):
+        o._load_pipeline_yaml(cfg_path)
+
+
+# T2: Empty until string raises ValueError
+def test_load_pipeline_yaml_loop_empty_until_raises():
+    o = _make_orch_full()
+    cfg_path = _write_pipeline_yaml("""
+stages:
+  - loop:
+      max: 3
+      until: ""
+      stages:
+        - pm
+""")
+    with pytest.raises(ValueError, match="non-empty string"):
+        o._load_pipeline_yaml(cfg_path)
+
+

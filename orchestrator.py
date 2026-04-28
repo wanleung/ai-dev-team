@@ -835,10 +835,7 @@ class Orchestrator(TestFixLoopMixin):
         Returns an ordered list of PipelineStage objects, or None if the file
         does not exist. Raises ValueError on any schema violation.
         """
-        import pathlib
-        import yaml
-
-        pipeline_yaml_path = pathlib.Path(config_path).parent / "pipeline.yaml"
+        pipeline_yaml_path = Path(config_path).parent / "pipeline.yaml"
         if not pipeline_yaml_path.exists():
             return None
 
@@ -876,10 +873,10 @@ class Orchestrator(TestFixLoopMixin):
                         raise ValueError(
                             f"Loop block at index {i} missing required field '{required_key}'."
                         )
-                if not loop.get("until"):
+                if not loop["until"]:
                     raise ValueError(
                         f"Loop block at index {i} 'until' must be a non-empty string "
-                        f"(e.g. 'APPROVED'). Got: {loop.get('until')!r}"
+                        f"(e.g. 'APPROVED'). Got: {loop['until']!r}"
                     )
                 if not isinstance(loop["stages"], list) or len(loop["stages"]) == 0:
                     raise ValueError(
@@ -903,7 +900,7 @@ class Orchestrator(TestFixLoopMixin):
                     checkpoint_key=f"loop_{i}",
                     fn=lambda r: None,  # execution handled by _run_loop_stage()
                     loop_stages=list(loop["stages"]),
-                    loop_max=int(loop["max"]),
+                    loop_max=loop["max"],
                     loop_until=str(loop["until"]),
                 ))
 
