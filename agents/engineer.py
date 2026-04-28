@@ -32,6 +32,8 @@ class EngineerAgent(BaseAgent):
         module: dict,
         project_name: str = "Project",
         framework_context: str = "",
+        all_files: dict[str, str] | None = None,
+        test_files: dict[str, str] | None = None,
     ) -> dict:
         """Implement a single module.
 
@@ -40,6 +42,9 @@ class EngineerAgent(BaseAgent):
             module: Module dict with 'name' and 'description' keys.
             project_name: Project name for context.
             framework_context: Optional framework documentation to inject into the prompt.
+            all_files: Optional dict of already-implemented files (used by senior engineer).
+            test_files: Optional dict of pre-written test files (TDD mode). When provided,
+                        the engineer is instructed to make these tests pass.
 
         Returns:
             dict with keys:
@@ -49,11 +54,32 @@ class EngineerAgent(BaseAgent):
         """
         framework_section = f"## Framework Documentation\n\n{framework_context}\n\n" if framework_context else ""
         scaffold_hint = "\n\n> Note: If you scaffold a new project, check for AGENTS.md afterwards for framework-specific guidance." if not framework_context else ""
+
+        test_section = ""
+        if test_files:
+            MAX_FILE_CHARS = 3000
+            MAX_TOTAL_CHARS = 10000
+            parts = []
+            for path, content in test_files.items():
+                if len(content) > MAX_FILE_CHARS:
+                    content = content[:MAX_FILE_CHARS] + f"\n... (truncated, {len(content)} chars total)"
+                parts.append(f"### FILE: {path}\n```python\n{content}\n```")
+            test_section_body = "\n\n".join(parts)
+            if len(test_section_body) > MAX_TOTAL_CHARS:
+                test_section_body = test_section_body[:MAX_TOTAL_CHARS] + "\n... (additional test files truncated)"
+            test_section = (
+                f"\n\n## Pre-written tests your implementation must pass\n\n"
+                f"{test_section_body}\n\n"
+                f"Implement the module so all of the above tests pass. "
+                f"Do not modify the test files."
+            )
+
         prompt = (
             f"{framework_section}"
             f"You are implementing the '{module['name']}' module for the project '{project_name}'.\n\n"
             f"Module description: {module.get('description', '')}\n\n"
-            f"Full System Design:\n---\n{design}\n---\n\n"
+            f"Full System Design:\n---\n{design}\n---"
+            f"{test_section}\n\n"
             f"Please implement ALL files for this module. "
             f"Output each file using the '### FILE: path/to/file.py' format as instructed."
             f"{scaffold_hint}"
@@ -85,6 +111,7 @@ class EngineerAgent(BaseAgent):
         project_name: str = "Project",
         max_workers: int = 3,
         framework_context: str = "",
+        test_files: dict[str, str] | None = None,
     ) -> dict:
         """Implement multiple modules in parallel using a thread pool.
 
@@ -94,6 +121,7 @@ class EngineerAgent(BaseAgent):
             project_name: Project name for context.
             max_workers: Maximum parallel LLM calls.
             framework_context: Optional framework documentation to inject into each module's prompt.
+            test_files: Optional dict of pre-written test files (TDD mode).
 
         Returns:
             dict with keys:
@@ -108,7 +136,12 @@ class EngineerAgent(BaseAgent):
                 if i > 0:
                     # Small stagger to avoid burst rate limits (60k tokens/min window)
                     time.sleep(2)
-                futures.append(executor.submit(self.run_module, design, mod, project_name, framework_context))
+                futures.append(
+                    executor.submit(
+                        self.run_module, design, mod, project_name, framework_context,
+                        all_files=None, test_files=test_files
+                    )
+                )
             for future in futures:
                 result = future.result()
                 results.append(result)
@@ -130,6 +163,7 @@ class EngineerAgent(BaseAgent):
         issue_number: Optional[int] = None,
         max_workers: int = 3,
         framework_context: str = "",
+        test_files: dict[str, str] | None = None,
     ) -> dict:
         """Run all modules and commit code to GitHub on a feature branch, then open a PR.
 
@@ -142,6 +176,7 @@ class EngineerAgent(BaseAgent):
             issue_number: PRD issue number to reference in the PR.
             max_workers: Parallel engineer workers.
             framework_context: Optional framework documentation to inject into each module's prompt.
+            test_files: Optional dict of pre-written test files (TDD mode).
 
         Returns:
             run_all_modules() result plus:
@@ -149,7 +184,7 @@ class EngineerAgent(BaseAgent):
                 - pr_number (int): Pull request number
                 - pr_url (str): Pull request URL
         """
-        result = self.run_all_modules(design, modules, project_name, max_workers, framework_context=framework_context)
+        result = self.run_all_modules(design, modules, project_name, max_workers, framework_context=framework_context, test_files=test_files)
 
         # Create feature branch
         safe_name = re.sub(r"[^a-z0-9-]", "-", project_name.lower())[:40]
