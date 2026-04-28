@@ -829,6 +829,87 @@ class Orchestrator(TestFixLoopMixin):
             ),
         }
 
+    def _load_pipeline_yaml(self, config_path: str) -> "list[PipelineStage] | None":
+        """Parse and validate pipeline.yaml from the same directory as config_path.
+
+        Returns an ordered list of PipelineStage objects, or None if the file
+        does not exist. Raises ValueError on any schema violation.
+        """
+        import pathlib
+        import yaml
+
+        pipeline_yaml_path = pathlib.Path(config_path).parent / "pipeline.yaml"
+        if not pipeline_yaml_path.exists():
+            return None
+
+        try:
+            with open(pipeline_yaml_path, encoding="utf-8") as fh:
+                data = yaml.safe_load(fh)
+        except yaml.YAMLError as exc:
+            raise yaml.YAMLError(f"Error parsing {pipeline_yaml_path}: {exc}") from exc
+
+        if not data or not isinstance(data.get("stages"), list):
+            raise ValueError(
+                f"pipeline.yaml must define a 'stages' list. "
+                f"Found: {type(data.get('stages')).__name__ if data else 'empty file'}"
+            )
+
+        registry = self._make_stage_registry()
+        valid_names = set(registry.keys())
+        stages: list[PipelineStage] = []
+
+        for i, entry in enumerate(data["stages"]):
+            if isinstance(entry, str):
+                if entry not in valid_names:
+                    raise ValueError(
+                        f"Unknown stage {entry!r} at index {i} in pipeline.yaml. "
+                        f"Valid names: {sorted(valid_names)}"
+                    )
+                stages.append(registry[entry])
+
+            elif isinstance(entry, dict) and "loop" in entry:
+                loop = entry["loop"]
+                if not isinstance(loop, dict):
+                    raise ValueError(f"Loop block at index {i} must be a mapping.")
+                for required_key in ("max", "until", "stages"):
+                    if required_key not in loop:
+                        raise ValueError(
+                            f"Loop block at index {i} missing required field '{required_key}'."
+                        )
+                if not isinstance(loop["stages"], list) or len(loop["stages"]) == 0:
+                    raise ValueError(
+                        f"Loop block at index {i} 'stages' must be a non-empty list."
+                    )
+                if not isinstance(loop["max"], int) or loop["max"] <= 0:
+                    raise ValueError(
+                        f"Loop block at index {i} 'max' must be a positive integer."
+                    )
+                for inner_name in loop["stages"]:
+                    if inner_name not in valid_names:
+                        raise ValueError(
+                            f"Unknown stage {inner_name!r} inside loop block at index {i}. "
+                            f"Valid names: {sorted(valid_names)}"
+                        )
+                inner_label = ", ".join(loop["stages"])
+                stages.append(PipelineStage(
+                    name=f"loop_{i}",
+                    label=f"🔁 Loop ({inner_label})",
+                    description=f"Running loop: {inner_label}...",
+                    checkpoint_key=f"loop_{i}",
+                    fn=lambda r: None,  # execution handled by _run_loop_stage()
+                    loop_stages=list(loop["stages"]),
+                    loop_max=int(loop["max"]),
+                    loop_until=str(loop["until"]),
+                ))
+
+            else:
+                raise ValueError(
+                    f"Invalid stage entry at index {i}: {entry!r}. "
+                    f"Expected a stage name (string) or a loop block (dict with 'loop' key)."
+                )
+
+        return stages
+
     def _build_stage_list(self) -> list[PipelineStage]:
         """Return the ordered stage list for the active mode, with config skips applied."""
         registry = self._make_stage_registry()
