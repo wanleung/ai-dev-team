@@ -161,6 +161,12 @@ Setup:
 def main() -> int:
     args = parse_args()
 
+    # Early exit for --config-builder — does not need GitHub token or orchestrator
+    if args.config_builder:
+        from pipeline_builder.server import run_builder
+        run_builder(config_path=args.config)
+        return 0
+
     # ── Prompt for requirement if not provided ────────────────────────────────
     requirement = args.requirement
 
@@ -262,12 +268,6 @@ def main() -> int:
     except EnvironmentError as e:
         console.print(f"[red]{e}[/red]")
         return 1
-
-    # ── Handle --config-builder ───────────────────────────────────────────────
-    if args.config_builder:
-        from pipeline_builder.server import run_builder
-        run_builder(config_path=args.config)
-        return 0
 
     # ── Handle --update-skills ────────────────────────────────────────────────
     if args.update_skills:

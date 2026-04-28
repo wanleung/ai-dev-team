@@ -116,7 +116,8 @@ def test_load_pipeline_yaml_flat_list():
     cfg_path = _write_pipeline_yaml("stages:\n  - pm\n  - architect\n  - junior_engineer\n")
     stages = o._load_pipeline_yaml(cfg_path)
     assert stages is not None
-    assert [s.name for s in stages] == ["pm", "architect", "junior_engineer"]
+    # Returns raw name strings (not PipelineStage objects) after Fix 10
+    assert stages == ["pm", "architect", "junior_engineer"]
 
 
 # T2: Valid loop block parses and expands
@@ -135,11 +136,14 @@ stages:
     stages = o._load_pipeline_yaml(cfg_path)
     assert stages is not None
     assert len(stages) == 2
-    loop_stage = stages[0]
-    assert loop_stage.loop_stages == ["pm", "pm_reviewer"]
-    assert loop_stage.loop_max == 3
-    assert loop_stage.loop_until == "APPROVED"
-    assert stages[1].name == "architect"
+    # After Fix 10: returns raw entries (strings/dicts), not PipelineStage objects
+    loop_entry = stages[0]
+    assert isinstance(loop_entry, dict) and "loop" in loop_entry
+    loop = loop_entry["loop"]
+    assert loop["stages"] == ["pm", "pm_reviewer"]
+    assert loop["max"] == 3
+    assert loop["until"] == "APPROVED"
+    assert stages[1] == "architect"
 
 
 # T2: Returns None when pipeline.yaml absent
@@ -275,8 +279,9 @@ def test_from_config_loads_pipeline_yaml_stages():
     orch = _make_full_orch_with_pipeline_yaml(
         "stages:\n  - junior_engineer\n  - reviewer\n"
     )
+    # After Fix 10: _pipeline_yaml_stages stores raw entries (strings), not PipelineStage objects
     assert orch._pipeline_yaml_stages is not None
-    assert [s.name for s in orch._pipeline_yaml_stages] == ["junior_engineer", "reviewer"]
+    assert orch._pipeline_yaml_stages == ["junior_engineer", "reviewer"]
 
 
 # T3: _build_stage_list uses pipeline_yaml_stages when set

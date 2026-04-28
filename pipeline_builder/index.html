@@ -229,8 +229,9 @@ function render() {
           until:
           <select style="background:#1e1e2e;color:#cdd6f4;border:1px solid #6c7086;border-radius:4px;padding:2px"
             onchange="stages[${idx}].until=this.value;updatePreview()">
-            <option ${item.until==='APPROVED'?'selected':''}>APPROVED</option>
-            <option ${item.until==='CHANGES_REQUESTED'?'selected':''}>CHANGES_REQUESTED</option>
+            <option value="APPROVED" ${item.until==='APPROVED'?'selected':''}>APPROVED</option>
+            <option value="NEEDS_REVISION" ${item.until==='NEEDS_REVISION'?'selected':''}>NEEDS_REVISION</option>
+            <option value="CHANGES REQUESTED" ${item.until==='CHANGES REQUESTED'?'selected':''}>CHANGES REQUESTED</option>
           </select>
           <button class="remove-btn" style="margin-left:auto" onclick="removeItem(${idx})">×</button>
         </div>
@@ -310,6 +311,24 @@ function parseYaml(text) {
 }
 
 async function saveYaml() {
+  // Validate before saving
+  for (let i = 0; i < stages.length; i++) {
+    const s = stages[i];
+    if (s.type === 'loop') {
+      if (!s.stages || s.stages.length === 0) {
+        alert(`Loop block at position ${i + 1} must have at least one inner stage.`);
+        return;
+      }
+      if (!s.until) {
+        alert(`Loop block at position ${i + 1} must have an "until" verdict set.`);
+        return;
+      }
+      if (!s.max || s.max < 1) {
+        alert(`Loop block at position ${i + 1} must have max ≥ 1.`);
+        return;
+      }
+    }
+  }
   const yaml = toYaml();
   if (!yaml) { alert('Pipeline is empty — add some stages first.'); return; }
   try {

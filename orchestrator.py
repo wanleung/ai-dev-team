@@ -333,7 +333,7 @@ class Orchestrator(TestFixLoopMixin):
         llm_fallbacks: Optional[list] = None,
         pipeline_mode: str = "standard",
         stage_skips: dict[str, bool] | None = None,
-        pipeline_yaml_stages: "list[PipelineStage] | None" = None,
+        pipeline_yaml_stages: "list | None" = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -514,7 +514,7 @@ class Orchestrator(TestFixLoopMixin):
         # ── Pipeline mode + per-stage skip config ─────────────────────────────
         self._mode: str = pipeline_mode
         self._stage_skips: dict[str, bool] = stage_skips or {}
-        self._pipeline_yaml_stages: "list[PipelineStage] | None" = pipeline_yaml_stages
+        self._pipeline_yaml_stages: "list | None" = pipeline_yaml_stages
 
     # ── Backend factory helpers ───────────────────────────────────────────────
 
@@ -847,11 +847,17 @@ class Orchestrator(TestFixLoopMixin):
             ),
         }
 
-    def _load_pipeline_yaml(self, config_path: str) -> "list[PipelineStage] | None":
+    def _load_pipeline_yaml(self, config_path: str) -> "list | None":
         """Parse and validate pipeline.yaml from the same directory as config_path.
 
-        Returns an ordered list of PipelineStage objects, or None if the file
-        does not exist. Raises ValueError on any schema violation.
+        Returns a raw ordered list of stage entries (strings for simple stages,
+        dicts with a 'loop' key for loop blocks), or None if the file does not
+        exist.  Raises ValueError on any schema violation.
+
+        Returning raw entries (instead of PipelineStage objects) ensures that
+        when the real orchestrator later resolves them via _build_stage_list(),
+        all fn lambdas close over the correct ``self`` — not over a temporary
+        stub created during from_config().
         """
         pipeline_yaml_path = Path(config_path).parent / "pipeline.yaml"
         if not pipeline_yaml_path.exists():
@@ -863,15 +869,20 @@ class Orchestrator(TestFixLoopMixin):
         except yaml.YAMLError as exc:
             raise yaml.YAMLError(f"Error parsing {pipeline_yaml_path}: {exc}") from exc
 
-        if not data or not isinstance(data.get("stages"), list):
+        if not data or not isinstance(data, dict):
+            raise ValueError(
+                f"pipeline.yaml root must be a mapping with a 'stages' list. "
+                f"Found: {'empty file' if not data else type(data).__name__}"
+            )
+        if not isinstance(data.get("stages"), list):
             raise ValueError(
                 f"pipeline.yaml must define a 'stages' list. "
-                f"Found: {type(data.get('stages')).__name__ if data else 'empty file'}"
+                f"Found: {type(data.get('stages')).__name__}"
             )
 
         registry = self._make_stage_registry()
         valid_names = set(registry.keys())
-        stages: list[PipelineStage] = []
+        result_entries: list = []
 
         for i, entry in enumerate(data["stages"]):
             if isinstance(entry, str):
@@ -880,7 +891,7 @@ class Orchestrator(TestFixLoopMixin):
                         f"Unknown stage {entry!r} at index {i} in pipeline.yaml. "
                         f"Valid names: {sorted(valid_names)}"
                     )
-                stages.append(registry[entry])
+                result_entries.append(entry)  # store the name string only
 
             elif isinstance(entry, dict) and "loop" in entry:
                 loop = entry["loop"]
@@ -910,17 +921,7 @@ class Orchestrator(TestFixLoopMixin):
                             f"Unknown stage {inner_name!r} inside loop block at index {i}. "
                             f"Valid names: {sorted(valid_names)}"
                         )
-                inner_label = ", ".join(loop["stages"])
-                stages.append(PipelineStage(
-                    name=f"loop_{i}",
-                    label=f"🔁 Loop ({inner_label})",
-                    description=f"Running loop: {inner_label}...",
-                    checkpoint_key=f"loop_{i}",
-                    fn=lambda r: None,  # execution handled by _run_loop_stage()
-                    loop_stages=list(loop["stages"]),
-                    loop_max=loop["max"],
-                    loop_until=str(loop["until"]),
-                ))
+                result_entries.append(entry)  # store the raw dict
 
             else:
                 raise ValueError(
@@ -928,19 +929,46 @@ class Orchestrator(TestFixLoopMixin):
                     f"Expected a stage name (string) or a loop block (dict with 'loop' key)."
                 )
 
-        return stages
+        return result_entries
 
     def _build_stage_list(self) -> list[PipelineStage]:
         """Return the ordered stage list, applying skip overrides.
 
-        When _pipeline_yaml_stages is set (pipeline.yaml present), that list
-        takes full precedence. Otherwise falls back to MODES[_mode].
+        When _pipeline_yaml_stages is set (pipeline.yaml was present at load
+        time), resolve the raw entries to real PipelineStage objects using the
+        current orchestrator's registry so that all fn lambdas close over the
+        correct ``self``.  Otherwise falls back to MODES[_mode].
         """
-        if getattr(self, '_pipeline_yaml_stages', None) is not None:
-            return [
-                s for s in self._pipeline_yaml_stages
-                if not self._stage_skips.get(s.name, False)
-            ]
+        import copy
+
+        raw = getattr(self, '_pipeline_yaml_stages', None)
+        if raw is not None:
+            registry = self._make_stage_registry()
+            stages: list[PipelineStage] = []
+            for i, entry in enumerate(raw):
+                if isinstance(entry, str):
+                    # Assign a unique checkpoint_key per occurrence so repeated
+                    # stage names don't collide on pipeline resume (Fix 1).
+                    stage = copy.copy(registry[entry])
+                    stage.checkpoint_key = f"{entry}_{i}"
+                    if not self._stage_skips.get(entry, False):
+                        stages.append(stage)
+                elif isinstance(entry, dict) and "loop" in entry:
+                    loop = entry["loop"]
+                    loop_name = f"loop_{i}"
+                    if not self._stage_skips.get(loop_name, False):
+                        inner_label = ", ".join(loop["stages"])
+                        stages.append(PipelineStage(
+                            name=loop_name,
+                            label=f"🔁 Loop ({inner_label})",
+                            description=f"Running loop: {inner_label}...",
+                            checkpoint_key=loop_name,
+                            fn=lambda r: None,  # execution handled by _run_loop_stage()
+                            loop_stages=list(loop["stages"]),
+                            loop_max=loop["max"],
+                            loop_until=str(loop["until"]),
+                        ))
+            return stages
 
         registry = self._make_stage_registry()
         if self._mode not in MODES:
@@ -1472,7 +1500,8 @@ class Orchestrator(TestFixLoopMixin):
 
         result.prd_review = rev_result["review"]
         result.prd_verdict = rev_result["verdict"]
-        result.last_verdict = result.prd_verdict
+        # Normalize for loop exit conditions (pipeline.yaml `until: APPROVED` / `until: NEEDS_REVISION`)
+        result.last_verdict = "NEEDS_REVISION" if rev_result["needs_revision"] else "APPROVED"
 
         # Store reviewer's draft for use in run_revision() (new revision loop)
         result.prd_reviewer_draft = rev_result.get("revised_prd") or ""
@@ -1744,7 +1773,8 @@ class Orchestrator(TestFixLoopMixin):
 
         result.design_review = rev_result["review"]
         result.design_verdict = rev_result["verdict"]
-        result.last_verdict = result.design_verdict
+        # Normalize for loop exit conditions
+        result.last_verdict = "NEEDS_REVISION" if rev_result["needs_revision"] else "APPROVED"
         result.design_reviewer_draft = rev_result.get("revised_design") or result.design
 
         if self.max_design_revisions == 0 and rev_result.get("revised_design"):

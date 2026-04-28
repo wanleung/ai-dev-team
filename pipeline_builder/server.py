@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import socket
 import threading
 import traceback
 import webbrowser
@@ -55,19 +54,10 @@ def _save_pipeline_yaml(config_path: str, content: str) -> None:
     p.write_text(content, encoding="utf-8")
 
 
-def _find_free_port() -> int:
-    """Return an available TCP port on localhost."""
-    with socket.socket() as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
 def run_builder(config_path: str = "config.yaml") -> None:
     """Start the pipeline config builder server and open the browser."""
     config_path = str(pathlib.Path(config_path).resolve())
-    port = _find_free_port()
     palette = _get_stage_palette()
-    existing_yaml = _load_existing_pipeline_yaml(config_path)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # silence default access log
@@ -88,7 +78,8 @@ def run_builder(config_path: str = "config.yaml") -> None:
                 self.end_headers()
                 self.wfile.write(body)
             elif self.path == "/current":
-                body = json.dumps({"yaml": existing_yaml}).encode()
+                current = _load_existing_pipeline_yaml(config_path)
+                body = json.dumps({"yaml": current}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -104,8 +95,15 @@ def run_builder(config_path: str = "config.yaml") -> None:
                     raw_len = int(self.headers.get("Content-Length", 0))
                 except (TypeError, ValueError):
                     raw_len = 0
-                length = min(raw_len, MAX_BODY)
-                body = self.rfile.read(length)
+                if raw_len > MAX_BODY:
+                    self.send_response(413)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"ok": False, "error": "Payload too large (max 1 MB)"}).encode())
+                    # Drain connection to avoid broken pipe
+                    self.rfile.read(min(raw_len, MAX_BODY))
+                    return
+                body = self.rfile.read(raw_len)
                 try:
                     data = json.loads(body)
                     _save_pipeline_yaml(config_path, data["yaml"])
@@ -124,7 +122,8 @@ def run_builder(config_path: str = "config.yaml") -> None:
                 self.send_response(404)
                 self.end_headers()
 
-    server = HTTPServer(("127.0.0.1", port), Handler)
+    server = HTTPServer(("127.0.0.1", 0), Handler)   # port=0 → OS assigns free port
+    port = server.server_address[1]
     url = f"http://localhost:{port}"
     print(f"\n🧩 Pipeline Config Builder ready at {url}")
     print(f"   Editing: {pathlib.Path(config_path).parent / 'pipeline.yaml'}")
