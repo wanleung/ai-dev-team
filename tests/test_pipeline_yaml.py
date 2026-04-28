@@ -250,3 +250,109 @@ stages:
         o._load_pipeline_yaml(cfg_path)
 
 
+
+
+import os
+
+
+def _make_full_orch_with_pipeline_yaml(yaml_content: str):
+    """Write pipeline.yaml, call from_config, return orchestrator."""
+    import tempfile, pathlib
+    from orchestrator import Orchestrator
+
+    tmpdir = tempfile.mkdtemp()
+    cfg = pathlib.Path(tmpdir) / "config.yaml"
+    cfg.write_text("llm:\n  model: gpt-4.1\ngithub:\n  repo: ''\n")
+    (pathlib.Path(tmpdir) / "pipeline.yaml").write_text(yaml_content)
+
+    with patch.dict(os.environ, {"GITHUB_TOKEN": "tok"}):
+        orch = Orchestrator.from_config(str(cfg), github_token="tok")
+    return orch
+
+
+# T3: from_config sets _pipeline_yaml_stages when pipeline.yaml present
+def test_from_config_loads_pipeline_yaml_stages():
+    orch = _make_full_orch_with_pipeline_yaml(
+        "stages:\n  - junior_engineer\n  - reviewer\n"
+    )
+    assert orch._pipeline_yaml_stages is not None
+    assert [s.name for s in orch._pipeline_yaml_stages] == ["junior_engineer", "reviewer"]
+
+
+# T3: _build_stage_list uses pipeline_yaml_stages when set
+def test_build_stage_list_uses_pipeline_yaml():
+    orch = _make_full_orch_with_pipeline_yaml(
+        "stages:\n  - junior_engineer\n  - reviewer\n"
+    )
+    stages = orch._build_stage_list()
+    assert [s.name for s in stages] == ["junior_engineer", "reviewer"]
+
+
+# T3: _build_stage_list falls back to MODES when pipeline.yaml absent
+def test_build_stage_list_falls_back_to_modes_when_no_pipeline_yaml():
+    import tempfile, pathlib
+    from orchestrator import Orchestrator
+    tmpdir = tempfile.mkdtemp()
+    cfg = pathlib.Path(tmpdir) / "config.yaml"
+    cfg.write_text("llm:\n  model: gpt-4.1\ngithub:\n  repo: ''\n")
+    with patch.dict(os.environ, {"GITHUB_TOKEN": "tok"}):
+        orch = Orchestrator.from_config(str(cfg), github_token="tok")
+    assert orch._pipeline_yaml_stages is None
+    stages = orch._build_stage_list()
+    # standard mode: starts with tier_review
+    assert stages[0].name == "tier_review"
+
+
+# T3: pipeline_yaml_stages respects stage_skips
+def test_pipeline_yaml_stages_respects_skips():
+    orch = _make_full_orch_with_pipeline_yaml(
+        "stages:\n  - junior_engineer\n  - reviewer\n"
+    )
+    orch._stage_skips = {"reviewer": True}
+    stages = orch._build_stage_list()
+    assert [s.name for s in stages] == ["junior_engineer"]
+
+
+# T3: reviewer stages set last_verdict
+def test_pm_reviewer_sets_last_verdict():
+    from orchestrator import Orchestrator, PipelineResult
+
+    orch = Orchestrator.__new__(Orchestrator)
+    mock_pm_rev = MagicMock()
+    mock_pm_rev.run.return_value = {
+        "review": "Looks good",
+        "verdict": "APPROVED",
+        "needs_revision": False,
+        "revised_prd": None,
+        "revised_project_name": "proj",
+    }
+    orch.pm_reviewer = mock_pm_rev
+    orch.github = None
+    orch.max_prd_revisions = 3
+
+    result = PipelineResult(requirement="req", prd="some prd", project_name="proj")
+    orch._stage_pm_reviewer(result, "req")
+
+    assert result.last_verdict == "APPROVED"
+
+
+def test_architect_reviewer_sets_last_verdict():
+    from orchestrator import Orchestrator, PipelineResult
+
+    orch = Orchestrator.__new__(Orchestrator)
+    mock_arch_rev = MagicMock()
+    mock_arch_rev.run.return_value = {
+        "review": "Design ok",
+        "verdict": "APPROVED",
+        "needs_revision": False,
+        "revised_design": None,
+        "revised_modules": [],
+    }
+    orch.architect_reviewer = mock_arch_rev
+    orch.github = None
+    orch.max_design_revisions = 3
+
+    result = PipelineResult(requirement="req", prd="prd", design="design", modules=[])
+    orch._stage_architect_reviewer(result)
+
+    assert result.last_verdict == "APPROVED"

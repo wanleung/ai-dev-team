@@ -332,6 +332,7 @@ class Orchestrator(TestFixLoopMixin):
         llm_fallbacks: Optional[list] = None,
         pipeline_mode: str = "standard",
         stage_skips: dict[str, bool] | None = None,
+        pipeline_yaml_stages: "list[PipelineStage] | None" = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -512,6 +513,7 @@ class Orchestrator(TestFixLoopMixin):
         # ── Pipeline mode + per-stage skip config ─────────────────────────────
         self._mode: str = pipeline_mode
         self._stage_skips: dict[str, bool] = stage_skips or {}
+        self._pipeline_yaml_stages: "list[PipelineStage] | None" = pipeline_yaml_stages
 
     # ── Backend factory helpers ───────────────────────────────────────────────
 
@@ -675,6 +677,21 @@ class Orchestrator(TestFixLoopMixin):
         repo = gh.get("repo", "")
         use_github = bool(repo) and repo != "your-username/your-repo"
 
+        # Load pipeline.yaml from same directory as config file (overrides pipeline.mode)
+        _temp_orch_for_load = cls.__new__(cls)
+        _temp_orch_for_load._stage_skips = {}
+        _temp_orch_for_load._pipeline_yaml_stages = None
+        _temp_orch_for_load._mode = pipeline_mode
+        # Stub agent attributes so _make_stage_registry() can build fn lambdas
+        for _attr in ("pm", "pm_reviewer", "architect", "architect_reviewer",
+                      "engineer", "junior_engineer", "senior_engineer", "reviewer",
+                      "qa", "qa_planner", "deployment_tester", "tier_reviewer"):
+            setattr(_temp_orch_for_load, _attr, None)
+        pipeline_yaml_stages = _temp_orch_for_load._load_pipeline_yaml(config_path)
+        if pipeline_yaml_stages is not None:
+            import logging
+            logging.debug("pipeline.yaml found — pipeline.mode in config.yaml is ignored.")
+
         return cls(
             model=llm.get("model", "gpt-4.1"),
             github_repo=repo if use_github else None,
@@ -716,6 +733,7 @@ class Orchestrator(TestFixLoopMixin):
             llm_fallbacks=llm.get("fallbacks") or None,
             pipeline_mode=pipeline_mode,
             stage_skips=stage_skips,
+            pipeline_yaml_stages=pipeline_yaml_stages,
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
@@ -913,7 +931,17 @@ class Orchestrator(TestFixLoopMixin):
         return stages
 
     def _build_stage_list(self) -> list[PipelineStage]:
-        """Return the ordered stage list for the active mode, with config skips applied."""
+        """Return the ordered stage list, applying skip overrides.
+
+        When _pipeline_yaml_stages is set (pipeline.yaml present), that list
+        takes full precedence. Otherwise falls back to MODES[_mode].
+        """
+        if getattr(self, '_pipeline_yaml_stages', None) is not None:
+            return [
+                s for s in self._pipeline_yaml_stages
+                if not self._stage_skips.get(s.name, False)
+            ]
+
         registry = self._make_stage_registry()
         if self._mode not in MODES:
             raise ValueError(
@@ -925,6 +953,41 @@ class Orchestrator(TestFixLoopMixin):
             for name in stage_names
             if name in registry and not self._stage_skips.get(name, False)
         ]
+
+    def _run_loop_stage(self, loop_stage: "PipelineStage", result: "PipelineResult") -> bool:
+        """Execute a loop block from pipeline.yaml.
+
+        Runs inner stages repeatedly until loop_until verdict is seen or loop_max
+        iterations are exhausted. Returns True to continue pipeline, False on error.
+        """
+        registry = self._make_stage_registry()
+        console.print(f"\n  {loop_stage.label}")
+
+        for iteration in range(loop_stage.loop_max):
+            result.last_verdict = ""
+            for inner_name in loop_stage.loop_stages:
+                inner = registry[inner_name]
+                self._run_stage(
+                    inner.label, inner.description, result,
+                    lambda s=inner: s.fn(result)
+                )
+                if result.errors:
+                    return False
+
+            if result.last_verdict == loop_stage.loop_until:
+                console.print(
+                    f"  ✅ [green]Loop condition met: {loop_stage.loop_until} "
+                    f"(round {iteration + 1})[/green]"
+                )
+                break
+
+            if iteration < loop_stage.loop_max - 1:
+                console.print(
+                    f"  🔄 [yellow]Round {iteration + 1}/{loop_stage.loop_max} — "
+                    f"verdict: {result.last_verdict or 'none'}, retrying...[/yellow]"
+                )
+
+        return True
 
     def _get_revision_number(self, labels: list[str]) -> int:
         """Return the highest ai-revision-N number found in labels, or 0."""
@@ -1287,21 +1350,23 @@ class Orchestrator(TestFixLoopMixin):
             border_style="cyan",
         ))
 
-        # ── Stage 1: PM + PM Reviewer revision loop ───────────────────────────
-        if "pm_review_loop" not in result.completed_stages:
-            ok = self._prd_revision_loop(result, requirement)
-            if not ok:
-                return self._finish(result, start_time)
-        else:
-            console.print("  ⏭️  [dim]PRD revision loop — skipped (checkpoint)[/dim]")
+        # ── Stage 1 + 2: hardcoded PM / Arch revision loops (standard pipeline only) ──
+        if getattr(self, '_pipeline_yaml_stages', None) is None:
+            # ── Stage 1: PM + PM Reviewer revision loop ───────────────────────
+            if "pm_review_loop" not in result.completed_stages:
+                ok = self._prd_revision_loop(result, requirement)
+                if not ok:
+                    return self._finish(result, start_time)
+            else:
+                console.print("  ⏭️  [dim]PRD revision loop — skipped (checkpoint)[/dim]")
 
-        # ── Stage 2: Architect + Architect Reviewer revision loop ─────────────
-        if "architect_review_loop" not in result.completed_stages:
-            ok = self._design_revision_loop(result)
-            if not ok:
-                return self._finish(result, start_time)
-        else:
-            console.print("  ⏭️  [dim]Design revision loop — skipped (checkpoint)[/dim]")
+            # ── Stage 2: Architect + Architect Reviewer revision loop ─────────
+            if "architect_review_loop" not in result.completed_stages:
+                ok = self._design_revision_loop(result)
+                if not ok:
+                    return self._finish(result, start_time)
+            else:
+                console.print("  ⏭️  [dim]Design revision loop — skipped (checkpoint)[/dim]")
 
         # ── RAG index (always before engineer, not mode-dependent) ─────────────
         if self.repo_auto_indexer and self.target_github and "rag_index" not in result.completed_stages:
@@ -1325,11 +1390,18 @@ class Orchestrator(TestFixLoopMixin):
                 console.print(f"  ⏭️  [dim]{stage.label} — skipped[/dim]")
                 continue
 
-            self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result))
+            if stage.loop_stages:
+                # Loop block from pipeline.yaml
+                ok = self._run_loop_stage(stage, result)
+                if not ok:
+                    self._save_checkpoint(result)
+                    return self._finish(result, start_time)
+            else:
+                self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result))
 
-            if result.errors:
-                self._save_checkpoint(result)
-                return self._finish(result, start_time)
+                if result.errors:
+                    self._save_checkpoint(result)
+                    return self._finish(result, start_time)
 
             # Backward-compat: senior_engineer stage also marks old "engineer" key
             if stage.name == "senior_engineer":
@@ -1389,6 +1461,7 @@ class Orchestrator(TestFixLoopMixin):
 
         result.prd_review = rev_result["review"]
         result.prd_verdict = rev_result["verdict"]
+        result.last_verdict = result.prd_verdict
 
         # Store reviewer's draft for use in run_revision() (new revision loop)
         result.prd_reviewer_draft = rev_result.get("revised_prd") or ""
@@ -1660,6 +1733,7 @@ class Orchestrator(TestFixLoopMixin):
 
         result.design_review = rev_result["review"]
         result.design_verdict = rev_result["verdict"]
+        result.last_verdict = result.design_verdict
         result.design_reviewer_draft = rev_result.get("revised_design") or result.design
 
         if self.max_design_revisions == 0 and rev_result.get("revised_design"):
