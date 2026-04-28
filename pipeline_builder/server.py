@@ -100,7 +100,11 @@ def run_builder(config_path: str = "config.yaml") -> None:
         def do_POST(self):
             if self.path == "/save":
                 MAX_BODY = 1 * 1024 * 1024
-                length = min(int(self.headers.get("Content-Length", 0)), MAX_BODY)
+                try:
+                    raw_len = int(self.headers.get("Content-Length", 0))
+                except (TypeError, ValueError):
+                    raw_len = 0
+                length = min(raw_len, MAX_BODY)
                 body = self.rfile.read(length)
                 try:
                     data = json.loads(body)

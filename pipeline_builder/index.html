@@ -219,6 +219,8 @@ function render() {
       const wrap = document.createElement('div');
       wrap.className = 'loop-item';
       wrap.dataset.index = idx;
+      wrap.draggable = true;
+      wrap.ondragstart = e => dragStartListItem(e, idx);
       wrap.innerHTML = `
         <div class="loop-header">
           🔁 Loop — max:
@@ -332,6 +334,7 @@ async function saveYaml() {
 // Clear any lingering drag-over highlights when drag is abandoned
 document.addEventListener('dragend', () => {
   document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+  dragSource = null;
 });
 
 init();
