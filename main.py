@@ -149,12 +149,23 @@ Setup:
         action="store_true",
         help="Re-fetch marketplace skill index and refresh all cached skills, then exit.",
     )
+    parser.add_argument(
+        "--config-builder",
+        action="store_true",
+        help="Launch browser-based GUI to build a custom pipeline.yaml",
+    )
 
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+
+    # Early exit for --config-builder — does not need GitHub token or orchestrator
+    if args.config_builder:
+        from pipeline_builder.server import run_builder
+        run_builder(config_path=args.config)
+        return 0
 
     # ── Prompt for requirement if not provided ────────────────────────────────
     requirement = args.requirement

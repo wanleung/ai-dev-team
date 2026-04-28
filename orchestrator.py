@@ -5,6 +5,7 @@ Manages artifact passing, logging, and optional GitHub integration.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -136,6 +137,8 @@ class PipelineResult:
     design_revision_count: int = 0
     prd_reviewer_draft: str = ""      # reviewer's suggested PRD (for PM.run_revision)
     design_reviewer_draft: str = ""   # reviewer's suggested design (for Architect.run_revision)
+    last_verdict: str = ""
+    """Set by reviewer stages inside a loop block; checked against loop_until."""
 
     def to_dict(self) -> dict:
         return {
@@ -180,6 +183,7 @@ class PipelineResult:
             "prd_reviewer_draft": self.prd_reviewer_draft,
             "design_reviewer_draft": self.design_reviewer_draft,
             "design_output": self.design_output,
+            "last_verdict": self.last_verdict,
         }
 
     @classmethod
@@ -197,7 +201,7 @@ class PipelineResult:
                     "deploy_retry_count", "deploy_fix_history",
                     "prd_revision_count", "design_revision_count",
                     "prd_reviewer_draft", "design_reviewer_draft",
-                    "design_output"]:
+                    "design_output", "last_verdict"]:
             setattr(r, key, data.get(key, getattr(r, key)))
         return r
 
@@ -233,6 +237,15 @@ class PipelineStage:
 
     stop_message: str = ""
     """Optional message printed when stop_if triggers."""
+
+    loop_stages: list[str] = field(default_factory=list)
+    """Stage names to run repeatedly. Non-empty = this is a loop block."""
+
+    loop_max: int = 1
+    """Maximum iterations for a loop block."""
+
+    loop_until: str = ""
+    """Verdict string that exits a loop block early (e.g. 'APPROVED')."""
 
 
 MODES: dict[str, list[str]] = {
@@ -320,6 +333,7 @@ class Orchestrator(TestFixLoopMixin):
         llm_fallbacks: Optional[list] = None,
         pipeline_mode: str = "standard",
         stage_skips: dict[str, bool] | None = None,
+        pipeline_yaml_stages: "list | None" = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -500,6 +514,7 @@ class Orchestrator(TestFixLoopMixin):
         # ── Pipeline mode + per-stage skip config ─────────────────────────────
         self._mode: str = pipeline_mode
         self._stage_skips: dict[str, bool] = stage_skips or {}
+        self._pipeline_yaml_stages: "list | None" = pipeline_yaml_stages
 
     # ── Backend factory helpers ───────────────────────────────────────────────
 
@@ -663,6 +678,20 @@ class Orchestrator(TestFixLoopMixin):
         repo = gh.get("repo", "")
         use_github = bool(repo) and repo != "your-username/your-repo"
 
+        # Load pipeline.yaml from same directory as config file (overrides pipeline.mode)
+        _temp_orch_for_load = cls.__new__(cls)
+        _temp_orch_for_load._stage_skips = {}
+        _temp_orch_for_load._pipeline_yaml_stages = None
+        _temp_orch_for_load._mode = pipeline_mode
+        # Stub agent attributes so _make_stage_registry() can build fn lambdas
+        for _attr in ("pm", "pm_reviewer", "architect", "architect_reviewer",
+                      "engineer", "junior_engineer", "senior_engineer", "reviewer",
+                      "qa", "qa_planner", "deployment_tester", "tier_reviewer"):
+            setattr(_temp_orch_for_load, _attr, None)
+        pipeline_yaml_stages = _temp_orch_for_load._load_pipeline_yaml(config_path)
+        if pipeline_yaml_stages is not None:
+            logging.debug("pipeline.yaml found — pipeline.mode in config.yaml is ignored.")
+
         return cls(
             model=llm.get("model", "gpt-4.1"),
             github_repo=repo if use_github else None,
@@ -704,6 +733,7 @@ class Orchestrator(TestFixLoopMixin):
             llm_fallbacks=llm.get("fallbacks") or None,
             pipeline_mode=pipeline_mode,
             stage_skips=stage_skips,
+            pipeline_yaml_stages=pipeline_yaml_stages,
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
@@ -711,6 +741,34 @@ class Orchestrator(TestFixLoopMixin):
     def _make_stage_registry(self) -> dict[str, "PipelineStage"]:
         """Build the full registry of all known pipeline stages."""
         return {
+            "pm": PipelineStage(
+                name="pm",
+                label="📋 Product Manager",
+                description="Analyzing requirements & writing PRD...",
+                checkpoint_key="pm",
+                fn=lambda r: self._stage_pm(r, r.requirement),
+            ),
+            "pm_reviewer": PipelineStage(
+                name="pm_reviewer",
+                label="📝 PM Reviewer",
+                description="Reviewing PRD for completeness...",
+                checkpoint_key="pm_reviewer",
+                fn=lambda r: self._stage_pm_reviewer(r, r.requirement),
+            ),
+            "architect": PipelineStage(
+                name="architect",
+                label="🏗️  Architect",
+                description="Designing system architecture...",
+                checkpoint_key="architect",
+                fn=lambda r: self._stage_architect(r),
+            ),
+            "architect_reviewer": PipelineStage(
+                name="architect_reviewer",
+                label="🔎 Architect Reviewer",
+                description="Reviewing system design...",
+                checkpoint_key="architect_reviewer",
+                fn=lambda r: self._stage_architect_reviewer(r),
+            ),
             "tier_review": PipelineStage(
                 name="tier_review",
                 label="🏷️  Tier Review",
@@ -789,8 +847,129 @@ class Orchestrator(TestFixLoopMixin):
             ),
         }
 
+    def _load_pipeline_yaml(self, config_path: str) -> "list | None":
+        """Parse and validate pipeline.yaml from the same directory as config_path.
+
+        Returns a raw ordered list of stage entries (strings for simple stages,
+        dicts with a 'loop' key for loop blocks), or None if the file does not
+        exist.  Raises ValueError on any schema violation.
+
+        Returning raw entries (instead of PipelineStage objects) ensures that
+        when the real orchestrator later resolves them via _build_stage_list(),
+        all fn lambdas close over the correct ``self`` — not over a temporary
+        stub created during from_config().
+        """
+        pipeline_yaml_path = Path(config_path).parent / "pipeline.yaml"
+        if not pipeline_yaml_path.exists():
+            return None
+
+        try:
+            with open(pipeline_yaml_path, encoding="utf-8") as fh:
+                data = yaml.safe_load(fh)
+        except yaml.YAMLError as exc:
+            raise yaml.YAMLError(f"Error parsing {pipeline_yaml_path}: {exc}") from exc
+
+        if not data or not isinstance(data, dict):
+            raise ValueError(
+                f"pipeline.yaml root must be a mapping with a 'stages' list. "
+                f"Found: {'empty file' if not data else type(data).__name__}"
+            )
+        if not isinstance(data.get("stages"), list):
+            raise ValueError(
+                f"pipeline.yaml must define a 'stages' list. "
+                f"Found: {type(data.get('stages')).__name__}"
+            )
+
+        registry = self._make_stage_registry()
+        valid_names = set(registry.keys())
+        result_entries: list = []
+
+        for i, entry in enumerate(data["stages"]):
+            if isinstance(entry, str):
+                if entry not in valid_names:
+                    raise ValueError(
+                        f"Unknown stage {entry!r} at index {i} in pipeline.yaml. "
+                        f"Valid names: {sorted(valid_names)}"
+                    )
+                result_entries.append(entry)  # store the name string only
+
+            elif isinstance(entry, dict) and "loop" in entry:
+                loop = entry["loop"]
+                if not isinstance(loop, dict):
+                    raise ValueError(f"Loop block at index {i} must be a mapping.")
+                for required_key in ("max", "until", "stages"):
+                    if required_key not in loop:
+                        raise ValueError(
+                            f"Loop block at index {i} missing required field '{required_key}'."
+                        )
+                if not loop["until"]:
+                    raise ValueError(
+                        f"Loop block at index {i} 'until' must be a non-empty string "
+                        f"(e.g. 'APPROVED'). Got: {loop['until']!r}"
+                    )
+                if not isinstance(loop["stages"], list) or len(loop["stages"]) == 0:
+                    raise ValueError(
+                        f"Loop block at index {i} 'stages' must be a non-empty list."
+                    )
+                if not isinstance(loop["max"], int) or loop["max"] <= 0:
+                    raise ValueError(
+                        f"Loop block at index {i} 'max' must be a positive integer."
+                    )
+                for inner_name in loop["stages"]:
+                    if inner_name not in valid_names:
+                        raise ValueError(
+                            f"Unknown stage {inner_name!r} inside loop block at index {i}. "
+                            f"Valid names: {sorted(valid_names)}"
+                        )
+                result_entries.append(entry)  # store the raw dict
+
+            else:
+                raise ValueError(
+                    f"Invalid stage entry at index {i}: {entry!r}. "
+                    f"Expected a stage name (string) or a loop block (dict with 'loop' key)."
+                )
+
+        return result_entries
+
     def _build_stage_list(self) -> list[PipelineStage]:
-        """Return the ordered stage list for the active mode, with config skips applied."""
+        """Return the ordered stage list, applying skip overrides.
+
+        When _pipeline_yaml_stages is set (pipeline.yaml was present at load
+        time), resolve the raw entries to real PipelineStage objects using the
+        current orchestrator's registry so that all fn lambdas close over the
+        correct ``self``.  Otherwise falls back to MODES[_mode].
+        """
+        import copy
+
+        raw = getattr(self, '_pipeline_yaml_stages', None)
+        if raw is not None:
+            registry = self._make_stage_registry()
+            stages: list[PipelineStage] = []
+            for i, entry in enumerate(raw):
+                if isinstance(entry, str):
+                    # Assign a unique checkpoint_key per occurrence so repeated
+                    # stage names don't collide on pipeline resume (Fix 1).
+                    stage = copy.copy(registry[entry])
+                    stage.checkpoint_key = f"{entry}_{i}"
+                    if not self._stage_skips.get(entry, False):
+                        stages.append(stage)
+                elif isinstance(entry, dict) and "loop" in entry:
+                    loop = entry["loop"]
+                    loop_name = f"loop_{i}"
+                    if not self._stage_skips.get(loop_name, False):
+                        inner_label = ", ".join(loop["stages"])
+                        stages.append(PipelineStage(
+                            name=loop_name,
+                            label=f"🔁 Loop ({inner_label})",
+                            description=f"Running loop: {inner_label}...",
+                            checkpoint_key=loop_name,
+                            fn=lambda r: None,  # execution handled by _run_loop_stage()
+                            loop_stages=list(loop["stages"]),
+                            loop_max=loop["max"],
+                            loop_until=str(loop["until"]),
+                        ))
+            return stages
+
         registry = self._make_stage_registry()
         if self._mode not in MODES:
             raise ValueError(
@@ -802,6 +981,52 @@ class Orchestrator(TestFixLoopMixin):
             for name in stage_names
             if name in registry and not self._stage_skips.get(name, False)
         ]
+
+    def _run_loop_stage(self, loop_stage: "PipelineStage", result: "PipelineResult") -> bool:
+        """Execute a loop block from pipeline.yaml.
+
+        Runs inner stages repeatedly until loop_until verdict is seen or loop_max
+        iterations are exhausted. Returns True to continue pipeline, False on error.
+
+        Note: Checkpointing is at the loop-block level (the outer loop_N stage). If
+        the pipeline is interrupted mid-loop, the entire loop will restart on resume.
+        Individual inner stages are not checkpointed.
+        """
+        registry = self._make_stage_registry()
+        console.print(f"\n  {loop_stage.label}")
+
+        for iteration in range(loop_stage.loop_max):
+            result.last_verdict = ""
+            for inner_name in loop_stage.loop_stages:
+                inner = registry[inner_name]
+                self._run_stage(
+                    inner.label, inner.description, result,
+                    lambda s=inner: s.fn(result)
+                )
+                if result.errors:
+                    return False
+
+            if result.last_verdict == loop_stage.loop_until:
+                console.print(
+                    f"  ✅ [green]Loop condition met: {loop_stage.loop_until} "
+                    f"(round {iteration + 1})[/green]"
+                )
+                break
+
+            if iteration < loop_stage.loop_max - 1:
+                console.print(
+                    f"  🔄 [yellow]Round {iteration + 1}/{loop_stage.loop_max} — "
+                    f"verdict: {result.last_verdict or 'none'}, retrying...[/yellow]"
+                )
+
+        if result.last_verdict != loop_stage.loop_until:
+            console.print(
+                f"  ⚠️  [yellow]Loop exhausted after {loop_stage.loop_max} rounds "
+                f"without reaching '{loop_stage.loop_until}' "
+                f"(last verdict: {result.last_verdict or 'none'})[/yellow]"
+            )
+
+        return True
 
     def _get_revision_number(self, labels: list[str]) -> int:
         """Return the highest ai-revision-N number found in labels, or 0."""
@@ -1164,21 +1389,23 @@ class Orchestrator(TestFixLoopMixin):
             border_style="cyan",
         ))
 
-        # ── Stage 1: PM + PM Reviewer revision loop ───────────────────────────
-        if "pm_review_loop" not in result.completed_stages:
-            ok = self._prd_revision_loop(result, requirement)
-            if not ok:
-                return self._finish(result, start_time)
-        else:
-            console.print("  ⏭️  [dim]PRD revision loop — skipped (checkpoint)[/dim]")
+        # ── Stage 1 + 2: hardcoded PM / Arch revision loops (standard pipeline only) ──
+        if getattr(self, '_pipeline_yaml_stages', None) is None:
+            # ── Stage 1: PM + PM Reviewer revision loop ───────────────────────
+            if "pm_review_loop" not in result.completed_stages:
+                ok = self._prd_revision_loop(result, requirement)
+                if not ok:
+                    return self._finish(result, start_time)
+            else:
+                console.print("  ⏭️  [dim]PRD revision loop — skipped (checkpoint)[/dim]")
 
-        # ── Stage 2: Architect + Architect Reviewer revision loop ─────────────
-        if "architect_review_loop" not in result.completed_stages:
-            ok = self._design_revision_loop(result)
-            if not ok:
-                return self._finish(result, start_time)
-        else:
-            console.print("  ⏭️  [dim]Design revision loop — skipped (checkpoint)[/dim]")
+            # ── Stage 2: Architect + Architect Reviewer revision loop ─────────
+            if "architect_review_loop" not in result.completed_stages:
+                ok = self._design_revision_loop(result)
+                if not ok:
+                    return self._finish(result, start_time)
+            else:
+                console.print("  ⏭️  [dim]Design revision loop — skipped (checkpoint)[/dim]")
 
         # ── RAG index (always before engineer, not mode-dependent) ─────────────
         if self.repo_auto_indexer and self.target_github and "rag_index" not in result.completed_stages:
@@ -1202,11 +1429,18 @@ class Orchestrator(TestFixLoopMixin):
                 console.print(f"  ⏭️  [dim]{stage.label} — skipped[/dim]")
                 continue
 
-            self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result))
+            if stage.loop_stages:
+                # Loop block from pipeline.yaml
+                ok = self._run_loop_stage(stage, result)
+                if not ok:
+                    self._save_checkpoint(result)
+                    return self._finish(result, start_time)
+            else:
+                self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result))
 
-            if result.errors:
-                self._save_checkpoint(result)
-                return self._finish(result, start_time)
+                if result.errors:
+                    self._save_checkpoint(result)
+                    return self._finish(result, start_time)
 
             # Backward-compat: senior_engineer stage also marks old "engineer" key
             if stage.name == "senior_engineer":
@@ -1266,6 +1500,8 @@ class Orchestrator(TestFixLoopMixin):
 
         result.prd_review = rev_result["review"]
         result.prd_verdict = rev_result["verdict"]
+        # Normalize for loop exit conditions (pipeline.yaml `until: APPROVED` / `until: NEEDS_REVISION`)
+        result.last_verdict = "NEEDS_REVISION" if rev_result["needs_revision"] else "APPROVED"
 
         # Store reviewer's draft for use in run_revision() (new revision loop)
         result.prd_reviewer_draft = rev_result.get("revised_prd") or ""
@@ -1537,6 +1773,8 @@ class Orchestrator(TestFixLoopMixin):
 
         result.design_review = rev_result["review"]
         result.design_verdict = rev_result["verdict"]
+        # Normalize for loop exit conditions
+        result.last_verdict = "NEEDS_REVISION" if rev_result["needs_revision"] else "APPROVED"
         result.design_reviewer_draft = rev_result.get("revised_design") or result.design
 
         if self.max_design_revisions == 0 and rev_result.get("revised_design"):
