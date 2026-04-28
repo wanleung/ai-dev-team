@@ -11,6 +11,7 @@ import os
 import pathlib
 import socket
 import threading
+import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional
@@ -38,6 +39,7 @@ def _get_stage_palette() -> list[dict]:
             for name, stage in registry.items()
         ]
     except Exception as exc:
+        traceback.print_exc()
         return [{"name": "error", "label": f"Registry error: {exc}", "description": ""}]
 
 
@@ -97,7 +99,8 @@ def run_builder(config_path: str = "config.yaml") -> None:
 
         def do_POST(self):
             if self.path == "/save":
-                length = int(self.headers.get("Content-Length", 0))
+                MAX_BODY = 1 * 1024 * 1024
+                length = min(int(self.headers.get("Content-Length", 0)), MAX_BODY)
                 body = self.rfile.read(length)
                 try:
                     data = json.loads(body)

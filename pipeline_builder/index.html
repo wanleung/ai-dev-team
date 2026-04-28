@@ -76,11 +76,12 @@
     </div>
   </div>
   <div class="canvas">
-    <h3>Pipeline Sequence — drag to reorder</h3>
+    <h3>Pipeline Sequence — drag to add or reorder</h3>
     <div class="stage-list" id="stage-list"
          ondragover="allowDrop(event)" ondrop="dropOnList(event)"></div>
     <div class="drop-zone" id="main-drop"
-         ondragover="allowDrop(event,true)" ondrop="dropOnList(event)">
+         ondragover="allowDrop(event,true)" ondrop="dropOnList(event)"
+         ondragleave="this.classList.remove('drag-over')">
       Drop blocks here
     </div>
   </div>
@@ -97,15 +98,20 @@ let dragSource = null;    // {context:'palette'|'list', index, loopIndex}
 let palette = [];
 
 async function init() {
-  const [palRes, curRes] = await Promise.all([
-    fetch('/palette').then(r => r.json()),
-    fetch('/current').then(r => r.json()),
-  ]);
-  palette = palRes;
-  renderPalette();
-  if (curRes.yaml) {
-    stages = parseYaml(curRes.yaml);
-    render();
+  try {
+    const [palRes, curRes] = await Promise.all([
+      fetch('/palette').then(r => r.json()),
+      fetch('/current').then(r => r.json()),
+    ]);
+    palette = palRes;
+    renderPalette();
+    if (curRes.yaml) {
+      stages = parseYaml(curRes.yaml);
+      render();
+    }
+  } catch (err) {
+    console.error('Failed to initialise pipeline builder:', err);
+    alert('Could not connect to the builder server: ' + err.message);
   }
 }
 
@@ -148,11 +154,26 @@ function dropOnList(e) {
   e.preventDefault();
   document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
   if (!dragSource) return;
+
+  // Detect drop position from the nearest data-index element
+  const targetItem = e.target.closest('[data-index]');
+  const toIndex = targetItem ? parseInt(targetItem.dataset.index) : stages.length;
+
+  if (dragSource.context === 'list' && dragSource.loopIndex === undefined) {
+    // Reorder an existing top-level stage
+    const moved = stages.splice(dragSource.index, 1)[0];
+    const insertAt = dragSource.index < toIndex ? toIndex - 1 : toIndex;
+    stages.splice(insertAt, 0, moved);
+    dragSource = null;
+    render();
+    return;
+  }
+
   if (dragSource.context === 'palette') {
     if (dragSource.type === 'loop') {
-      stages.push({type:'loop', max:3, until:'APPROVED', stages:[]});
+      stages.splice(toIndex, 0, {type:'loop', max:3, until:'APPROVED', stages:[]});
     } else {
-      stages.push({type:'stage', name:dragSource.name, label:dragSource.label});
+      stages.splice(toIndex, 0, {type:'stage', name:dragSource.name, label:dragSource.label});
     }
   }
   dragSource = null;
@@ -182,18 +203,22 @@ function clearAll() { stages = []; render(); }
 function render() {
   const list = document.getElementById('stage-list');
   list.innerHTML = '';
+  const clearDragOver = () => document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
   stages.forEach((item, idx) => {
     if (item.type === 'stage') {
       const div = document.createElement('div');
       div.className = 'stage-item';
       div.draggable = true;
+      div.dataset.index = idx;
       div.ondragstart = e => dragStartListItem(e, idx);
+      div.ondragend = clearDragOver;
       div.innerHTML = `<span>${item.label}</span>
         <button class="remove-btn" onclick="removeItem(${idx})">×</button>`;
       list.appendChild(div);
     } else {
       const wrap = document.createElement('div');
       wrap.className = 'loop-item';
+      wrap.dataset.index = idx;
       wrap.innerHTML = `
         <div class="loop-header">
           🔁 Loop — max:
@@ -208,7 +233,8 @@ function render() {
           <button class="remove-btn" style="margin-left:auto" onclick="removeItem(${idx})">×</button>
         </div>
         <div class="loop-inner" id="loop-inner-${idx}"
-          ondragover="allowDrop(event,true)" ondrop="dropOnLoop(event,${idx})">
+          ondragover="allowDrop(event,true)" ondrop="dropOnLoop(event,${idx})"
+          ondragleave="this.classList.remove('drag-over')">
           ${item.stages.map((s,si) => `
             <div class="stage-item">
               <span>${s.label}</span>
@@ -284,20 +310,29 @@ function parseYaml(text) {
 async function saveYaml() {
   const yaml = toYaml();
   if (!yaml) { alert('Pipeline is empty — add some stages first.'); return; }
-  const resp = await fetch('/save', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({yaml}),
-  });
-  const data = await resp.json();
-  if (data.ok) {
-    const toast = document.getElementById('toast');
-    toast.style.display = 'block';
-    setTimeout(() => toast.style.display = 'none', 2500);
-  } else {
-    alert('Save failed: ' + data.error);
+  try {
+    const resp = await fetch('/save', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({yaml}),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      const toast = document.getElementById('toast');
+      toast.style.display = 'block';
+      setTimeout(() => toast.style.display = 'none', 2500);
+    } else {
+      alert('Save failed: ' + data.error);
+    }
+  } catch (err) {
+    alert('Network error — could not save: ' + err.message);
   }
 }
+
+// Clear any lingering drag-over highlights when drag is abandoned
+document.addEventListener('dragend', () => {
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+});
 
 init();
 </script>
