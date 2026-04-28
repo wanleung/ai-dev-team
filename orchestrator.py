@@ -182,6 +182,7 @@ class PipelineResult:
             "prd_reviewer_draft": self.prd_reviewer_draft,
             "design_reviewer_draft": self.design_reviewer_draft,
             "design_output": self.design_output,
+            "last_verdict": self.last_verdict,
         }
 
     @classmethod
@@ -199,7 +200,7 @@ class PipelineResult:
                     "deploy_retry_count", "deploy_fix_history",
                     "prd_revision_count", "design_revision_count",
                     "prd_reviewer_draft", "design_reviewer_draft",
-                    "design_output"]:
+                    "design_output", "last_verdict"]:
             setattr(r, key, data.get(key, getattr(r, key)))
         return r
 

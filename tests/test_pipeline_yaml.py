@@ -17,6 +17,7 @@ def _make_orch() -> "Orchestrator":
     o._pipeline_yaml_stages = None
     o.max_prd_revisions = 3
     o.max_design_revisions = 3
+    o.stop_on_review_issues = False
     return o
 
 
@@ -73,3 +74,15 @@ def test_registry_includes_pm_and_architect_stages():
     registry = o._make_stage_registry()
     for name in ("pm", "pm_reviewer", "architect", "architect_reviewer"):
         assert name in registry, f"Expected {name!r} in registry"
+
+
+# T1: last_verdict survives checkpoint round-trip
+def test_pipeline_result_last_verdict_round_trips():
+    from orchestrator import PipelineResult
+    r = PipelineResult(requirement="test")
+    r.last_verdict = "APPROVED"
+    d = r.to_dict()
+    assert d["last_verdict"] == "APPROVED"
+    r2 = PipelineResult.from_dict(d)
+    assert r2.last_verdict == "APPROVED"
+
