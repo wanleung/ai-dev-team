@@ -20,6 +20,7 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **MCP server support** — connect any MCP-compatible server (stdio or SSE); tools are automatically merged and injected into tool-calling agents
 - 🔍 **RAG knowledge base** — Engineer, Architect, and QA Engineer agents can search an indexed pgvector knowledge base (codebase, past designs, docs) via `search_codebase`, `search_memory`, and `search_docs` tools — powered by Ollama, vLLM, or OpenAI embeddings
 - **Pluggable skill system** — skills are markdown files in `skills/` that inject domain-specific guidance into agent prompts; auto-detected from project context (issue body, repo languages) or always-loaded from config
+- 🧩 **Custom pipeline stages** — define any stage sequence (including review loops) in a `pipeline.yaml` file; use the built-in browser GUI (`--config-builder`) to build and save it without editing YAML by hand
 - **Fully customisable** — add agents, skills, and tools by editing markdown role files and Python tool functions
 - 🧠 **Agent memory** — tiered SQLite memory (run → monthly → quarterly), conversation history within each run, auto-summariser after every pipeline
 - 🌙 **Refactor / dream mode** — `--refactor` flag analyses and cleans up workspace code, opens a cleanup PR
@@ -291,6 +292,67 @@ python main.py --file requirements/my-app.txt --repo owner/target-repo --no-resu
 
 ---
 
+## 🧩 Custom Pipeline (`pipeline.yaml`)
+
+By default the pipeline runs all stages in the order shown above. You can replace this with any custom stage sequence by creating a `pipeline.yaml` in the project root.
+
+### Format
+
+```yaml
+stages:
+  - pm
+  - pm_reviewer
+  - architect
+  - architect_reviewer
+  - loop:
+      max: 3
+      until: APPROVED
+      stages:
+        - engineer
+        - code_reviewer
+  - qa_planner
+  - qa_engineer
+  - test_runner
+  - deployment_tester
+  - deploy_test_runner
+  - summariser
+```
+
+**Plain stages** are stage names (strings) — any of the stages listed in the pipeline table above.
+
+**Loop blocks** repeat an inner stage sequence until a reviewer verdict matches `until` (or `max` iterations are reached):
+
+| Field | Description |
+|---|---|
+| `max` | Maximum iterations before moving on (required) |
+| `until` | Verdict that exits the loop: `APPROVED`, `NEEDS_REVISION`, or `CHANGES REQUESTED` |
+| `stages` | Inner stages to repeat (list of stage names) |
+
+Typical loop pattern: wrap `engineer` + `code_reviewer` so the reviewer can push the engineer to fix issues before QA runs.
+
+### GUI Config Builder
+
+Instead of editing YAML by hand, launch the browser-based GUI:
+
+```bash
+python main.py --config-builder
+```
+
+This opens a local web server (URL printed to console) with a drag-and-drop palette:
+
+- **Palette** — lists every available stage, colour-coded by category
+- **Pipeline canvas** — drag stages from the palette to build your sequence; drag to reorder
+- **Loop blocks** — drag the "Loop" stage into the canvas and configure `max` / `until` / inner stages
+- **Save** — writes `pipeline.yaml` next to your `config.yaml`
+
+No GitHub token needed — `--config-builder` exits before any network calls.
+
+### Precedence
+
+If `pipeline.yaml` exists, it **overrides** the `pipeline.mode` setting in `config.yaml`. To restore default mode, delete (or rename) `pipeline.yaml`.
+
+---
+
 ## 🧠 Agent Memory
 
 Every pipeline run contributes to a tiered, persistent memory store so the system learns from past work on a repo.
@@ -442,6 +504,7 @@ Pipeline:
   --refactor             Dream mode: analyse workspace code and open a cleanup PR
   --mode {build,revise}  'build' (default) runs full pipeline; 'revise' processes PR feedback
   --pr PR_NUMBER         PR number to revise — required when --mode=revise
+  --config-builder       Launch browser-based GUI to build/edit pipeline.yaml, then exit
 ```
 
 ---
@@ -584,6 +647,7 @@ pipeline:
   stop_on_review_issues: false
   max_retries: 2
   max_revisions: 3        # max automated PR revision rounds (0 = disabled)
+  # Note: if pipeline.yaml exists in the project root, it overrides pipeline.mode.
 
 skills:
   always_load: []          # e.g. [security-audit] to always apply
