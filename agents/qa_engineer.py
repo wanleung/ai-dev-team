@@ -21,45 +21,57 @@ class QAEngineerAgent(BaseAgent):
         super().__init__(*args, **kwargs)
         self._tool_registry = tool_registry
 
-    def run(self, files: dict[str, str], prd: str, project_name: str = "Project", test_plan: str = "") -> dict:
-        """Generate tests for the implemented code.
+    def run(self, files: dict[str, str], prd: str, project_name: str = "Project",
+            test_plan: str = "", write_only: bool = False) -> dict:
+        """Generate tests for the implemented code (or write-first tests in TDD mode).
 
         Args:
-            files: dict of {filepath: file_content} from EngineerAgent.
+            files: dict of {filepath: file_content} from EngineerAgent. Pass {} in TDD mode.
             prd: PRD markdown for acceptance criteria.
             project_name: Project name for context.
-            test_plan: Optional structured Test Plan from QAPlannerAgent. When provided,
-                Edward uses it to prioritise which tests to write.
+            test_plan: Optional structured Test Plan from QAPlannerAgent.
+            write_only: If True (TDD mode), write tests that define expected behaviour without
+                        running them. Prompt changes to test-first perspective.
 
         Returns:
             dict with keys:
                 - test_files (dict): {filepath: test_content} for all test files
                 - test_plan (str): Test plan summary markdown
                 - raw_response (str): Full LLM response
+                - tests_ran (bool): False only when write_only=True
         """
-        # Truncate to fit within model token limits
-        files_for_qa = self.truncate_files(files, max_chars=10_000)
-
-        code_section = "\n\n".join(
-            f"### FILE: {path}\n```python\n{content}\n```" for path, content in files_for_qa.items()
-        )
-
         plan_section = (
             f"\n\n**Test Plan from QA Planner (implement these test cases):**\n---\n{test_plan[:4000]}\n---"
             if test_plan
             else ""
         )
 
-        prompt = (
-            f"You are writing tests for the project '{project_name}'.\n\n"
-            f"**PRD (acceptance criteria to validate):**\n---\n{prd}\n---"
-            f"{plan_section}\n\n"
-            f"**Implemented code:**\n\n{code_section}\n\n"
-            f"Write comprehensive pytest tests following your role instructions. "
-            f"Use '### FILE: tests/test_xxx.py' format for each test file."
-        )
+        if write_only:
+            prompt = (
+                f"You are writing tests for the project '{project_name}' BEFORE the code is implemented.\n\n"
+                f"**PRD (acceptance criteria that define the expected behavior):**\n---\n{prd}\n---"
+                f"{plan_section}\n\n"
+                f"Write pytest tests that define the expected behavior of each module. "
+                f"These tests will be given to engineers as a specification — they must write code to make them pass.\n"
+                f"Focus on interface contracts, inputs/outputs, and acceptance criteria. "
+                f"Use '### FILE: tests/test_xxx.py' format for each test file."
+            )
+        else:
+            # Original prompt (unchanged)
+            files_for_qa = self.truncate_files(files, max_chars=10_000)
+            code_section = "\n\n".join(
+                f"### FILE: {path}\n```python\n{content}\n```" for path, content in files_for_qa.items()
+            )
+            prompt = (
+                f"You are writing tests for the project '{project_name}'.\n\n"
+                f"**PRD (acceptance criteria to validate):**\n---\n{prd}\n---"
+                f"{plan_section}\n\n"
+                f"**Implemented code:**\n\n{code_section}\n\n"
+                f"Write comprehensive pytest tests following your role instructions. "
+                f"Use '### FILE: tests/test_xxx.py' format for each test file."
+            )
 
-        if self._tool_registry is not None:
+        if self._tool_registry is not None and not write_only:
             rag_hint = (
                 "\n\nYou have access to the `search_codebase` RAG tool. "
                 "Use it to find relevant existing code patterns before writing tests."
@@ -70,14 +82,17 @@ class QAEngineerAgent(BaseAgent):
                 response = self.call(prompt)
         else:
             response = self.call(prompt)
-        test_files = self._parse_test_files(response)
-        test_plan = self._extract_test_plan(response)
 
-        return {
+        test_files = self._parse_test_files(response)
+        extracted_plan = self._extract_test_plan(response)
+
+        result = {
             "test_files": test_files,
-            "test_plan": test_plan,
+            "test_plan": extracted_plan,
             "raw_response": response,
+            "tests_ran": not write_only,
         }
+        return result
 
     def run_with_github(
         self,

@@ -13,7 +13,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import yaml
 from rich.console import Console
@@ -90,7 +90,7 @@ class ClarificationNeeded(Exception):
 class PipelineResult:
     """Holds the full output of a completed pipeline run."""
 
-    requirement: str
+    requirement: str = ""
     project_name: str = ""
     prd: str = ""
     prd_review: str = ""
@@ -104,6 +104,7 @@ class PipelineResult:
     tier_classifications: list[dict] = field(default_factory=list)
     test_files: dict[str, str] = field(default_factory=dict)
     deploy_files: dict[str, str] = field(default_factory=dict)
+    design_output: dict = field(default_factory=dict)  # raw architect output; used as module fallback
     review: str = ""
     verdict: str = ""
     qa_plan: str = ""          # structured test plan from QAPlanner
@@ -178,6 +179,7 @@ class PipelineResult:
             "design_revision_count": self.design_revision_count,
             "prd_reviewer_draft": self.prd_reviewer_draft,
             "design_reviewer_draft": self.design_reviewer_draft,
+            "design_output": self.design_output,
         }
 
     @classmethod
@@ -194,9 +196,71 @@ class PipelineResult:
                     "test_retry_count", "test_fix_history",
                     "deploy_retry_count", "deploy_fix_history",
                     "prd_revision_count", "design_revision_count",
-                    "prd_reviewer_draft", "design_reviewer_draft"]:
+                    "prd_reviewer_draft", "design_reviewer_draft",
+                    "design_output"]:
             setattr(r, key, data.get(key, getattr(r, key)))
         return r
+
+
+@dataclass
+class PipelineStage:
+    """Describes a single executable stage in the pipeline."""
+
+    name: str
+    """Identifier — used in MODES lists and per-stage config."""
+
+    label: str
+    """Display label shown in the Rich console (with emoji)."""
+
+    description: str
+    """Progress message shown while the stage runs."""
+
+    checkpoint_key: str
+    """Key written to PipelineResult.completed_stages when the stage finishes."""
+
+    fn: Callable[[PipelineResult], None]
+    """The stage callable. Receives the current PipelineResult."""
+
+    skip_if: Callable[[PipelineResult], bool] = field(
+        default_factory=lambda: lambda r: False
+    )
+    """Return True to skip this stage conditionally (e.g. no test_files yet)."""
+
+    stop_if: Callable[[PipelineResult], bool] = field(
+        default_factory=lambda: lambda r: False
+    )
+    """Return True after the stage runs to halt the pipeline early."""
+
+    stop_message: str = ""
+    """Optional message printed when stop_if triggers."""
+
+
+MODES: dict[str, list[str]] = {
+    # Standard waterfall: engineers then QA
+    "standard": [
+        "tier_review",
+        "junior_engineer",
+        "senior_engineer",
+        "reviewer",
+        "qa_planner",
+        "qa_engineer",
+        "test_fix",
+        "deploy_tester",
+        "deploy_fix",
+    ],
+    # TDD: QA writes tests first, engineers implement against them
+    "tdd": [
+        "qa_planner",
+        "qa_write",
+        "tier_review",
+        "junior_engineer",
+        "senior_engineer",
+        "test_fix",
+        "reviewer",
+        "deploy_tester",
+        "deploy_fix",
+    ],
+}
 
 
 class Orchestrator(TestFixLoopMixin):
@@ -254,6 +318,8 @@ class Orchestrator(TestFixLoopMixin):
         repo_context_loader: Optional["RepoContextLoader"] = None,
         llm_cfg: Optional[dict] = None,
         llm_fallbacks: Optional[list] = None,
+        pipeline_mode: str = "standard",
+        stage_skips: dict[str, bool] | None = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -431,6 +497,10 @@ class Orchestrator(TestFixLoopMixin):
         else:
             self.target_github = self.github
 
+        # ── Pipeline mode + per-stage skip config ─────────────────────────────
+        self._mode: str = pipeline_mode
+        self._stage_skips: dict[str, bool] = stage_skips or {}
+
     # ── Backend factory helpers ───────────────────────────────────────────────
 
     def _make_backend(self, agent_name: str) -> "LLMBackend":
@@ -566,6 +636,20 @@ class Orchestrator(TestFixLoopMixin):
         mcp_cfg = cfg.get("mcp", {})
         mcp_servers = mcp_cfg.get("servers") or []
 
+        pipeline_mode = pipeline.get("mode", "standard")
+        stage_skips = {}
+        raw_stages = pipeline.get("stages") or {}
+        if not isinstance(raw_stages, dict):
+            raise ValueError(
+                f"pipeline.stages must be a mapping, got {type(raw_stages).__name__}"
+            )
+        for name, opts in raw_stages.items():
+            if not isinstance(opts, dict):
+                raise ValueError(
+                    f"pipeline.stages.{name} must be a mapping (e.g. {{skip: true}}), got {type(opts).__name__}"
+                )
+            stage_skips[name] = bool(opts.get("skip", False))
+
         skill_loader = SkillLoader(config=cfg)
         skill_loader.init()
 
@@ -618,9 +702,106 @@ class Orchestrator(TestFixLoopMixin):
             framework_docs_loader=framework_docs_loader,
             repo_context_loader=repo_context_loader,
             llm_fallbacks=llm.get("fallbacks") or None,
+            pipeline_mode=pipeline_mode,
+            stage_skips=stage_skips,
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
+
+    def _make_stage_registry(self) -> dict[str, "PipelineStage"]:
+        """Build the full registry of all known pipeline stages."""
+        return {
+            "tier_review": PipelineStage(
+                name="tier_review",
+                label="🏷️  Tier Review",
+                description="Classifying modules into junior/senior tiers...",
+                checkpoint_key="tier_review",
+                fn=lambda r: self._stage_tier_review(r),
+            ),
+            "junior_engineer": PipelineStage(
+                name="junior_engineer",
+                label="🟢 Junior Engineers",
+                description="Implementing junior module(s)...",
+                checkpoint_key="junior_engineer",
+                fn=lambda r: self._stage_junior_engineer(r),
+                skip_if=lambda r: "engineer" in r.completed_stages,
+            ),
+            "senior_engineer": PipelineStage(
+                name="senior_engineer",
+                label="🔵 Senior Engineers",
+                description="Implementing senior module(s)...",
+                checkpoint_key="senior_engineer",
+                fn=lambda r: self._stage_senior_engineer(r),
+                skip_if=lambda r: "engineer" in r.completed_stages,
+            ),
+            "reviewer": PipelineStage(
+                name="reviewer",
+                label="🔍 Code Reviewer",
+                description="Reviewing generated code...",
+                checkpoint_key="reviewer",
+                fn=lambda r: self._stage_reviewer(r),
+                stop_if=lambda r: self.stop_on_review_issues and r.verdict == "CHANGES REQUESTED",
+                stop_message="⛔ Pipeline stopped: code reviewer requested changes.",
+            ),
+            "qa_planner": PipelineStage(
+                name="qa_planner",
+                label="📋 QA Planner",
+                description="Creating test plan & acceptance criteria...",
+                checkpoint_key="qa_planner",
+                fn=lambda r: self._stage_qa_planner(r),
+            ),
+            "qa_engineer": PipelineStage(
+                name="qa_engineer",
+                label="🧪 QA Engineer",
+                description="Writing tests & producing test plan...",
+                checkpoint_key="qa",
+                fn=lambda r: self._stage_qa(r),
+            ),
+            "qa_write": PipelineStage(
+                name="qa_write",
+                label="✍️  QA Write (TDD)",
+                description="Writing tests before implementation...",
+                checkpoint_key="qa_write",
+                fn=lambda r: self._stage_qa_write(r),
+            ),
+            "test_fix": PipelineStage(
+                name="test_fix",
+                label="🏃 Test Runner + Fix Loop",
+                description="Executing tests (with auto-fix)…",
+                checkpoint_key="test_runner",
+                fn=lambda r: self._stage_test_fix_loop(r),
+                skip_if=lambda r: not r.test_files,
+            ),
+            "deploy_tester": PipelineStage(
+                name="deploy_tester",
+                label="🚀 Deployment Tester",
+                description="Generating deployment smoke tests...",
+                checkpoint_key="deployment_tester",
+                fn=lambda r: self._stage_deployment_tester(r),
+            ),
+            "deploy_fix": PipelineStage(
+                name="deploy_fix",
+                label="🐳 Deploy Test Runner + Fix Loop",
+                description="Running deployment tests (with auto-fix)…",
+                checkpoint_key="deploy_test_runner",
+                fn=lambda r: self._stage_deploy_fix_loop(r),
+                skip_if=lambda r: not r.deploy_files,
+            ),
+        }
+
+    def _build_stage_list(self) -> list[PipelineStage]:
+        """Return the ordered stage list for the active mode, with config skips applied."""
+        registry = self._make_stage_registry()
+        if self._mode not in MODES:
+            raise ValueError(
+                f"Unknown pipeline.mode {self._mode!r}. Valid modes: {list(MODES)}"
+            )
+        stage_names = MODES[self._mode]
+        return [
+            registry[name]
+            for name in stage_names
+            if name in registry and not self._stage_skips.get(name, False)
+        ]
 
     def _get_revision_number(self, labels: list[str]) -> int:
         """Return the highest ai-revision-N number found in labels, or 0."""
@@ -999,7 +1180,7 @@ class Orchestrator(TestFixLoopMixin):
         else:
             console.print("  ⏭️  [dim]Design revision loop — skipped (checkpoint)[/dim]")
 
-        # ── Auto-index repo into RAG (before Engineer) ───────────────────────
+        # ── RAG index (always before engineer, not mode-dependent) ─────────────
         if self.repo_auto_indexer and self.target_github and "rag_index" not in result.completed_stages:
             self._run_stage(
                 "📦 RAG Index",
@@ -1009,115 +1190,40 @@ class Orchestrator(TestFixLoopMixin):
             )
             result.completed_stages.append("rag_index")
 
-        # ── Stage 3: Engineers ────────────────────────────────────────────────
-        # ── Backward-compat: old checkpoints that completed "engineer" skip both tiers ──
-        if "engineer" in result.completed_stages:
-            console.print("  ⏭️  [dim]💻 Engineers — skipped (checkpoint)[/dim]")
-        else:
-            # Stage 3a: Tier review
-            if "tier_review" not in result.completed_stages:
-                self._run_stage(
-                    "🏷️  Tier Review",
-                    f"Classifying {len(result.modules)} module(s) into junior/senior tiers...",
-                    result,
-                    lambda: self._stage_tier_review(result),
-                )
-                if result.errors:
-                    self._save_checkpoint(result)
-                    return self._finish(result, start_time)
-                result.completed_stages.append("tier_review")
-                self._save_checkpoint(result)
-            else:
-                console.print("  ⏭️  [dim]🏷️  Tier Review — skipped (checkpoint)[/dim]")
+        # ── Mode-driven stage loop ────────────────────────────────────────────
+        for stage in self._build_stage_list():
+            # Checkpoint resume: skip if already completed
+            if stage.checkpoint_key in result.completed_stages or stage.name in result.completed_stages:
+                console.print(f"  ⏭️  [dim]{stage.label} — skipped (checkpoint)[/dim]")
+                continue
 
-            junior_count = sum(1 for m in result.modules if m.get("tier") == "junior")
-            senior_count = len(result.modules) - junior_count
+            # Conditional skip (e.g. test_fix skipped when no test_files)
+            if stage.skip_if(result):
+                console.print(f"  ⏭️  [dim]{stage.label} — skipped[/dim]")
+                continue
 
-            # Stage 3b: Junior batch
-            if "junior_engineer" not in result.completed_stages:
-                self._run_stage(
-                    f"🟢 Junior Engineers (×{self.num_junior_engineers})",
-                    f"Implementing {junior_count} junior module(s)...",
-                    result,
-                    lambda: self._stage_junior_engineer(result),
-                )
-                if result.errors:
-                    self._save_checkpoint(result)
-                    return self._finish(result, start_time)
-                result.completed_stages.append("junior_engineer")
-                self._save_checkpoint(result)
-            else:
-                console.print("  ⏭️  [dim]🟢 Junior Engineers — skipped (checkpoint)[/dim]")
+            self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result))
 
-            # Stage 3c: Senior batch
-            if "senior_engineer" not in result.completed_stages:
-                self._run_stage(
-                    f"🔵 Senior Engineers (×{self.num_senior_engineers})",
-                    f"Implementing {senior_count} senior module(s) with junior context...",
-                    result,
-                    lambda: self._stage_senior_engineer(result),
-                )
-                if result.errors:
-                    self._save_checkpoint(result)
-                    return self._finish(result, start_time)
-                result.completed_stages.append("senior_engineer")
-                # Also mark "engineer" for backward compat with downstream checkpoint checks
-                result.completed_stages.append("engineer")
-                self._save_checkpoint(result)
-            else:
-                console.print("  ⏭️  [dim]🔵 Senior Engineers — skipped (checkpoint)[/dim]")
-
-        # ── Stage 4: Code Reviewer ────────────────────────────────────────────
-        if "reviewer" not in result.completed_stages:
-            self._run_stage("🔍 Code Reviewer", "Reviewing generated code...", result, lambda: self._stage_reviewer(result))
-            if self.stop_on_review_issues and result.verdict == "CHANGES REQUESTED":
-                console.print("[bold red]⛔ Pipeline stopped: code reviewer requested changes.[/bold red]")
+            if result.errors:
                 self._save_checkpoint(result)
                 return self._finish(result, start_time)
-            result.completed_stages.append("reviewer")
-            self._save_checkpoint(result)
-        else:
-            console.print("  ⏭️  [dim]🔍 Code Reviewer — skipped (checkpoint)[/dim]")
 
-        # ── Stage 4b: QA Planner ──────────────────────────────────────────────
-        if "qa_planner" not in result.completed_stages:
-            self._run_stage("📋 QA Planner", "Creating test plan & acceptance criteria...", result, lambda: self._stage_qa_planner(result))
-            result.completed_stages.append("qa_planner")
-            self._save_checkpoint(result)
-        else:
-            console.print("  ⏭️  [dim]📋 QA Planner — skipped (checkpoint)[/dim]")
+            # Backward-compat: senior_engineer stage also marks old "engineer" key
+            if stage.name == "senior_engineer":
+                result.completed_stages.append("engineer")
 
-        # ── Stage 5: QA Engineer ──────────────────────────────────────────────
-        if "qa" not in result.completed_stages:
-            self._run_stage("🧪 QA Engineer", "Writing tests & producing test plan...", result, lambda: self._stage_qa(result))
-            result.completed_stages.append("qa")
+            result.completed_stages.append(stage.checkpoint_key)
             self._save_checkpoint(result)
-        else:
-            console.print("  ⏭️  [dim]🧪 QA Engineer — skipped (checkpoint)[/dim]")
 
-        # ── Stage 6: Test Runner ──────────────────────────────────────────────
-        if "test_runner" not in result.completed_stages and result.test_files:
-            self._run_stage("🏃 Test Runner + Fix Loop", "Executing tests (with auto-fix)…", result, lambda: self._stage_test_fix_loop(result))
-            result.completed_stages.append("test_runner")
-            self._save_checkpoint(result)
-        else:
-            console.print("  ⏭️  [dim]🏃 Test Runner + Fix Loop — skipped (checkpoint)[/dim]")
-
-        # ── Stage 7: Deployment Tester ────────────────────────────────────────
-        if "deployment_tester" not in result.completed_stages:
-            self._run_stage("🚀 Deployment Tester", "Generating deployment smoke tests...", result, lambda: self._stage_deployment_tester(result))
-            result.completed_stages.append("deployment_tester")
-            self._save_checkpoint(result)
-        else:
-            console.print("  ⏭️  [dim]🚀 Deployment Tester — skipped (checkpoint)[/dim]")
-
-        # ── Stage 8: Run Deployment Tests ─────────────────────────────────────
-        if "deploy_test_runner" not in result.completed_stages and result.deploy_files:
-            self._run_stage("🐳 Deploy Test Runner + Fix Loop", "Running deployment tests (with auto-fix)…", result, lambda: self._stage_deploy_fix_loop(result))
-            result.completed_stages.append("deploy_test_runner")
-            self._save_checkpoint(result)
-        else:
-            console.print("  ⏭️  [dim]🐳 Deploy Test Runner + Fix Loop — skipped (checkpoint)[/dim]")
+            # Early pipeline stop (e.g. code review: CHANGES REQUESTED)
+            # NOTE: checkpoint_key is saved before stop_if check (intentional).
+            # On resume, completed stages (incl. reviewer) are skipped, so
+            # the pipeline continues from the next stage rather than re-running
+            # the stage that triggered the stop.
+            if stage.stop_if(result):
+                if stage.stop_message:
+                    console.print(f"[bold red]{stage.stop_message}[/bold red]")
+                return self._finish(result, start_time)
 
         # Pipeline complete — remove checkpoint
         self._clear_checkpoint(result)
@@ -1524,7 +1630,12 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_junior_engineer(self, result: PipelineResult) -> None:
         """Implement junior-tier modules with fast model; run quality gate per module."""
-        junior_modules = [m for m in result.modules if m.get("tier") == "junior"]
+        modules_with_tiers = result.modules  # from tier_review when available
+        design_modules = result.design_output.get("modules", []) if result.design_output else []
+        _all_modules = modules_with_tiers if modules_with_tiers else design_modules
+        tiers_present = any(m.get("tier") for m in _all_modules)
+        default_tier = None if tiers_present else "junior"
+        junior_modules = [m for m in _all_modules if m.get("tier", default_tier) == "junior"]
         if not junior_modules:
             console.print("  [dim]No junior modules to implement.[/dim]")
             return
@@ -1543,6 +1654,7 @@ class Orchestrator(TestFixLoopMixin):
                 issue_number=result.issue_number,
                 max_workers=self.num_junior_engineers,
                 framework_context=framework_context,
+                test_files=result.test_files if self._mode == "tdd" else None,
             )
             result.branch = eng_result.get("branch")
             result.pr_number = eng_result.get("pr_number")
@@ -1554,13 +1666,14 @@ class Orchestrator(TestFixLoopMixin):
                 result.project_name,
                 max_workers=self.num_junior_engineers,
                 framework_context=framework_context,
+                test_files=result.test_files if self._mode == "tdd" else None,
             )
 
-        junior_files: dict[str, str] = eng_result["all_files"]
+        junior_files: dict[str, str] = eng_result.get("all_files", {})
         escalated: list[dict] = []
 
         if self.junior_quality_gate:
-            for mod_result in eng_result["modules"]:
+            for mod_result in eng_result.get("modules", []):
                 mod_files = mod_result["files"]
                 mod_name = mod_result["module_name"]
                 passed, output = self._run_junior_module_tests(mod_files, result.project_name)
@@ -1609,7 +1722,11 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_senior_engineer(self, result: PipelineResult) -> None:
         """Implement senior-tier modules with expensive model; inject junior code as context."""
-        senior_modules = [m for m in result.modules if m.get("tier") == "senior"]
+        design_modules = result.design_output.get("modules", []) if result.design_output else []
+        _all_modules = result.modules if result.modules else design_modules
+        tiers_present = any(m.get("tier") for m in _all_modules)
+        default_tier = None if tiers_present else "junior"
+        senior_modules = [m for m in _all_modules if m.get("tier", default_tier) == "senior"]
         if not senior_modules:
             console.print("  [dim]No senior modules to implement.[/dim]")
             result.all_files = dict(result.junior_files)
@@ -1631,6 +1748,7 @@ class Orchestrator(TestFixLoopMixin):
                     result.project_name,
                     framework_context,
                     result.junior_files,
+                    test_files=result.test_files if self._mode == "tdd" else None,
                 )
                 for mod in senior_modules
             ]
@@ -1685,6 +1803,19 @@ class Orchestrator(TestFixLoopMixin):
 
         result.qa_plan = plan_result["test_plan"]
         result.qa_acceptance_criteria = plan_result["acceptance_criteria"]
+
+    def _stage_qa_write(self, result: PipelineResult) -> None:
+        prd = result.prd or ""
+        project_name = result.project_name or "project"
+        console.print(f"\n[bold cyan]🧪 QA Engineer (write-only)[/bold cyan]")
+        qa_result = self.qa.run({}, prd, project_name, test_plan=result.qa_plan, write_only=True)
+        result.test_files = qa_result.get("test_files", {})
+        result.test_plan = qa_result.get("test_plan", result.qa_plan or "")
+        if result.test_files:
+            self._save_files_locally(result.test_files, project_name)
+            console.print(f"[green]✅ {len(result.test_files)} test file(s) written locally[/green]")
+        else:
+            console.print("[yellow]⚠️  No test files generated[/yellow]")
 
     def _stage_qa(self, result: PipelineResult) -> None:
         cross_repo = self.target_github is not self.github and self.target_github is not None

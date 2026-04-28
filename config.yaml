@@ -179,6 +179,31 @@ pipeline:
   max_prd_revisions: 3
   # Revision loop rounds for System Design (Architect ↔ Architect Reviewer). 0 = disable.
   max_design_revisions: 3
+
+  # ── Pipeline mode ──────────────────────────────────────────────────────────
+  # Controls the stage execution order.
+  #
+  # standard (default): waterfall order — engineers code first, QA tests after
+  #   PM → Architect → Tier → Engineers → Reviewer → QA Planner → QA → Tests → Deploy
+  #
+  # tdd: test-driven order — QA writes tests before engineers implement
+  #   PM → Architect → QA Planner → QA Write → Tier → Engineers → Tests → Reviewer → Deploy
+  #
+  mode: standard
+
+  # ── Per-stage skip overrides ────────────────────────────────────────────────
+  # Set skip: true for any named stage to remove it from the active pipeline.
+  # Stage names: tier_review, junior_engineer, senior_engineer, reviewer,
+  #              qa_planner, qa_engineer, qa_write, test_fix,
+  #              deploy_tester, deploy_fix
+  #
+  # Example: skip Code Reviewer in TDD mode (tests already validate quality)
+  # stages:
+  #   reviewer:
+  #     skip: false
+  #   deploy_tester:
+  #     skip: false
+
   # If true, halt the pipeline when max PRD revisions hit without APPROVED.
   stop_on_prd_issues: false
   # If true, halt the pipeline when max Design revisions hit without APPROVED.
