@@ -136,6 +136,8 @@ class PipelineResult:
     design_revision_count: int = 0
     prd_reviewer_draft: str = ""      # reviewer's suggested PRD (for PM.run_revision)
     design_reviewer_draft: str = ""   # reviewer's suggested design (for Architect.run_revision)
+    last_verdict: str = ""
+    """Set by reviewer stages inside a loop block; checked against loop_until."""
 
     def to_dict(self) -> dict:
         return {
@@ -233,6 +235,15 @@ class PipelineStage:
 
     stop_message: str = ""
     """Optional message printed when stop_if triggers."""
+
+    loop_stages: list[str] = field(default_factory=list)
+    """Stage names to run repeatedly. Non-empty = this is a loop block."""
+
+    loop_max: int = 1
+    """Maximum iterations for a loop block."""
+
+    loop_until: str = ""
+    """Verdict string that exits a loop block early (e.g. 'APPROVED')."""
 
 
 MODES: dict[str, list[str]] = {
@@ -711,6 +722,34 @@ class Orchestrator(TestFixLoopMixin):
     def _make_stage_registry(self) -> dict[str, "PipelineStage"]:
         """Build the full registry of all known pipeline stages."""
         return {
+            "pm": PipelineStage(
+                name="pm",
+                label="📋 Product Manager",
+                description="Analyzing requirements & writing PRD...",
+                checkpoint_key="pm",
+                fn=lambda r: self._stage_pm(r, r.requirement),
+            ),
+            "pm_reviewer": PipelineStage(
+                name="pm_reviewer",
+                label="📝 PM Reviewer",
+                description="Reviewing PRD for completeness...",
+                checkpoint_key="pm_reviewer",
+                fn=lambda r: self._stage_pm_reviewer(r, r.requirement),
+            ),
+            "architect": PipelineStage(
+                name="architect",
+                label="🏗️  Architect",
+                description="Designing system architecture...",
+                checkpoint_key="architect",
+                fn=lambda r: self._stage_architect(r),
+            ),
+            "architect_reviewer": PipelineStage(
+                name="architect_reviewer",
+                label="🔎 Architect Reviewer",
+                description="Reviewing system design...",
+                checkpoint_key="architect_reviewer",
+                fn=lambda r: self._stage_architect_reviewer(r),
+            ),
             "tier_review": PipelineStage(
                 name="tier_review",
                 label="🏷️  Tier Review",
