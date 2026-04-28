@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>🧩 Pipeline Config Builder</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #1e1e2e; color: #cdd6f4; min-height: 100vh; }
+  header { background: #181825; padding: 12px 20px; display: flex;
+           justify-content: space-between; align-items: center;
+           border-bottom: 1px solid #313244; }
+  header h1 { font-size: 16px; }
+  .btn { background: #a6e3a1; color: #1e1e2e; border: none; border-radius: 6px;
+         padding: 6px 16px; font-size: 13px; cursor: pointer; font-weight: 600; }
+  .btn:hover { background: #94d49a; }
+  .btn-secondary { background: #313244; color: #cdd6f4; }
+  .btn-secondary:hover { background: #45475a; }
+  .layout { display: flex; height: calc(100vh - 49px); }
+  .palette { width: 160px; background: #181825; border-right: 1px solid #313244;
+             padding: 12px; overflow-y: auto; }
+  .palette h3 { font-size: 11px; text-transform: uppercase; color: #6c7086;
+                margin-bottom: 10px; letter-spacing: 0.05em; }
+  .palette-item { background: #313244; border-radius: 6px; padding: 7px 10px;
+                  font-size: 12px; cursor: grab; margin-bottom: 5px;
+                  border: 1px solid transparent; user-select: none; }
+  .palette-item:hover { border-color: #89b4fa; }
+  .palette-item.loop-block { border-color: #f9e2af; color: #f9e2af; }
+  .canvas { flex: 1; padding: 16px; overflow-y: auto; }
+  .canvas h3 { font-size: 11px; text-transform: uppercase; color: #6c7086;
+               margin-bottom: 12px; letter-spacing: 0.05em; }
+  .stage-list { min-height: 120px; display: flex; flex-direction: column; gap: 6px; }
+  .stage-item { background: #313244; border: 1px solid #45475a; border-radius: 8px;
+                padding: 8px 12px; display: flex; justify-content: space-between;
+                align-items: center; font-size: 13px; cursor: grab; }
+  .stage-item:hover { border-color: #89b4fa; }
+  .loop-item { border: 2px solid #f9e2af; border-radius: 8px; padding: 10px 12px; }
+  .loop-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+                 font-size: 12px; color: #f9e2af; }
+  .loop-header input[type=number] { width: 44px; background: #1e1e2e; border: 1px solid #6c7086;
+                                     color: #cdd6f4; border-radius: 4px; padding: 2px 5px; }
+  .loop-inner { min-height: 40px; background: #1e1e2e; border-radius: 6px; padding: 8px;
+                display: flex; flex-direction: column; gap: 5px;
+                border: 1px dashed #45475a; }
+  .loop-inner .stage-item { font-size: 12px; padding: 5px 10px; }
+  .remove-btn { background: none; border: none; color: #f38ba8; cursor: pointer;
+                font-size: 16px; line-height: 1; padding: 0 4px; }
+  .drop-zone { border: 2px dashed #45475a; border-radius: 8px; padding: 14px;
+               text-align: center; color: #6c7086; font-size: 12px; margin-top: 8px; }
+  .drop-zone.drag-over { border-color: #89b4fa; background: #1e3a5f22; }
+  .preview { width: 280px; background: #181825; border-left: 1px solid #313244;
+             padding: 12px; overflow-y: auto; }
+  .preview h3 { font-size: 11px; text-transform: uppercase; color: #6c7086;
+                margin-bottom: 10px; letter-spacing: 0.05em; }
+  pre { font-size: 11px; color: #a6e3a1; white-space: pre-wrap; word-break: break-all; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: #a6e3a1; color: #1e1e2e;
+           padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 600;
+           display: none; z-index: 100; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧩 Pipeline Config Builder</h1>
+  <div style="display:flex;gap:8px">
+    <button class="btn btn-secondary" onclick="clearAll()">Clear</button>
+    <button class="btn" onclick="saveYaml()">Save pipeline.yaml ↓</button>
+  </div>
+</header>
+<div class="layout">
+  <div class="palette">
+    <h3>Blocks</h3>
+    <div id="palette-stages"></div>
+    <div style="margin-top:12px;border-top:1px solid #313244;padding-top:12px">
+      <div class="palette-item loop-block" draggable="true"
+           ondragstart="dragStartLoop(event)">🔁 Loop</div>
+    </div>
+  </div>
+  <div class="canvas">
+    <h3>Pipeline Sequence — drag to reorder</h3>
+    <div class="stage-list" id="stage-list"
+         ondragover="allowDrop(event)" ondrop="dropOnList(event)"></div>
+    <div class="drop-zone" id="main-drop"
+         ondragover="allowDrop(event,true)" ondrop="dropOnList(event)">
+      Drop blocks here
+    </div>
+  </div>
+  <div class="preview">
+    <h3>pipeline.yaml preview</h3>
+    <pre id="yaml-preview"></pre>
+  </div>
+</div>
+<div class="toast" id="toast">✅ Saved!</div>
+
+<script>
+let stages = [];          // array of {type:'stage',name,label} | {type:'loop',max,until,stages:[]}
+let dragSource = null;    // {context:'palette'|'list', index, loopIndex}
+let palette = [];
+
+async function init() {
+  const [palRes, curRes] = await Promise.all([
+    fetch('/palette').then(r => r.json()),
+    fetch('/current').then(r => r.json()),
+  ]);
+  palette = palRes;
+  renderPalette();
+  if (curRes.yaml) {
+    stages = parseYaml(curRes.yaml);
+    render();
+  }
+}
+
+function renderPalette() {
+  const el = document.getElementById('palette-stages');
+  el.innerHTML = '';
+  palette.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'palette-item';
+    div.draggable = true;
+    div.textContent = s.label;
+    div.title = s.description;
+    div.ondragstart = e => dragStartPalette(e, s.name, s.label);
+    el.appendChild(div);
+  });
+}
+
+function dragStartPalette(e, name, label) {
+  dragSource = {context:'palette', name, label};
+  e.dataTransfer.effectAllowed = 'copy';
+}
+
+function dragStartLoop(e) {
+  dragSource = {context:'palette', type:'loop'};
+  e.dataTransfer.effectAllowed = 'copy';
+}
+
+function dragStartListItem(e, idx, loopIdx) {
+  dragSource = {context:'list', index:idx, loopIndex:loopIdx};
+  e.dataTransfer.effectAllowed = 'move';
+  e.stopPropagation();
+}
+
+function allowDrop(e, highlight) {
+  e.preventDefault();
+  if (highlight) e.currentTarget.classList.add('drag-over');
+}
+
+function dropOnList(e) {
+  e.preventDefault();
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+  if (!dragSource) return;
+  if (dragSource.context === 'palette') {
+    if (dragSource.type === 'loop') {
+      stages.push({type:'loop', max:3, until:'APPROVED', stages:[]});
+    } else {
+      stages.push({type:'stage', name:dragSource.name, label:dragSource.label});
+    }
+  }
+  dragSource = null;
+  render();
+}
+
+function dropOnLoop(e, loopIdx) {
+  e.preventDefault(); e.stopPropagation();
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+  if (!dragSource || dragSource.context !== 'palette' || dragSource.type === 'loop') return;
+  stages[loopIdx].stages.push({name:dragSource.name, label:dragSource.label});
+  dragSource = null;
+  render();
+}
+
+function removeItem(idx, loopIdx) {
+  if (loopIdx !== undefined) {
+    stages[idx].stages.splice(loopIdx, 1);
+  } else {
+    stages.splice(idx, 1);
+  }
+  render();
+}
+
+function clearAll() { stages = []; render(); }
+
+function render() {
+  const list = document.getElementById('stage-list');
+  list.innerHTML = '';
+  stages.forEach((item, idx) => {
+    if (item.type === 'stage') {
+      const div = document.createElement('div');
+      div.className = 'stage-item';
+      div.draggable = true;
+      div.ondragstart = e => dragStartListItem(e, idx);
+      div.innerHTML = `<span>${item.label}</span>
+        <button class="remove-btn" onclick="removeItem(${idx})">×</button>`;
+      list.appendChild(div);
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'loop-item';
+      wrap.innerHTML = `
+        <div class="loop-header">
+          🔁 Loop — max:
+          <input type="number" min="1" max="10" value="${item.max}"
+            oninput="stages[${idx}].max=parseInt(this.value)||1;updatePreview()">
+          until:
+          <select style="background:#1e1e2e;color:#cdd6f4;border:1px solid #6c7086;border-radius:4px;padding:2px"
+            onchange="stages[${idx}].until=this.value;updatePreview()">
+            <option ${item.until==='APPROVED'?'selected':''}>APPROVED</option>
+            <option ${item.until==='CHANGES_REQUESTED'?'selected':''}>CHANGES_REQUESTED</option>
+          </select>
+          <button class="remove-btn" style="margin-left:auto" onclick="removeItem(${idx})">×</button>
+        </div>
+        <div class="loop-inner" id="loop-inner-${idx}"
+          ondragover="allowDrop(event,true)" ondrop="dropOnLoop(event,${idx})">
+          ${item.stages.map((s,si) => `
+            <div class="stage-item">
+              <span>${s.label}</span>
+              <button class="remove-btn" onclick="removeItem(${idx},${si})">×</button>
+            </div>`).join('')}
+          ${item.stages.length===0?'<div style="color:#6c7086;font-size:11px;text-align:center">Drop stages here</div>':''}
+        </div>`;
+      list.appendChild(wrap);
+    }
+  });
+  updatePreview();
+}
+
+function toYaml() {
+  if (!stages.length) return '';
+  let out = 'stages:\n';
+  stages.forEach(item => {
+    if (item.type === 'stage') {
+      out += `  - ${item.name}\n`;
+    } else {
+      out += `  - loop:\n`;
+      out += `      max: ${item.max}\n`;
+      out += `      until: ${item.until}\n`;
+      out += `      stages:\n`;
+      item.stages.forEach(s => { out += `        - ${s.name}\n`; });
+    }
+  });
+  return out;
+}
+
+function updatePreview() {
+  document.getElementById('yaml-preview').textContent = toYaml() || '# Empty pipeline';
+}
+
+function parseYaml(text) {
+  // Minimal YAML parser for pipeline.yaml format (no external deps)
+  const result = [];
+  const lines = text.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const stageMatch = line.match(/^\s{2}-\s+(\w+)\s*$/);
+    const loopMatch = line.match(/^\s{2}-\s+loop:\s*$/);
+    if (stageMatch) {
+      const name = stageMatch[1];
+      const pal = palette.find(p => p.name === name);
+      result.push({type:'stage', name, label: pal ? pal.label : name});
+    } else if (loopMatch) {
+      const loop = {type:'loop', max:3, until:'APPROVED', stages:[]};
+      i++;
+      while (i < lines.length) {
+        const l = lines[i];
+        const maxM = l.match(/^\s+max:\s+(\d+)/);
+        const untilM = l.match(/^\s+until:\s+(\S+)/);
+        const innerM = l.match(/^\s{8}-\s+(\w+)/);
+        if (maxM) loop.max = parseInt(maxM[1]);
+        else if (untilM) loop.until = untilM[1];
+        else if (innerM) {
+          const name = innerM[1];
+          const pal = palette.find(p => p.name === name);
+          loop.stages.push({name, label: pal ? pal.label : name});
+        } else if (l.match(/^\s{2}-/)) { i--; break; }
+        i++;
+      }
+      result.push(loop);
+      continue;
+    }
+    i++;
+  }
+  return result;
+}
+
+async function saveYaml() {
+  const yaml = toYaml();
+  if (!yaml) { alert('Pipeline is empty — add some stages first.'); return; }
+  const resp = await fetch('/save', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({yaml}),
+  });
+  const data = await resp.json();
+  if (data.ok) {
+    const toast = document.getElementById('toast');
+    toast.style.display = 'block';
+    setTimeout(() => toast.style.display = 'none', 2500);
+  } else {
+    alert('Save failed: ' + data.error);
+  }
+}
+
+init();
+</script>
+</body>
+</html>
