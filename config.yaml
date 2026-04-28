@@ -189,6 +189,9 @@ pipeline:
   # tdd: test-driven order — QA writes tests before engineers implement
   #   PM → Architect → QA Planner → QA Write → Tier → Engineers → Tests → Reviewer → Deploy
   #
+  # Custom pipeline stages can be defined in pipeline.yaml (same directory as this file).
+  # pipeline.yaml takes precedence over the mode setting below.
+  # Run: python main.py --config-builder  to launch the browser GUI builder.
   mode: standard
 
   # ── Per-stage skip overrides ────────────────────────────────────────────────

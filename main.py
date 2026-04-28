@@ -149,6 +149,11 @@ Setup:
         action="store_true",
         help="Re-fetch marketplace skill index and refresh all cached skills, then exit.",
     )
+    parser.add_argument(
+        "--config-builder",
+        action="store_true",
+        help="Launch browser-based GUI to build a custom pipeline.yaml",
+    )
 
     return parser.parse_args()
 
@@ -257,6 +262,12 @@ def main() -> int:
     except EnvironmentError as e:
         console.print(f"[red]{e}[/red]")
         return 1
+
+    # ── Handle --config-builder ───────────────────────────────────────────────
+    if args.config_builder:
+        from pipeline_builder.server import run_builder
+        run_builder(config_path=args.config)
+        return 0
 
     # ── Handle --update-skills ────────────────────────────────────────────────
     if args.update_skills:
