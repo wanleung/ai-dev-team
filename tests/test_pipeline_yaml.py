@@ -356,3 +356,37 @@ def test_architect_reviewer_sets_last_verdict():
     orch._stage_architect_reviewer(result)
 
     assert result.last_verdict == "APPROVED"
+
+
+# T3: _run_loop_stage exits early when loop_until verdict is met
+def test_run_loop_stage_exits_early_on_verdict():
+    from orchestrator import Orchestrator, PipelineResult, PipelineStage
+    orch = _make_orch_full()
+
+    call_log = []
+
+    def fake_pm_stage(r):
+        call_log.append("pm")
+        r.last_verdict = "APPROVED"
+
+    registry = orch._make_stage_registry()
+    registry["pm"] = PipelineStage(
+        name="pm", label="PM", description="",
+        checkpoint_key="pm", fn=fake_pm_stage,
+    )
+
+    loop_stage = PipelineStage(
+        name="loop_0", label="🔁 Loop", description="",
+        checkpoint_key="loop_0", fn=lambda r: None,
+        loop_stages=["pm"], loop_max=3, loop_until="APPROVED",
+    )
+
+    result = PipelineResult(requirement="req")
+
+    with patch.object(orch, '_make_stage_registry', return_value=registry), \
+         patch.object(orch, '_run_stage', side_effect=lambda lbl, desc, r, fn: fn()):
+        ok = orch._run_loop_stage(loop_stage, result)
+
+    assert ok is True
+    assert len(call_log) == 1        # stopped after first APPROVED
+    assert result.last_verdict == "APPROVED"
