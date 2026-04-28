@@ -876,6 +876,11 @@ class Orchestrator(TestFixLoopMixin):
                         raise ValueError(
                             f"Loop block at index {i} missing required field '{required_key}'."
                         )
+                if not loop.get("until"):
+                    raise ValueError(
+                        f"Loop block at index {i} 'until' must be a non-empty string "
+                        f"(e.g. 'APPROVED'). Got: {loop.get('until')!r}"
+                    )
                 if not isinstance(loop["stages"], list) or len(loop["stages"]) == 0:
                     raise ValueError(
                         f"Loop block at index {i} 'stages' must be a non-empty list."

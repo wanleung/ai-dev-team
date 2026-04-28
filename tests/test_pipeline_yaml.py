@@ -210,3 +210,19 @@ stages:
     with pytest.raises(ValueError, match="non-empty"):
         o._load_pipeline_yaml(cfg_path)
 
+
+# T2: Unknown stage name inside loop raises ValueError
+def test_load_pipeline_yaml_loop_unknown_inner_stage_raises():
+    o = _make_orch_full()
+    cfg_path = _write_pipeline_yaml("""
+stages:
+  - loop:
+      max: 2
+      until: APPROVED
+      stages:
+        - pm
+        - nonexistent_inner_stage
+""")
+    with pytest.raises(ValueError, match="nonexistent_inner_stage"):
+        o._load_pipeline_yaml(cfg_path)
+
