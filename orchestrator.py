@@ -5,6 +5,7 @@ Manages artifact passing, logging, and optional GitHub integration.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -689,7 +690,6 @@ class Orchestrator(TestFixLoopMixin):
             setattr(_temp_orch_for_load, _attr, None)
         pipeline_yaml_stages = _temp_orch_for_load._load_pipeline_yaml(config_path)
         if pipeline_yaml_stages is not None:
-            import logging
             logging.debug("pipeline.yaml found — pipeline.mode in config.yaml is ignored.")
 
         return cls(
@@ -959,6 +959,10 @@ class Orchestrator(TestFixLoopMixin):
 
         Runs inner stages repeatedly until loop_until verdict is seen or loop_max
         iterations are exhausted. Returns True to continue pipeline, False on error.
+
+        Note: Checkpointing is at the loop-block level (the outer loop_N stage). If
+        the pipeline is interrupted mid-loop, the entire loop will restart on resume.
+        Individual inner stages are not checkpointed.
         """
         registry = self._make_stage_registry()
         console.print(f"\n  {loop_stage.label}")
@@ -986,6 +990,13 @@ class Orchestrator(TestFixLoopMixin):
                     f"  🔄 [yellow]Round {iteration + 1}/{loop_stage.loop_max} — "
                     f"verdict: {result.last_verdict or 'none'}, retrying...[/yellow]"
                 )
+
+        if result.last_verdict != loop_stage.loop_until:
+            console.print(
+                f"  ⚠️  [yellow]Loop exhausted after {loop_stage.loop_max} rounds "
+                f"without reaching '{loop_stage.loop_until}' "
+                f"(last verdict: {result.last_verdict or 'none'})[/yellow]"
+            )
 
         return True
 
