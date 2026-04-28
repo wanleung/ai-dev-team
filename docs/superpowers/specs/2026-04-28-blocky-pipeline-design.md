@@ -72,7 +72,9 @@ stages:
 | `loop.until` | string | Verdict string that exits the loop early (e.g. `APPROVED`) |
 | `loop.stages` | list | Ordered list of stage names inside the loop |
 
-**Valid stage names:** `pm`, `pm_reviewer`, `architect`, `architect_reviewer`, `tier_review`, `junior_engineer`, `senior_engineer`, `reviewer`, `qa_planner`, `qa_write`, `qa_engineer`, `test_fix`, `deploy_tester`, `deploy_fix`
+**Valid stage names** are derived at runtime from `_make_stage_registry()` in `orchestrator.py` — this is the single source of truth. Current names: `pm`, `pm_reviewer`, `architect`, `architect_reviewer`, `tier_review`, `junior_engineer`, `senior_engineer`, `reviewer`, `qa_planner`, `qa_write`, `qa_engineer`, `test_fix`, `deploy_tester`, `deploy_fix`
+
+> **Adding a new agent:** Register it in `_make_stage_registry()`. The GUI palette and `pipeline.yaml` validator both derive valid names from the registry at startup, so no other registration step is needed.
 
 **Validation errors** (raised at startup, before any LLM call):
 - Unknown stage name
@@ -116,6 +118,7 @@ Launched with `python main.py --config-builder`. Opens a local browser page.
 
 - Single-file HTML + vanilla JS served by a minimal Python HTTP server (no extra dependencies)
 - Server endpoint `POST /save` writes `pipeline.yaml`
+- On startup, the server calls `Orchestrator._make_stage_registry()` to build the live stage palette — new stages registered there appear in the GUI automatically with no extra steps
 - On startup, if `pipeline.yaml` already exists, the builder loads and renders the current config so the user can edit in place
 
 ### Launch flow
