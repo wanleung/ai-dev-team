@@ -1,0 +1,5 @@
+# Built-in documentation pipeline — label: ai-docs
+# Replaces doc_orchestrator.py.
+stages:
+  - doc_generate
+  - doc_commit_pr

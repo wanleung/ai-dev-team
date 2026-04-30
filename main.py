@@ -19,7 +19,7 @@ from rich.panel import Panel
 console = Console()
 
 
-def parse_args() -> argparse.Namespace:
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ai-software-house",
         description="🏢 AI Software House — a team of AI agents that builds software from a requirement.",
@@ -154,12 +154,41 @@ Setup:
         action="store_true",
         help="Launch browser-based GUI to build a custom pipeline.yaml",
     )
+    parser.add_argument(
+        "--pipeline",
+        default=None,
+        help="Pipeline name (resolves to pipelines/<name>.yaml)",
+    )
+    parser.add_argument(
+        "--list-pipelines",
+        action="store_true",
+        help="List available built-in pipelines and exit",
+    )
 
-    return parser.parse_args()
+    return parser
+
+
+def parse_args() -> argparse.Namespace:
+    return _build_arg_parser().parse_args()
 
 
 def main() -> int:
     args = parse_args()
+
+    if args.list_pipelines:
+        from pathlib import Path
+        pipelines_dir = Path(__file__).parent / "pipelines"
+        if not pipelines_dir.exists():
+            print("No pipelines/ directory found.")
+            return 0
+        print("Available pipelines:")
+        for p in sorted(pipelines_dir.glob("*.yaml")):
+            print(f"  {p.stem}")
+        return 0
+
+    # Install the LLM pool from config so backend semaphores are honoured
+    from watcher import install_llm_pool_from_config, _load_pipeline_config
+    install_llm_pool_from_config(_load_pipeline_config())
 
     # Early exit for --config-builder — does not need GitHub token or orchestrator
     if args.config_builder:
@@ -261,6 +290,13 @@ def main() -> int:
         if args.workspace:
             from pathlib import Path
             orch.workspace_dir = Path(args.workspace)
+
+        if args.pipeline:
+            stages = orch.load_pipeline_for_label(args.pipeline)
+            if stages is None:
+                print(f"No pipeline found for {args.pipeline!r}", file=sys.stderr)
+                return 1
+            orch._pipeline_yaml_stages = stages
 
     except FileNotFoundError as e:
         console.print(f"[red]Config error: {e}[/red]")

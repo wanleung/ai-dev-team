@@ -41,10 +41,10 @@ def _make_issue(number: int = 1, title: str = "Test issue", labels: list[str] | 
     }
 
 
-def _stub_dispatch_args(pipeline_type: str, tmp_path: Path) -> dict:
+def _stub_dispatch_args(label: str, tmp_path: Path) -> dict:
     """Return a minimal set of kwargs for _dispatch."""
     return dict(
-        pipeline_type=pipeline_type,
+        label=label,
         tracker_repo="owner/tracker",
         target_repo="owner/target",
         issue_number=42,
@@ -59,8 +59,9 @@ def _stub_dispatch_args(pipeline_type: str, tmp_path: Path) -> dict:
 
 class TestDispatchFeature:
     def test_dispatch_feature_imports_orchestrator(self, tmp_path: Path) -> None:
-        """_dispatch with pipeline_type='feature' calls Orchestrator.run()."""
+        """_dispatch with label='ai-feature' calls Orchestrator.run()."""
         mock_orch_instance = MagicMock()
+        mock_orch_instance.load_pipeline_for_label.return_value = None
         mock_orch_class = MagicMock(return_value=mock_orch_instance)
         mock_gh_client = MagicMock()
         mock_gh_client.return_value.get_issue.return_value = {
@@ -72,7 +73,7 @@ class TestDispatchFeature:
             "orchestrator": MagicMock(Orchestrator=mock_orch_class),
             "github_client": MagicMock(GitHubClient=mock_gh_client, parse_target_repo=lambda b: None),
         }):
-            _dispatch(**_stub_dispatch_args("feature", tmp_path))
+            _dispatch(**_stub_dispatch_args("ai-feature", tmp_path))
 
         mock_orch_class.assert_called_once()
         mock_orch_instance.run.assert_called_once()
@@ -80,6 +81,7 @@ class TestDispatchFeature:
     def test_dispatch_feature_log_file_created(self, tmp_path: Path) -> None:
         """_dispatch creates its log file for a feature pipeline."""
         mock_orch_instance = MagicMock()
+        mock_orch_instance.load_pipeline_for_label.return_value = None
         mock_orch_class = MagicMock(return_value=mock_orch_instance)
         mock_gh_client = MagicMock()
         mock_gh_client.return_value.get_issue.return_value = {
@@ -88,7 +90,7 @@ class TestDispatchFeature:
         }
 
         log_file = tmp_path / "issue-42-feature.log"
-        kwargs = _stub_dispatch_args("feature", tmp_path)
+        kwargs = _stub_dispatch_args("ai-feature", tmp_path)
         kwargs["log_file"] = log_file
 
         with patch.dict("sys.modules", {
@@ -104,80 +106,107 @@ class TestDispatchFeature:
 
 class TestDispatchBug:
     def test_dispatch_bug_imports_bugfixorchestrator(self, tmp_path: Path) -> None:
-        """_dispatch with pipeline_type='bug' calls BugFixOrchestrator.run()."""
+        """_dispatch with label='ai-fix' calls Orchestrator.run() with bug pipeline stages."""
         mock_orch_instance = MagicMock()
+        mock_orch_instance.load_pipeline_for_label.return_value = ["triager", "engineer"]
         mock_orch_class = MagicMock(return_value=mock_orch_instance)
+        mock_gh_client = MagicMock()
+        mock_gh_client.return_value.get_issue.return_value = {
+            "title": "Bug",
+            "body": "",
+        }
 
         with patch.dict("sys.modules", {
-            "bug_fix_orchestrator": MagicMock(BugFixOrchestrator=mock_orch_class),
+            "orchestrator": MagicMock(Orchestrator=mock_orch_class),
+            "github_client": MagicMock(GitHubClient=mock_gh_client, parse_target_repo=lambda b: None),
         }):
-            _dispatch(**_stub_dispatch_args("bug", tmp_path))
+            _dispatch(**_stub_dispatch_args("ai-fix", tmp_path))
 
         mock_orch_class.assert_called_once()
-        mock_orch_instance.run.assert_called_once_with(issue_number=42)
+        mock_orch_instance.run.assert_called_once()
+        mock_orch_instance.load_pipeline_for_label.assert_called_once_with("ai-fix")
 
     def test_dispatch_bug_passes_issue_number(self, tmp_path: Path) -> None:
-        """_dispatch passes the correct issue_number to BugFixOrchestrator.run()."""
+        """_dispatch passes the correct issue_number to Orchestrator.run()."""
         mock_orch_instance = MagicMock()
+        mock_orch_instance.load_pipeline_for_label.return_value = None
         mock_orch_class = MagicMock(return_value=mock_orch_instance)
+        mock_gh_client = MagicMock()
+        mock_gh_client.return_value.get_issue.return_value = {"title": "Bug", "body": "B"}
 
-        kwargs = _stub_dispatch_args("bug", tmp_path)
+        kwargs = _stub_dispatch_args("ai-fix", tmp_path)
         kwargs["issue_number"] = 99
 
         with patch.dict("sys.modules", {
-            "bug_fix_orchestrator": MagicMock(BugFixOrchestrator=mock_orch_class),
+            "orchestrator": MagicMock(Orchestrator=mock_orch_class),
+            "github_client": MagicMock(GitHubClient=mock_gh_client, parse_target_repo=lambda b: None),
         }):
             _dispatch(**kwargs)
 
-        mock_orch_instance.run.assert_called_once_with(issue_number=99)
+        run_kwargs = mock_orch_instance.run.call_args.kwargs
+        assert run_kwargs.get("issue_number") == 99
 
 
 # ── _dispatch: documentation pipeline ────────────────────────────────────────
 
 class TestDispatchDocumentation:
     def test_dispatch_documentation_imports_docorchestrator(self, tmp_path: Path) -> None:
-        """_dispatch with pipeline_type='documentation' calls DocOrchestrator.run()."""
+        """_dispatch with label='ai-docs' calls Orchestrator.run() with docs pipeline."""
         mock_orch_instance = MagicMock()
+        mock_orch_instance.load_pipeline_for_label.return_value = ["doc_engineer"]
         mock_orch_class = MagicMock(return_value=mock_orch_instance)
+        mock_gh_client = MagicMock()
+        mock_gh_client.return_value.get_issue.return_value = {"title": "Docs", "body": ""}
 
         with patch.dict("sys.modules", {
-            "doc_orchestrator": MagicMock(DocOrchestrator=mock_orch_class),
+            "orchestrator": MagicMock(Orchestrator=mock_orch_class),
+            "github_client": MagicMock(GitHubClient=mock_gh_client, parse_target_repo=lambda b: None),
         }):
-            _dispatch(**_stub_dispatch_args("documentation", tmp_path))
+            _dispatch(**_stub_dispatch_args("ai-docs", tmp_path))
 
         mock_orch_class.assert_called_once()
-        mock_orch_instance.run.assert_called_once_with(issue_number=42)
+        mock_orch_instance.run.assert_called_once()
+        mock_orch_instance.load_pipeline_for_label.assert_called_once_with("ai-docs")
 
     def test_dispatch_documentation_passes_issue_number(self, tmp_path: Path) -> None:
-        """_dispatch passes the correct issue_number to DocOrchestrator.run()."""
+        """_dispatch passes the correct issue_number to Orchestrator.run()."""
         mock_orch_instance = MagicMock()
+        mock_orch_instance.load_pipeline_for_label.return_value = None
         mock_orch_class = MagicMock(return_value=mock_orch_instance)
+        mock_gh_client = MagicMock()
+        mock_gh_client.return_value.get_issue.return_value = {"title": "Docs", "body": ""}
 
-        kwargs = _stub_dispatch_args("documentation", tmp_path)
+        kwargs = _stub_dispatch_args("ai-docs", tmp_path)
         kwargs["issue_number"] = 7
 
         with patch.dict("sys.modules", {
-            "doc_orchestrator": MagicMock(DocOrchestrator=mock_orch_class),
+            "orchestrator": MagicMock(Orchestrator=mock_orch_class),
+            "github_client": MagicMock(GitHubClient=mock_gh_client, parse_target_repo=lambda b: None),
         }):
             _dispatch(**kwargs)
 
-        mock_orch_instance.run.assert_called_once_with(issue_number=7)
+        run_kwargs = mock_orch_instance.run.call_args.kwargs
+        assert run_kwargs.get("issue_number") == 7
 
     def test_dispatch_documentation_passes_model_and_repo(self, tmp_path: Path) -> None:
-        """_dispatch passes model, github_token, and github_repo to DocOrchestrator."""
+        """_dispatch passes model, github_token, and github_repo to Orchestrator."""
         mock_orch_instance = MagicMock()
+        mock_orch_instance.load_pipeline_for_label.return_value = None
         mock_orch_class = MagicMock(return_value=mock_orch_instance)
+        mock_gh_client = MagicMock()
+        mock_gh_client.return_value.get_issue.return_value = {"title": "Docs", "body": ""}
 
-        kwargs = _stub_dispatch_args("documentation", tmp_path)
+        kwargs = _stub_dispatch_args("ai-docs", tmp_path)
         kwargs["model"] = "gpt-4o"
         kwargs["tracker_repo"] = "myorg/myrepo"
 
         with patch.dict("sys.modules", {
-            "doc_orchestrator": MagicMock(DocOrchestrator=mock_orch_class),
+            "orchestrator": MagicMock(Orchestrator=mock_orch_class),
+            "github_client": MagicMock(GitHubClient=mock_gh_client, parse_target_repo=lambda b: None),
         }):
             _dispatch(**kwargs)
 
-        # DocOrchestrator is constructed with model, github_token, github_repo
+        # Orchestrator is constructed with model, github_token, github_repo
         call_kwargs = mock_orch_class.call_args.kwargs
         assert call_kwargs.get("model") == "gpt-4o"
         assert call_kwargs.get("github_repo") == "myorg/myrepo"
@@ -242,10 +271,10 @@ class TestWatchQueuing:
         cfg = _write_config(tmp_path)
         watch(cfg, dry_run=True, logger=_make_logger())
 
-        # At least one call with feature pipeline_type
+        # At least one call with feature pipeline
         calls = mock_run_pipeline.call_args_list
-        types = [c.args[3] if c.args else c.kwargs.get("pipeline_type") for c in calls]
-        assert "feature" in types
+        types = [c.args[3] if c.args else c.kwargs.get("label") for c in calls]
+        assert "ai-feature" in types
 
     @patch("watcher.run_pipeline")
     @patch("watcher.add_label")
@@ -274,8 +303,8 @@ class TestWatchQueuing:
         watch(cfg, dry_run=True, logger=_make_logger())
 
         calls = mock_run_pipeline.call_args_list
-        types = [c.args[3] if c.args else c.kwargs.get("pipeline_type") for c in calls]
-        assert "bug" in types
+        types = [c.args[3] if c.args else c.kwargs.get("label") for c in calls]
+        assert "ai-fix" in types
 
     @patch("watcher.run_pipeline")
     @patch("watcher.add_label")
@@ -304,8 +333,8 @@ class TestWatchQueuing:
         watch(cfg, dry_run=True, logger=_make_logger())
 
         calls = mock_run_pipeline.call_args_list
-        types = [c.args[3] if c.args else c.kwargs.get("pipeline_type") for c in calls]
-        assert "documentation" in types
+        types = [c.args[3] if c.args else c.kwargs.get("label") for c in calls]
+        assert "ai-docs" in types
 
     @patch("watcher.run_pipeline")
     @patch("watcher.add_label")
@@ -386,5 +415,5 @@ class TestWatchQueuing:
         watch(cfg, dry_run=True, logger=_make_logger())
 
         calls = mock_run_pipeline.call_args_list
-        types = [c.args[3] if c.args else c.kwargs.get("pipeline_type") for c in calls]
-        assert "documentation" in types
+        types = [c.args[3] if c.args else c.kwargs.get("label") for c in calls]
+        assert "ai-docs" in types

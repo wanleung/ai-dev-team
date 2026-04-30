@@ -75,6 +75,39 @@ def _parse_explicit_skills(text: str) -> list[str]:
     return [s.strip() for s in m.group(1).split(",") if s.strip()]
 
 
+# Diagnosis system prompt overlay used by the bug-fix pipeline.
+_DIAGNOSIS_PREFIX = """
+You are performing a **bug diagnosis**, not a new system design.
+
+Given:
+- A bug report (title + description from a GitHub Issue)
+- The existing codebase files provided
+
+Your job is to:
+1. Identify the most likely root cause
+2. Pinpoint the exact file(s) and function(s) that need changing
+3. Describe the minimal fix required — do NOT redesign the whole system
+4. List only the module(s) that need to be touched
+
+Output format:
+```markdown
+# Bug Diagnosis: [Bug Title]
+
+## Root Cause
+[Concise explanation of why the bug occurs]
+
+## Affected Files
+- `path/to/file.py` — [what needs to change]
+
+## Fix Strategy
+[Step-by-step description of the minimal fix]
+
+## Implementation Modules
+1. **[module_name]**: [file to fix] — [what to change]
+```
+"""
+
+
 class ClarificationNeeded(Exception):
     """Raised by PM or Architect agents when requirements are ambiguous.
 
@@ -738,6 +771,166 @@ class Orchestrator(TestFixLoopMixin):
 
     # ── Revision helpers ──────────────────────────────────────────────────────
 
+    # ── Bug-fix stages (absorbed from bug_fix_orchestrator) ────────────────
+
+    def _stage_diagnose(self, result: "PipelineResult") -> None:
+        """Diagnose a bug from the trigger issue body and existing repo files.
+
+        Sets ``result.design`` to the diagnosis Markdown so downstream
+        stages (engineer/test_fix) see the fix plan as their design doc.
+        """
+        from agents import ArchitectAgent
+
+        body = (result.requirement or "").strip()
+        existing_files = getattr(result, "existing_files", {}) or {}
+        files_section = ""
+        if existing_files:
+            files_section = "\n\n## Existing Files\n" + "\n".join(
+                f"### `{p}`\n```\n{c[:6000]}\n```" for p, c in existing_files.items()
+            )
+
+        # Reuse the orchestrator's already-constructed architect agent if available;
+        # otherwise build a fresh one. Either way overlay the diagnosis prefix.
+        arch = getattr(self, "architect", None)
+        if arch is None:
+            arch = ArchitectAgent(
+                model=self.model,
+                github_token=self._github_token,
+                ollama_url=self.ollama_url,
+            )
+        original_prompt = arch.system_prompt
+        try:
+            arch.system_prompt = _DIAGNOSIS_PREFIX + "\n\n" + original_prompt
+            arch_result = arch.run(
+                prd=body + files_section,
+                project_name=f"Bug Fix: {result.project_name or 'issue'}",
+            )
+        finally:
+            arch.system_prompt = original_prompt
+
+        result.design = arch_result.get("design", "")
+        result.modules = arch_result.get("modules", []) or []
+
+    def _stage_bug_fix(self, result: "PipelineResult") -> None:
+        """Apply the bug fix using the engineer agent against existing files.
+
+        By this point ``result.design`` holds the diagnosis and the engineer
+        will produce patches against the existing files.
+        """
+        return self._stage_engineer(result)
+
+    # ── Documentation stages (absorbed from doc_orchestrator) ──────────────
+
+    def _stage_doc_generate(self, result: "PipelineResult") -> None:
+        """Generate documentation files using the documentation agent."""
+        from agents import DocumentationAgent
+
+        gh = self.target_github or self.github
+        if gh is None:
+            result.errors.append(
+                "doc_generate requires a GitHub connection but none is available "
+                "(hint: do not use --no-github with the ai-docs pipeline)"
+            )
+            return
+        body = (result.requirement or "").strip()
+        agent = DocumentationAgent(
+            model=self.model,
+            github_token=self._github_token,
+            ollama_url=self.ollama_url,
+        )
+        file_writes = agent.run(
+            issue_title=result.project_name or f"docs-{result.issue_number or ''}",
+            issue_body=body,
+            github_client=gh,
+        ) or []
+        # Store as files dict so the standard commit/PR helpers can pick them up
+        for write in file_writes:
+            path = write.get("path") or ""
+            content = write.get("content") or ""
+            if path:
+                result.all_files[path] = content
+
+    def _stage_doc_commit_pr(self, result: "PipelineResult") -> None:
+        """Commit doc files and open a PR — uses the same path as feature pipeline."""
+        if not getattr(result, "all_files", None):
+            return
+        self._commit_and_open_pr(
+            result,
+            branch_prefix="docs/agent",
+            title_prefix="docs",
+            body_header="## 📚 Documentation Update",
+            commit_msg_prefix="docs",
+        )
+
+    # ── Shared commit + PR helper (extracted from doc_orchestrator) ────────
+
+    def _commit_and_open_pr(
+        self,
+        result: "PipelineResult",
+        branch_prefix: str = "feature/agent",
+        title_prefix: str = "feat",
+        body_header: str = "## 🤖 Automated change",
+        commit_msg_prefix: str = "chore",
+    ) -> None:
+        """Commit ``result.all_files`` to a new branch and open a PR.
+
+        Extracted from ``doc_orchestrator._stage_commit`` / ``_stage_pr`` so
+        that doc + bug-fix flows can share a single commit/PR path on the
+        unified Orchestrator. Existing feature-pipeline commit logic still
+        lives inside ``EngineerAgent.run_with_github`` and is unaffected.
+        """
+        gh = self.target_github or self.github
+        if gh is None or not result.all_files:
+            return
+
+        try:
+            repo_info = gh._request("GET", f"/repos/{gh.repo}")
+            base_branch = repo_info.get("default_branch", "main")
+        except Exception:
+            base_branch = "main"
+
+        import re as _re
+        slug_source = result.project_name or f"issue-{result.issue_number or 'auto'}"
+        slug = _re.sub(r"[^a-z0-9-]", "-", slug_source.lower())[:40].strip("-") or "auto"
+        issue_part = f"{result.issue_number}-" if result.issue_number else ""
+        branch = f"{branch_prefix}/{issue_part}{slug}"
+
+        try:
+            gh.create_branch(branch)
+        except Exception as exc:
+            result.errors.append(f"Branch creation failed: {exc}")
+            return
+        result.branch = branch
+
+        committed: list[str] = []
+        for path, content in result.all_files.items():
+            commit_msg = f"{commit_msg_prefix}: update {path}"
+            if result.issue_number:
+                commit_msg += f" (issue #{result.issue_number})"
+            try:
+                gh.commit_file(path=path, content=content, message=commit_msg, branch=branch)
+                committed.append(path)
+            except Exception as exc:
+                result.errors.append(f"Failed to commit {path}: {exc}")
+
+        if not committed:
+            return
+
+        files_list = "\n".join(f"- `{p}`" for p in committed)
+        title = f"{title_prefix}: {result.project_name or 'automated update'}"
+        pr_body = (
+            f"{body_header}\n\n"
+            + (f"Resolves #{result.issue_number}\n\n" if result.issue_number else "")
+            + f"### Files\n\n{files_list}\n\n"
+            "_Generated by AI Software House unified pipeline._"
+        )
+        try:
+            pr = gh.create_pull_request(title=title, body=pr_body, head=branch, base=base_branch)
+            result.pr_number = pr.get("number")
+            result.pr_url = pr.get("html_url")
+        except Exception as exc:
+            result.errors.append(f"PR creation failed: {exc}")
+
     def _make_stage_registry(self) -> dict[str, "PipelineStage"]:
         """Build the full registry of all known pipeline stages."""
         return {
@@ -845,6 +1038,41 @@ class Orchestrator(TestFixLoopMixin):
                 fn=lambda r: self._stage_deploy_fix_loop(r),
                 skip_if=lambda r: not r.deploy_files,
             ),
+            "engineer": PipelineStage(
+                name="engineer",
+                label="👷 Engineer",
+                description="Implementing modules (single-tier)...",
+                checkpoint_key="engineer",
+                fn=lambda r: self._stage_engineer(r),
+            ),
+            "diagnose": PipelineStage(
+                name="diagnose",
+                label="🔬 Diagnoser",
+                description="Diagnosing bug from issue body and existing files...",
+                checkpoint_key="diagnose",
+                fn=lambda r: self._stage_diagnose(r),
+            ),
+            "bug_fix": PipelineStage(
+                name="bug_fix",
+                label="🛠️  Bug Fix",
+                description="Applying bug fix patches...",
+                checkpoint_key="bug_fix",
+                fn=lambda r: self._stage_bug_fix(r),
+            ),
+            "doc_generate": PipelineStage(
+                name="doc_generate",
+                label="📚 Doc Generator",
+                description="Generating documentation files...",
+                checkpoint_key="doc_generate",
+                fn=lambda r: self._stage_doc_generate(r),
+            ),
+            "doc_commit_pr": PipelineStage(
+                name="doc_commit_pr",
+                label="📤 Doc Commit + PR",
+                description="Committing docs and opening PR...",
+                checkpoint_key="doc_commit_pr",
+                fn=lambda r: self._stage_doc_commit_pr(r),
+            ),
         }
 
     def _load_pipeline_yaml(self, config_path: str) -> "list | None":
@@ -930,6 +1158,60 @@ class Orchestrator(TestFixLoopMixin):
                 )
 
         return result_entries
+
+    def load_pipeline_for_label(
+        self,
+        label: str,
+        project_dir: "str | None" = None,
+    ) -> "list | None":
+        """Resolve the pipeline stage list for a given GitHub label.
+
+        Priority (highest to lowest):
+        1. ``project_dir/pipeline.yaml`` if it exists (project override)
+        2. ``pipelines/<label>.yaml`` next to this orchestrator module
+        3. ``None`` (caller falls back to built-in default)
+        """
+        from pathlib import Path
+        if project_dir:
+            project_yaml = Path(project_dir) / "pipeline.yaml"
+            if project_yaml.exists():
+                import yaml
+                with open(project_yaml, encoding="utf-8") as fh:
+                    raw = yaml.safe_load(fh) or {}
+                stages = raw.get("stages")
+                if stages is not None:
+                    self._validate_pipeline_stages(str(project_yaml), stages)
+                return stages
+
+        builtin = Path(__file__).parent / "pipelines" / f"{label}.yaml"
+        if builtin.exists():
+            import yaml
+            with open(builtin, encoding="utf-8") as fh:
+                raw = yaml.safe_load(fh) or {}
+            stages = raw.get("stages")
+            if stages is not None:
+                self._validate_pipeline_stages(label, stages)
+            return stages
+
+        return None
+
+    def _validate_pipeline_stages(self, source: str, stages: list) -> None:
+        """Warn about unknown stage names so errors surface early with context.
+
+        Unknown stages will raise a KeyError in ``_build_stage_list``; this
+        method surfaces the problem with a clear message at load time.
+        """
+        registry = self._make_stage_registry()
+        unknown = []
+        for entry in stages:
+            if isinstance(entry, str) and entry not in registry:
+                unknown.append(entry)
+        if unknown:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Pipeline %r references unknown stage(s) %s — valid stages: %s",
+                source, unknown, sorted(registry.keys()),
+            )
 
     def _build_stage_list(self) -> list[PipelineStage]:
         """Return the ordered stage list, applying skip overrides.

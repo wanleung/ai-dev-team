@@ -118,6 +118,18 @@ llm:
     summariser: "openai/gpt-4.1"
     memory_bank_updater: "openai/gpt-4.1"
 
+  # Per-backend concurrency limits. The watcher acquires a slot
+  # from the named backend's pool before each LLM call. Use this
+  # to protect rate-limited or local backends.
+  pools:
+    ollama: 1            # local Ollama: serial only (default)
+    openai: 10
+    anthropic: 5
+    opencode-zen: 5
+    opencode-go: 5
+    nvidia_nim: 5
+    # Backends not listed default to 5
+
 # ── GitHub Settings ─────────────────────────────────────────────────────────
 github:
   # Target repository in 'owner/repo' format

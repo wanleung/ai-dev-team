@@ -353,6 +353,33 @@ If `pipeline.yaml` exists, it **overrides** the `pipeline.mode` setting in `conf
 
 ---
 
+## 🏷️ Label → Pipeline Mapping
+
+Each GitHub label can trigger its own pipeline. The watcher picks the pipeline file based on the label name.
+
+**Built-in pipelines:**
+
+| Label | Pipeline File | Purpose |
+|---|---|---|
+| `ai-feature` | `pipelines/ai-feature.yaml` | Full feature build (PM → Architect → Engineer → QA) |
+| `ai-fix` | `pipelines/ai-fix.yaml` | Bug-fix flow (diagnose → fix → review → test) |
+| `ai-docs` | `pipelines/ai-docs.yaml` | Generate documentation and open a PR |
+
+**Custom pipelines:** Create `pipelines/<your-label>.yaml` with a `stages:` list and add the label to your repo entry in `repos.yaml`. See [Custom Pipeline (pipeline.yaml)](#custom-pipeline-pipelineyaml) for the full format.
+
+**Per-project override:** A `pipeline.yaml` at the project's root takes precedence over the built-in `pipelines/<label>.yaml`.
+
+## ⚡ Concurrency
+
+Two independent layers control parallelism:
+
+- **Per-repo:** `parallel_issues: N` in `repos.yaml` — how many issues from one tracker repo run at once. Default: `1`.
+- **Per-LLM-backend:** `llm.pools.<backend>: N` in `config.yaml` — how many simultaneous calls to that backend across all running pipelines. Default: `ollama: 1`, others `5`.
+
+This means you can run feature pipelines in parallel against multiple repos but still keep your local Ollama instance at one call at a time.
+
+---
+
 ## 🧠 Agent Memory
 
 Every pipeline run contributes to a tiered, persistent memory store so the system learns from past work on a repo.
@@ -550,31 +577,6 @@ result = orch.run_revision(pr_number=42)
 **Via CLI:**
 ```bash
 python main.py --mode revise --pr 42 --repo owner/target-repo
-```
-
----
-
-### `bug_fix_orchestrator.py` — Bug Fix Pipeline
-
-Targeted pipeline for GitHub Issues. Skips PM — the issue body IS the requirement.
-
-```python
-from bug_fix_orchestrator import BugFixOrchestrator
-
-orch = BugFixOrchestrator(
-    model="gpt-4.1",
-    github_token="ghp_...",
-    tracker_repo="owner/ai-software-house",
-    target_repo="owner/my-app",
-)
-
-result = orch.run(issue_number=42)
-print(result.pr_url)
-```
-
-**Via CLI (`fix_issue.py`):**
-```bash
-python fix_issue.py --issue 42 --repo owner/ai-software-house --target owner/my-app
 ```
 
 ---
@@ -1005,11 +1007,9 @@ Maximum revision rounds is controlled by `pipeline.max_revisions` in `config.yam
 
 ```
 ai-software-house/
-├── main.py                    # CLI entry point for full pipeline
-├── fix_issue.py               # CLI entry point for bug fix pipeline
-├── build_feature.py           # GitHub Actions entry point
+├── main.py                    # CLI entry point — full pipeline + --pipeline / --list-pipelines
+├── watcher.py                 # Hourly cron poller + GitHub Actions entry point (--once mode)
 ├── orchestrator.py            # Full pipeline (13 stages)
-├── bug_fix_orchestrator.py    # Bug fix pipeline
 ├── github_client.py           # GitHub API wrapper (Issues, PRs, commits)
 ├── memory_store.py            # Tiered SQLite memory store (run/monthly/quarterly)
 ├── repo_context.py            # RepoContextLoader (tree injection) + RepoAutoIndexer (RAG auto-index)

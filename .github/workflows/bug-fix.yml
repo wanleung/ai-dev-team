@@ -62,13 +62,14 @@ jobs:
           git config --global user.name "AI Software House Bot"
           git config --global user.email "ai-software-house[bot]@users.noreply.github.com"
 
-      - name: Run AI bug-fix pipeline
+      - name: Run pipeline
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          python fix_issue.py \
-            --issue-number ${{ steps.issue.outputs.number }} \
-            --repo ${{ github.repository }}
+          python watcher.py --once \
+            --repo ${{ github.repository }} \
+            --issue ${{ steps.issue.outputs.number }} \
+            --label ai-fix
 
       - name: Post failure comment on issue
         if: failure()

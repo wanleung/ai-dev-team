@@ -12,6 +12,22 @@
 #
 # feature_label / bug_label accept a single string OR a list of strings.
 # Issues matching ANY of the listed labels are queued (deduped automatically).
+#
+# Example with new per-label pipeline mapping and parallel issue handling:
+#
+# watchers:
+#   - tracker_repo: owner/my-tracker
+#     default_target: owner/my-app
+#     enabled: true
+#     parallel_issues: 2          # process up to 2 issues concurrently for this repo
+#     labels:
+#       ai-feature: {}            # uses pipelines/ai-feature.yaml
+#       ai-fix: {}                # uses pipelines/ai-fix.yaml
+#       ai-docs: {}               # uses pipelines/ai-docs.yaml
+#       ai-refactor:              # custom label — create pipelines/ai-refactor.yaml
+#         pipeline: ai-refactor   # explicit map (optional; defaults to label name)
+#
+# Backwards-compat: feature_label / bug_label still work.
 
 watchers:
 
