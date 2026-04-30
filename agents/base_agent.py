@@ -371,7 +371,9 @@ class BaseAgent:
             messages.append({"role": "system", "content": self.system_prompt})
         messages.extend(self._history)
         messages.append({"role": "user", "content": full_message})
-        reply = self._llm.call(messages)
+        from llm_pool import get_pool
+        with get_pool().acquire(self._backend):
+            reply = self._llm.call(messages)
         self._history.append({"role": "user", "content": full_message})
         self._history.append({"role": "assistant", "content": reply})
         return reply
@@ -396,7 +398,9 @@ class BaseAgent:
         if timeout is not None:
             self._llm._timeout = timeout
         try:
-            reply = self._llm.call(messages)
+            from llm_pool import get_pool
+            with get_pool().acquire(self._backend):
+                reply = self._llm.call(messages)
         finally:
             self._llm._max_retries = old_retries
             if timeout is not None:
@@ -441,7 +445,9 @@ class BaseAgent:
         messages.extend(self._history)
         messages.append({"role": "user", "content": full_message})
 
-        reply = self._llm.call(messages)
+        from llm_pool import get_pool
+        with get_pool().acquire(self._backend):
+            reply = self._llm.call(messages)
         self._history.append({"role": "user", "content": full_message})
         self._history.append({"role": "assistant", "content": reply})
         return reply
@@ -488,7 +494,9 @@ class BaseAgent:
         messages.extend(self._history)
         messages.append({"role": "user", "content": full_message})
 
-        reply = self._llm.call_with_tools(messages, tools, max_turns)
+        from llm_pool import get_pool
+        with get_pool().acquire(self._backend):
+            reply = self._llm.call_with_tools(messages, tools, max_turns)
         self._history.append({"role": "user", "content": full_message})
         self._history.append({"role": "assistant", "content": reply})
         return reply

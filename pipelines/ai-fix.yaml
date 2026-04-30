@@ -1,0 +1,8 @@
+# Built-in bug-fix pipeline — label: ai-fix
+# Replaces bug_fix_orchestrator.py with a stage sequence on the unified
+# Orchestrator. The Engineer treats the diagnosis as its architecture.
+stages:
+  - diagnose
+  - bug_fix
+  - reviewer
+  - test_fix

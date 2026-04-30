@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -122,7 +123,7 @@ def run_pipeline(
     issue: dict,
     tracker_repo: str,
     default_target: str | None,
-    pipeline_type: str,  # "feature" or "bug"
+    label: str,
     model: str,
     num_engineers: int,
     log_dir: Path,
@@ -137,12 +138,12 @@ def run_pipeline(
     target_repo = _parse_target_repo(issue.get("body") or "") or default_target or tracker_repo
 
     logger.info(
-        "  → Issue #%d: %r | type=%s | target=%s",
-        issue_number, issue_title, pipeline_type, target_repo,
+        "  → Issue #%d: %r | label=%s | target=%s",
+        issue_number, issue_title, label, target_repo,
     )
 
     if dry_run:
-        logger.info("    [dry-run] Would run %s pipeline", pipeline_type)
+        logger.info("    [dry-run] Would run pipeline for label=%s", label)
         return True
 
     # Mark as running
@@ -156,7 +157,7 @@ def run_pipeline(
 
     try:
         _dispatch(
-            pipeline_type=pipeline_type,
+            label=label,
             tracker_repo=tracker_repo,
             target_repo=target_repo,
             issue_number=issue_number,
@@ -205,8 +206,19 @@ def _load_pipeline_config() -> dict:
     return cfg
 
 
+def install_llm_pool_from_config(pipeline_cfg: dict) -> None:
+    """Install the global LLMPoolManager from ``pipeline_cfg['llm']['pools']``.
+
+    Should be called once at watcher / CLI startup, before any agent runs.
+    Missing sections are tolerated — defaults from llm_pool apply.
+    """
+    from llm_pool import LLMPoolManager, set_pool
+    pools = (pipeline_cfg.get("llm") or {}).get("pools") or {}
+    set_pool(LLMPoolManager(pools))
+
+
 def _dispatch(
-    pipeline_type: str,
+    label: str,
     tracker_repo: str,
     target_repo: str,
     issue_number: int,
@@ -215,16 +227,12 @@ def _dispatch(
     log_file: Path,
     logger: logging.Logger,
 ) -> None:
-    """Import and run the correct orchestrator."""
+    """Run the unified Orchestrator with the pipeline file selected by ``label``."""
     token = os.environ.get("GITHUB_TOKEN")
 
-    # Load config.yaml (+ config.local.yaml) to pick up model overrides and
-    # pipeline tuning — these are NOT in repos.yaml.
     pipeline_cfg = _load_pipeline_config()
     llm_cfg = pipeline_cfg.get("llm", {})
     pipe_cfg = pipeline_cfg.get("pipeline", {})
-    # Use config model if set (and not the placeholder default); else fall back
-    # to the model passed from repos.yaml settings.
     cfg_model = llm_cfg.get("model", "") or ""
     effective_model = cfg_model if cfg_model and cfg_model != "gpt-4.1" else model
     model_overrides = llm_cfg.get("overrides", {})
@@ -235,63 +243,43 @@ def _dispatch(
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
 
-    # Redirect stdout/stderr to the issue log file for this run
     with open(log_file, "w", encoding="utf-8") as fh:
         old_stdout, old_stderr = sys.stdout, sys.stderr
         sys.stdout = sys.stderr = fh
         try:
-            if pipeline_type == "feature":
-                from orchestrator import Orchestrator
-                from github_client import GitHubClient
+            from orchestrator import Orchestrator
+            from github_client import GitHubClient
 
-                tracker_gh = GitHubClient(tracker_repo, token)
-                issue = tracker_gh.get_issue(issue_number)
-                issue_body = issue.get("body") or ""
-                requirement = (issue_body or issue.get("title") or "").strip()
+            tracker_gh = GitHubClient(tracker_repo, token)
+            issue = tracker_gh.get_issue(issue_number)
+            issue_body = issue.get("body") or ""
+            requirement = (issue_body or issue.get("title") or "").strip()
 
-                orch = Orchestrator(
-                    model=effective_model,
-                    model_overrides=model_overrides,
-                    github_token=token,
-                    github_repo=tracker_repo,
-                    target_repo=target_repo,
-                    num_engineers=num_engineers,
-                    use_github=True,
-                    ollama_url=ollama_url,
-                    nvidia_nim_api_key=nvidia_nim_api_key,
-                    nvidia_nim_base_url=nvidia_nim_base_url,
-                    retry_delay=retry_delay,
-                    max_api_retries=max_api_retries,
-                    inter_call_delay=inter_call_delay,
-                )
-                orch.run(requirement, trigger_issue_body=issue_body, issue_number=issue_number)
+            orch = Orchestrator(
+                model=effective_model,
+                model_overrides=model_overrides,
+                github_token=token,
+                github_repo=tracker_repo,
+                target_repo=target_repo,
+                num_engineers=num_engineers,
+                use_github=True,
+                ollama_url=ollama_url,
+                nvidia_nim_api_key=nvidia_nim_api_key,
+                nvidia_nim_base_url=nvidia_nim_base_url,
+                retry_delay=retry_delay,
+                max_api_retries=max_api_retries,
+                inter_call_delay=inter_call_delay,
+            )
 
-            elif pipeline_type == "bug":
-                from bug_fix_orchestrator import BugFixOrchestrator
-
-                orch = BugFixOrchestrator(
-                    model=effective_model,
-                    github_token=token,
-                    github_repo=tracker_repo,
-                )
-                orch.run(issue_number=issue_number)
-
-            elif pipeline_type == "documentation":
-                from doc_orchestrator import DocOrchestrator
-
-                orch = DocOrchestrator(
-                    model=effective_model,
-                    model_overrides=model_overrides,
-                    github_token=token,
-                    github_repo=tracker_repo,
-                )
-                orch.run(issue_number=issue_number)
+            # Resolve pipeline stages for this label (project override → builtin)
+            stages = orch.load_pipeline_for_label(label)
+            if stages is not None:
+                orch._pipeline_yaml_stages = stages
+                logger.info("    Using pipelines/%s.yaml (%d stages)", label, len(stages))
             else:
-                logger.error(
-                    "Unknown pipeline_type=%r — skipping issue #%d",
-                    pipeline_type,
-                    issue_number,
-                )
+                logger.info("    Using built-in default pipeline (no pipelines/%s.yaml)", label)
+
+            orch.run(requirement, trigger_issue_body=issue_body, issue_number=issue_number)
         finally:
             sys.stdout, sys.stderr = old_stdout, old_stderr
 
@@ -514,7 +502,7 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
                             issue=issue,
                             tracker_repo=tracker_repo,
                             default_target=default_targets.get(tracker_repo),
-                            pipeline_type="feature",
+                            label="ai-feature",
                         ))
                         logger.info(f"  Queued resumed issue #{issue_number}: {issue.get('title', '')}")
                         task_created = True
@@ -580,9 +568,28 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
             continue
         tracker_repo    = w["tracker_repo"]
         default_target  = w.get("default_target") or None
-        feature_label   = w.get("feature_label", "feature-request")
-        bug_label       = w.get("bug_label", "bug")
-        doc_label       = w.get("doc_label", "documentation")
+
+        # Read label → pipeline mapping for this watcher entry. New format:
+        #   labels:
+        #     ai-feature: {}
+        #     my-bug: {pipeline: ai-fix}
+        # Backward-compat with old feature_label / bug_label / doc_label keys.
+        labels_cfg = w.get("labels")
+        if labels_cfg is None:
+            labels_cfg = {}
+
+            def _add_legacy(field: str, default: str | None, pipeline: str) -> None:
+                val = w.get(field, default)
+                if not val:
+                    return
+                names = val if isinstance(val, list) else [val]
+                for name in names:
+                    if name:
+                        labels_cfg[name] = {"pipeline": pipeline}
+
+            _add_legacy("feature_label", "feature-request", "ai-feature")
+            _add_legacy("bug_label", "bug", "ai-fix")
+            _add_legacy("doc_label", "documentation", "ai-docs")
 
         # Ensure state labels exist
         for name, colour in LABEL_COLOURS.items():
@@ -590,30 +597,18 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
 
         logger.info("Checking %s …", tracker_repo)
         try:
-            for issue in get_open_issues(tracker_repo, feature_label):
-                add_label(tracker_repo, issue["number"], LABEL_QUEUED)
-                tasks.append(dict(
-                    issue=issue, tracker_repo=tracker_repo,
-                    default_target=default_target, pipeline_type="feature",
-                ))
-                logger.info("  Queued feature issue #%d: %s", issue["number"], issue["title"])
-
-            for issue in get_open_issues(tracker_repo, bug_label):
-                add_label(tracker_repo, issue["number"], LABEL_QUEUED)
-                tasks.append(dict(
-                    issue=issue, tracker_repo=tracker_repo,
-                    default_target=default_target, pipeline_type="bug",
-                ))
-                logger.info("  Queued bug issue #%d: %s", issue["number"], issue["title"])
-
-            for issue in get_open_issues(tracker_repo, doc_label):
-                add_label(tracker_repo, issue["number"], LABEL_QUEUED)
-                tasks.append(dict(
-                    issue=issue, tracker_repo=tracker_repo,
-                    default_target=default_target, pipeline_type="documentation",
-                ))
-                logger.info("  Queued documentation issue #%d: %s", issue["number"], issue["title"])
-
+            for label_name, label_cfg in labels_cfg.items():
+                pipeline_name = (label_cfg or {}).get("pipeline", label_name)
+                for issue in get_open_issues(tracker_repo, label_name):
+                    add_label(tracker_repo, issue["number"], LABEL_QUEUED)
+                    tasks.append(dict(
+                        issue=issue,
+                        tracker_repo=tracker_repo,
+                        default_target=default_target,
+                        label=pipeline_name,
+                        parallel_issues=w.get("parallel_issues", 1),
+                    ))
+                    logger.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to fetch issues from %s: %s", tracker_repo, exc)
 
@@ -621,23 +616,50 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
         logger.info("Nothing to do.")
         return
 
-    logger.info("Dispatching %d pipeline(s) (max_parallel=%d) …", len(tasks), max_parallel)
+    # Group tasks by tracker_repo so each gets its own thread pool
+    by_repo: dict[str, list[dict]] = {}
+    for t in tasks:
+        by_repo.setdefault(t["tracker_repo"], []).append(t)
 
-    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
-        futures = {
-            pool.submit(
-                run_pipeline,
-                t["issue"], t["tracker_repo"], t["default_target"],
-                t["pipeline_type"], model, num_engineers, log_dir, dry_run, logger,
-            ): t
-            for t in tasks
-        }
-        for future in as_completed(futures):
-            t = futures[future]
+    logger.info("Dispatching %d pipeline(s) across %d repo(s)…", len(tasks), len(by_repo))
+
+    # One executor per repo; each repo's parallel_issues bounds its concurrency.
+    # A global semaphore enforces the overall max_parallel cap so the total
+    # number of simultaneous pipelines never exceeds settings.max_parallel
+    # regardless of how many repos are being watched.
+    global_sem = threading.Semaphore(max(1, max_parallel))
+
+    def _run_with_global_cap(*args, **kwargs):
+        global_sem.acquire()
+        try:
+            run_pipeline(*args, **kwargs)
+        finally:
+            global_sem.release()
+
+    repo_executors: list[ThreadPoolExecutor] = []
+    futures_to_task: dict = {}
+    try:
+        for repo_name, repo_tasks in by_repo.items():
+            par = max(1, repo_tasks[0].get("parallel_issues", 1))
+            ex = ThreadPoolExecutor(max_workers=par, thread_name_prefix=f"watcher-{repo_name}")
+            repo_executors.append(ex)
+            for t in repo_tasks:
+                fut = ex.submit(
+                    _run_with_global_cap,
+                    t["issue"], t["tracker_repo"], t["default_target"],
+                    t["label"], model, num_engineers, log_dir, dry_run, logger,
+                )
+                futures_to_task[fut] = t
+
+        for fut in as_completed(futures_to_task):
+            t = futures_to_task[fut]
             try:
-                future.result()
+                fut.result()
             except Exception as exc:  # noqa: BLE001
                 logger.error("Unhandled error for issue #%d: %s", t["issue"]["number"], exc)
+    finally:
+        for ex in repo_executors:
+            ex.shutdown(wait=True)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -663,24 +685,70 @@ def _setup_logging(log_dir: Path) -> logging.Logger:
     return logger
 
 
-def main() -> None:
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI Software House — GitHub issue watcher")
     parser.add_argument("--config", default="repos.yaml", help="Path to repos.yaml")
     parser.add_argument("--dry-run", action="store_true", help="Show what would run, make no changes")
+    parser.add_argument("--once", action="store_true",
+                        help="Process a single issue and exit (used by GitHub Actions)")
+    parser.add_argument("--repo", help="(--once mode) tracker repo, e.g. owner/repo")
+    parser.add_argument("--issue", type=int, help="(--once mode) issue number")
+    parser.add_argument("--label", help="(--once mode) GitHub label that triggered the pipeline")
+    return parser
+
+
+def run_once(repo: str, issue: int, label: str, logger: logging.Logger) -> int:
+    """Process a single issue and exit. Used by GitHub Actions workflows.
+
+    Returns exit code (0 = success, 1 = failure).
+    """
+    install_llm_pool_from_config(_load_pipeline_config())
+    log_dir = Path(__file__).parent / "logs" / "watcher"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    issue_log = log_dir / f"issue-{issue}-{ts}.log"
+    try:
+        _dispatch(
+            label=label,
+            tracker_repo=repo,
+            target_repo=repo,
+            issue_number=issue,
+            model="gpt-4.1",
+            num_engineers=2,
+            log_file=issue_log,
+            logger=logger,
+        )
+        logger.info("✅ Issue #%d complete", issue)
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        logger.error("❌ Issue #%d failed: %s", issue, exc)
+        return 1
+
+
+def main() -> None:
+    parser = _build_arg_parser()
     args = parser.parse_args()
 
+    # --once mode short-circuits everything (no lock file, no polling)
+    if args.once:
+        if not (args.repo and args.issue is not None and args.label):
+            print("--once requires --repo, --issue, and --label", file=sys.stderr)
+            sys.exit(2)
+        log_dir = Path(__file__).parent / "logs" / "watcher"
+        logger = _setup_logging(log_dir)
+        sys.exit(run_once(args.repo, args.issue, args.label, logger))
+
+    # ── Polling mode (existing behaviour) ───────────────────────────────
     config_path = Path(args.config).resolve()
     if not config_path.exists():
         print(f"Config not found: {config_path}")
         sys.exit(1)
 
-    # Load log_dir early for the logger
     with open(config_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     log_dir = Path(config_path.parent / raw.get("settings", {}).get("log_dir", "logs/watcher"))
     logger = _setup_logging(log_dir)
 
-    # Lock file — prevent overlapping cron runs
     if LOCK_FILE.exists():
         age = time.time() - LOCK_FILE.stat().st_mtime
         if age < 3600:
@@ -691,12 +759,12 @@ def main() -> None:
             LOCK_FILE.unlink()
 
     LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    install_llm_pool_from_config(_load_pipeline_config())
     logger.info("═" * 60)
     logger.info("AI Software House Watcher — %s%s",
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 " [DRY RUN]" if args.dry_run else "")
     logger.info("Config: %s", config_path)
-
     try:
         watch(config_path, dry_run=args.dry_run, logger=logger)
     finally:
