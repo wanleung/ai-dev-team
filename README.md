@@ -21,10 +21,12 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - 🔍 **RAG knowledge base** — Engineer, Architect, and QA Engineer agents can search an indexed pgvector knowledge base (codebase, past designs, docs) via `search_codebase`, `search_memory`, and `search_docs` tools — powered by Ollama, vLLM, or OpenAI embeddings
 - **Pluggable skill system** — skills are markdown files in `skills/` that inject domain-specific guidance into agent prompts; auto-detected from project context (issue body, repo languages) or always-loaded from config
 - 🧩 **Custom pipeline stages** — define any stage sequence (including review loops) in a `pipeline.yaml` file; use the built-in browser GUI (`--config-builder`) to build and save it without editing YAML by hand
+- 🏷️ **Label → pipeline dispatch** — each GitHub label maps to a `pipelines/<label>.yaml` file; add a new pipeline type by creating one YAML file, no Python or new workflow required
 - **Fully customisable** — add agents, skills, and tools by editing markdown role files and Python tool functions
 - 🧠 **Agent memory** — tiered SQLite memory (run → monthly → quarterly), conversation history within each run, auto-summariser after every pipeline
 - 🌙 **Refactor / dream mode** — `--refactor` flag analyses and cleans up workspace code, opens a cleanup PR
 - 🤖 **6 LLM backends** — GitHub Models (default), Anthropic Claude, Ollama (local), OpenCode CLI, OpenCode Zen API, and OpenCode Go API; switch per-agent with a model prefix
+- ⚡ **Two-level concurrency** — per-repo `parallel_issues` cap + global `settings.max_parallel`; per-LLM-backend semaphore pools keep local Ollama at 1 concurrent call
 - **Resilient checkpoints** — atomic writes prevent corruption on Ctrl+C; best-checkpoint-wins logic survives bad config runs
 - 🗺️ **Repo context awareness** — before engineering, the pipeline injects the full repo file tree into PM/Architect prompts (small repos) or auto-indexes the codebase into RAG (large repos), so agents understand what already exists before writing code
 
@@ -281,13 +283,21 @@ python main.py --file requirements/my-app.txt --repo owner/target-repo --no-resu
 4.  🔎 Arch Reviewer      — reviews design; optionally revises before engineering
 5.  🗺️ Repo Indexer       — injects repo tree into prompts (small repos) or auto-indexes codebase into RAG (large repos)
 6.  💻 Engineers ×N       — parallel code generation → feature branch + PR
-6.  🔍 Code Reviewer      — reviews code → PR comment with verdict
-7.  📋 QA Planner         — PRD + design + code → structured test plan + acceptance criteria
-8.  🧪 QA Engineer        — implements tests guided by QA Planner's test plan → PR
-9.  🏃 Test Runner        — runs pytest locally → PR comment with results
-10. 🚀 Deployment Tester  — generates docker-compose.test.yml + smoke tests → PR
-11. 🐳 Deploy Test Runner — runs docker smoke tests → PR comment (skips if Docker unavailable)
-12. 🧠 Summariser         — writes compact memory entry (what was built, decisions, feedback, tech debt)
+7.  🔍 Code Reviewer      — reviews code → PR comment with verdict
+8.  📋 QA Planner         — PRD + design + code → structured test plan + acceptance criteria
+9.  🧪 QA Engineer        — implements tests guided by QA Planner's test plan → PR
+10. 🏃 Test Runner        — runs pytest locally → PR comment with results
+11. 🚀 Deployment Tester  — generates docker-compose.test.yml + smoke tests → PR
+12. 🐳 Deploy Test Runner — runs docker smoke tests → PR comment (skips if Docker unavailable)
+13. 🧠 Summariser         — writes compact memory entry (what was built, decisions, feedback, tech debt)
+
+**Bug-fix stages** (used in `ai-fix` pipeline):
+14. 🔬 Diagnose           — reads issue + codebase, pinpoints root cause
+15. 🐛 Bug Fix            — applies targeted fix → branch + PR
+
+**Documentation stages** (used in `ai-docs` pipeline):
+16. 📝 Doc Generate       — reads existing docs + source, writes/updates documentation files
+17. 📤 Doc Commit/PR      — commits doc files to a branch and opens a PR
 ```
 
 ---
@@ -532,6 +542,15 @@ Pipeline:
   --mode {build,revise}  'build' (default) runs full pipeline; 'revise' processes PR feedback
   --pr PR_NUMBER         PR number to revise — required when --mode=revise
   --config-builder       Launch browser-based GUI to build/edit pipeline.yaml, then exit
+  --pipeline NAME        Run a named pipeline (matches pipelines/<name>.yaml or built-ins: ai-feature, ai-fix, ai-docs)
+  --list-pipelines       Print all available pipeline names (project + built-in) and exit
+```
+
+**`watcher.py` options:**
+```
+  --once                 Process all pending issues once, then exit (used by GitHub Actions)
+  --dry-run              Show what would run; make no GitHub changes
+  --config PATH          Use a different repos.yaml file (default: repos.yaml)
 ```
 
 ---
@@ -800,12 +819,13 @@ Run the pipeline automatically on this machine — no GitHub Actions required.
 ### How it works
 
 ```
-Every hour:
+Every hour (or on --once for GitHub Actions):
   For each repo in repos.yaml
-    → Find open issues labelled feature-request or bug
+    → Find open issues with a mapped label (e.g. ai-feature, ai-fix, ai-docs)
          (that don't already have an agent-* state label)
+    → Look up the pipeline YAML for that label
     → Label issue agent-queued
-    → Run the appropriate pipeline in a thread
+    → Run the pipeline in a thread (bounded by max_parallel + per-repo parallel_issues)
     → On success: label agent-complete
     → On failure: label agent-failed + post error comment
 ```
@@ -825,9 +845,11 @@ Every hour:
 watchers:
   - tracker_repo: wanleung/ai-software-house   # where issues are filed
     default_target: wanleung/my-app            # default target repo for code
-    feature_label: feature-request
-    bug_label: bug
-    doc_label: documentation
+    parallel_issues: 2                         # max simultaneous issues for this repo
+    labels:
+      ai-feature: ai-feature      # label → pipeline name (matches pipelines/ai-feature.yaml)
+      ai-fix:     ai-fix
+      ai-docs:    ai-docs
     enabled: true
 
   - tracker_repo: wanleung/another-project     # watch a second repo
@@ -835,21 +857,23 @@ watchers:
     enabled: true
 
 settings:
-  max_parallel: 3       # max simultaneous pipeline runs
+  max_parallel: 3       # global cap across all repos
   num_engineers: 2
   model: "gpt-4.1"
   log_dir: ./logs/watcher
 ```
 
+> **Legacy `feature_label` / `bug_label` / `doc_label` fields are still supported** — they are automatically mapped to `ai-feature`, `ai-fix`, and `ai-docs` pipelines respectively.
+
 > Use `**Target repo:** owner/repo` in the issue body to route code to a different repo than `default_target`.
 
-### `doc_label` — Documentation-only pipeline
+### `ai-docs` pipeline — Documentation-only
 
-Label an issue `documentation` (configurable via `doc_label` in `repos.yaml`) to trigger a lightweight doc-update pipeline — no PM, Architect, or Engineers involved:
+Label an issue `ai-docs` to trigger a lightweight doc-update pipeline — no PM, Architect, or Engineers involved.
 
-1. **DocumentationAgent** pre-reads existing docs and source files from the target repo via GitHub API (auto-detects default branch — works with `main`, `master`, etc.)
-2. File content is injected directly into the prompt; the agent writes/updates files and returns a JSON list of changes
-3. Files are committed to a branch `doc/<issue-number>-<slug>` and a PR is opened automatically, referencing and closing the issue
+The built-in pipeline is defined in `pipelines/ai-docs.yaml` and runs two stages:
+1. **`doc_generate`** — reads existing docs + source from the target repo, writes/updates documentation files
+2. **`doc_commit_pr`** — commits the files to a branch `doc/<issue-number>-<slug>` and opens a PR referencing and closing the issue
 
 **Issue body format:**
 ```
@@ -882,7 +906,10 @@ crontab -e
 # Dry run — shows what would run, makes no GitHub changes
 python watcher.py --dry-run
 
-# Run once immediately
+# Run once immediately (same as GitHub Actions mode)
+python watcher.py --once
+
+# Keep running (polls in a loop — use for cron replacement)
 python watcher.py
 
 # Use a different config file
@@ -994,8 +1021,8 @@ Maximum revision rounds is controlled by `pipeline.max_revisions` in `config.yam
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `feature-build.yml` | Issue labelled `ai-feature` | Full 11-stage pipeline |
-| `bug-fix.yml` | Issue labelled `ai-fix` | Bug fix pipeline (no PM) |
+| `feature-build.yml` | Issue labelled `ai-feature` | Full feature pipeline (PM → QA) via `watcher.py --once` |
+| `bug-fix.yml` | Issue labelled `ai-fix` | Bug fix pipeline (Diagnose → Bug Fix) via `watcher.py --once` |
 | `pr-feedback.yml` | Manual / `repository_dispatch` | Engineer → Code Reviewer → QA revision loop |
 | `issue-watcher.yml` | Cron every 15 min | Finds unqueued issues and triggers the above |
 | `run-tests.yml` | PR opened/updated | Runs pytest + docker smoke tests |
