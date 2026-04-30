@@ -2086,6 +2086,31 @@ class Orchestrator(TestFixLoopMixin):
             # Fallback: write a minimal one
             req_file.write_text("pytest\npytest-cov\npytest-timeout\nhttpx\n", encoding="utf-8")
 
+        # Sanitise requirements-test.txt — strip blank lines, comments, markdown
+        # table rows (|...|), and any line that doesn't look like a valid pip
+        # specifier.  The QA Planner sometimes writes its test-plan table into
+        # this file; leaving those lines causes `pip install` to fail immediately
+        # on every fix attempt before pytest even runs.
+        raw_lines = req_file.read_text(encoding="utf-8").splitlines()
+        clean_lines = []
+        for line in raw_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            # Skip markdown table rows and headers (|...|, ----, ====)
+            if stripped.startswith("|") or set(stripped) <= set("-="):
+                continue
+            # Skip lines that contain spaces but don't look like pip extras/URLs
+            # (e.g. prose sentences, backtick code, etc.)
+            if " " in stripped and not any(
+                stripped.startswith(p) for p in ("git+", "http://", "https://", "-r ", "-c ", "-e ")
+            ):
+                continue
+            clean_lines.append(stripped)
+        if not clean_lines:
+            clean_lines = ["pytest", "pytest-cov", "pytest-timeout", "httpx"]
+        req_file.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
+
         console.print("    📦 Installing test dependencies…")
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q",
