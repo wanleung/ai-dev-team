@@ -1,0 +1,91 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║         AI SOFTWARE HOUSE - AGENT ROSTER (14 Agents Total)               ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+LAYER 1: REQUIREMENTS & DESIGN (5 agents)
+─────────────────────────────────────────
+  📋 Alice (PM)              → Requirement → PRD + GitHub Issue
+  ✅ Grace (PM Reviewer)     → PRD Review → Approved/Revised PRD
+  🏗️ Bob (Architect)         → PRD → System Design (⭐⭐⭐ PRIORITY 1: ADD PSEUDO-CODE)
+  🔍 Frank (Arch Reviewer)   → Design Review → Approved/Revised Design
+  💡 Tier Reviewer           → Design Review (optional, for complex systems)
+
+LAYER 2: IMPLEMENTATION (2 agents + junior/senior tiers)
+──────────────────────────────────────────────────────
+  👶 Jamie (Junior Engineer) → Models, Schemas, Utils (self-contained, <= gpt-4-mini)
+  🧔 Alex (Senior Engineer)  → Services, Routes, Orchestration (reuses junior code)
+
+LAYER 3: QUALITY & TESTING (3 agents)
+────────────────────────────────────
+  📋 Henry (QA Planner)      → Test Plan (⭐⭐⭐ PRIORITY 2: ADD TEST TEMPLATES)
+  🧪 Edward (QA Engineer)    → Implements tests from plan
+  🔍 Carol (Code Reviewer)   → Code Review (⭐⭐ PRIORITY 3: ADD SUPERVISION CHECKLIST)
+
+LAYER 4: DEPLOYMENT & DOCUMENTATION (4 agents)
+───────────────────────────────────────────────
+  🚀 Diana (Deploy Tester)   → Smoke tests + docker-compose
+  📚 DocGen                  → API docs, README
+  🧠 Summarizer              → Memory: decisions, tech debt
+  🔧 Refactor Agent          → Code cleanup, dream mode
+
+═════════════════════════════════════════════════════════════════════════════
+
+KEY INSIGHT: Information Density Problem
+
+Current: Architect says "implement UserService" → Engineer guesses details
+Cheaper LLMs: Struggle with ambiguity, skip edge cases, reimplement instead of reusing
+
+Solution: Add explicit detail at handoff points
+  ✅ Architect: Pseudo-code + validation matrix + error handlers
+  ✅ QA Planner: Test code templates + fixtures + boundary values
+  ✅ Code Reviewer: Severity levels + before/after fixes + pre-approval checklist
+
+═════════════════════════════════════════════════════════════════════════════
+
+CHEAPEST LLM STRATEGY (Save 60% on compute costs)
+
+Tier 1 - Ollama, gpt-4-mini ($0.01-0.02/request)
+  → Junior modules: Models, schemas, utils
+  → Requires: Validation matrix + error messages
+  → Supervision: Tight code review (expect 20% more bugs)
+
+Tier 2 - gpt-4.1 ($0.05-0.15/request)
+  → Senior services: Business logic, routing
+  → Requires: Pseudo-code + service specs + API examples
+  → Supervision: Standard code review
+
+Tier 3 - gpt-5, Claude-3 ($0.20-1.00/request)
+  → Complex orchestration, novel challenges
+  → Use sparingly, only when cheaper tiers insufficient
+
+Result: 50-70% cost reduction while maintaining quality (with tighter review)
+
+═════════════════════════════════════════════════════════════════════════════
+
+NEXT ACTIONS (Phase 1: 3-6 hours)
+
+1. Update architect.md (2 hours)
+   Add sections:
+   - Logic Flow: Step-by-step pseudo-code for each senior module
+   - Validation Matrix: Field type, constraints, error messages (table)
+   - Integration Flows: Text-based diagrams (A → B → C)
+   - Error Scenarios: "If X, then return Y with message Z"
+
+2. Update qa_planner.md (1.5 hours)
+   Add sections:
+   - Test Code Template: Pytest skeleton (arrange/act/assert)
+   - Fixture Definitions: Common mocks, test data setup
+   - Boundary Value Matrix: All input edge cases + expected behavior
+
+3. Update code_reviewer.md (1.5 hours)
+   Add sections:
+   - Severity Levels: CRITICAL (security, logic), MAJOR (API breaks), MINOR (style)
+   - Must-Fix Guidance: Before/after code for common errors
+   - Pre-Approval Checklist: 10 yes/no questions before merge
+
+4. Test on next feature (1-2 days)
+   Use gpt-4-mini for junior modules, measure bugs caught by reviewer
+
+═════════════════════════════════════════════════════════════════════════════
+
+Full analysis: docs/agent_analysis_2026-05-01.md (475 lines)
