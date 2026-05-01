@@ -62,6 +62,142 @@ Classify each module as `junior` (self-contained: models, schemas, utils, config
 1. **[module_name]** [tier:junior]: [description] — implements [component]
 2. **[module_name]** [tier:senior]: [description]
 
+---
+
+## 🏗️ DETAILED SPECIFICATIONS FOR IMPLEMENTATION (Critical for Cheaper LLMs)
+
+### For Each Senior Module: Logic Flow
+
+Provide step-by-step pseudo-code so engineers (especially cheaper LLMs) implement exact logic without guessing. Example:
+
+```
+### Module: UserService
+
+#### Method: create_user(email: str, name: str, password: str) -> User
+
+**Logic Flow:**
+1. Validate inputs:
+   - email: max 255 chars, matches regex ^[^@]+@[^@]+\.[^@]+$
+   - name: 1-255 chars, not empty
+   - password: ≥8 chars, contains uppercase + lowercase + digit
+2. Check if user with email already exists in database
+   - If exists: raise UserAlreadyExistsError(email)
+3. Hash password using bcrypt with salt_rounds=12
+4. Create User record in database with:
+   - id: auto-increment (database generates)
+   - email: provided
+   - name: provided
+   - password_hash: hashed password from step 3
+   - created_at: now() in UTC
+   - updated_at: now() in UTC
+5. Return User object with all fields (NOT the password_hash)
+
+**Error Handling:**
+- UserAlreadyExistsError → 409 Conflict
+- ValidationError (invalid input) → 400 Bad Request
+- DatabaseError → 500 Internal Server Error
+```
+
+### For Each Data Model: Validation Matrix
+
+Define every field's constraints so engineers catch validation errors early:
+
+```
+| Field | Type | Required | Max Length | Constraints | Error Message |
+|-------|------|----------|------------|-------------|---------------|
+| id | int | yes (auto) | - | Primary key, auto-increment | - |
+| email | str | yes | 255 | Unique, matches /^[^@]+@[^@]+\.[^@]+$/ | "Invalid email format" |
+| name | str | yes | 255 | 1-255 chars, not empty | "Name must be 1-255 characters" |
+| password_hash | str | yes | 255 | bcrypt(12) hash only | - |
+| created_at | datetime | yes | - | ISO 8601 UTC, immutable | - |
+| updated_at | datetime | yes | - | ISO 8601 UTC, auto-updates on save | - |
+| is_active | bool | yes | - | Default True | - |
+```
+
+### For Each API Endpoint: Request/Response Examples
+
+Show exact JSON so engineers know the contract:
+
+```
+#### POST /api/users
+**Purpose:** Create a new user account
+
+**Request Headers:**
+Content-Type: application/json
+
+**Request Body:**
+{
+  "email": "john@example.com",
+  "name": "John Doe",
+  "password": "SecurePass123"
+}
+
+**Success Response (201 Created):**
+{
+  "id": 1,
+  "email": "john@example.com",
+  "name": "John Doe",
+  "created_at": "2026-05-01T09:56:08Z",
+  "updated_at": "2026-05-01T09:56:08Z",
+  "is_active": true
+}
+
+**Error Response (409 Conflict - email exists):**
+{
+  "error": "email_already_exists",
+  "message": "User with email john@example.com already exists"
+}
+
+**Error Response (400 Bad Request - invalid email):**
+{
+  "error": "validation_error",
+  "message": "Invalid email format",
+  "field": "email"
+}
+```
+
+### Integration Flow Diagram (Text-Based)
+
+For complex service interactions, show the exact sequence:
+
+```
+#### User Registration Flow
+
+Request → Validate Input
+         ↓
+      Check Email Unique
+         ↓ (not unique)
+      Return 409 Conflict
+      
+      ↓ (unique)
+      Hash Password (bcrypt)
+         ↓
+      Save to Database
+         ↓ (success)
+      Return 201 Created with User
+      
+      ↓ (database error)
+      Return 500 Internal Server Error
+```
+
+### Error Handling Matrix
+
+Explicit error cases so engineers don't miss them:
+
+```
+| Scenario | HTTP Status | Error Code | Message | Action |
+|----------|------------|-----------|---------|--------|
+| Email already exists | 409 | email_already_exists | "Email already in use" | Reject |
+| Invalid email format | 400 | validation_error | "Invalid email" | Reject |
+| Password too short | 400 | validation_error | "Password ≥8 chars" | Reject |
+| Database connection fails | 500 | database_error | "Server error" | Log + return generic |
+| User not found (get) | 404 | user_not_found | "User not found" | Reject |
+| Unauthorized (no token) | 401 | unauthorized | "Authorization required" | Reject |
+| Insufficient permissions | 403 | forbidden | "Permission denied" | Reject |
+```
+
+---
+
 ## File Structure
 ```
 project/
