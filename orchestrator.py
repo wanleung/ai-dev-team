@@ -348,6 +348,7 @@ class Orchestrator(TestFixLoopMixin):
         use_github: bool = False,
         target_repo: Optional[str] = None,
         ollama_url: str = "http://localhost:11434",
+        ollama_api_key: Optional[str] = None,
         ollama_think: bool = False,
         ollama_preserve_thinking: bool = False,
         ollama_stream: bool = True,
@@ -392,6 +393,7 @@ class Orchestrator(TestFixLoopMixin):
         self.use_github = use_github and bool(github_repo)
         self._github_token = github_token
         self.ollama_url = ollama_url
+        self.ollama_api_key = ollama_api_key
         self.ollama_think = ollama_think
         self.ollama_preserve_thinking = ollama_preserve_thinking
         self.ollama_stream = ollama_stream
@@ -427,6 +429,7 @@ class Orchestrator(TestFixLoopMixin):
 
         # Shared kwargs for all agents (kept for backward compat; tests check agent_kwargs)
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
+                              "ollama_api_key": ollama_api_key,
                               "ollama_think": ollama_think, "ollama_preserve_thinking": ollama_preserve_thinking,
                               "ollama_stream": ollama_stream,
                               "nvidia_nim_api_key": nvidia_nim_api_key,
@@ -439,6 +442,7 @@ class Orchestrator(TestFixLoopMixin):
         self._llm_cfg: dict = {
             "model": model,
             "ollama_url": ollama_url,
+            "ollama_api_key": ollama_api_key,
             "ollama_think": ollama_think,
             "ollama_preserve_thinking": ollama_preserve_thinking,
             "ollama_stream": ollama_stream,
@@ -642,6 +646,8 @@ class Orchestrator(TestFixLoopMixin):
             factory_cfg["think"] = cfg.get("ollama_think", False)
             factory_cfg["preserve_thinking"] = cfg.get("ollama_preserve_thinking", False)
             factory_cfg["stream"] = cfg.get("ollama_stream", True)
+            if cfg.get("ollama_api_key"):
+                factory_cfg["api_key"] = cfg["ollama_api_key"]
         elif model.startswith("nvidia-nim/"):
             if cfg.get("nvidia_nim_api_key"):
                 factory_cfg["nvidia_nim_api_key"] = cfg["nvidia_nim_api_key"]
@@ -751,6 +757,7 @@ class Orchestrator(TestFixLoopMixin):
             model_overrides=llm.get("overrides", {}),
             use_github=use_github,
             ollama_url=llm.get("ollama_url", "http://localhost:11434"),
+            ollama_api_key=llm.get("ollama_api_key"),
             ollama_think=llm.get("ollama_think", False),
             ollama_preserve_thinking=llm.get("ollama_preserve_thinking", False),
             ollama_stream=llm.get("ollama_stream", True),
