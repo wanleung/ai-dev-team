@@ -9,6 +9,7 @@ import base64
 import logging
 import os
 import re
+import time
 from typing import Optional
 
 log = logging.getLogger(__name__)
@@ -69,14 +70,29 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
+    # Transient HTTP status codes that should be retried
+    _RETRYABLE = {429, 500, 502, 503, 504}
+    _MAX_RETRIES = 4
+    _RETRY_BASE = 5.0   # seconds; doubles each attempt
+
     def _request(self, method: str, path: str, **kwargs) -> dict:
         url = f"{self.API_BASE}{path}"
-        response = requests.request(method, url, headers=self.headers, **kwargs)
-        if not response.ok:
-            raise RuntimeError(
-                f"GitHub API {method} {url} failed [{response.status_code}]: {response.text[:500]}"
+        last_exc: Exception | None = None
+        for attempt in range(self._MAX_RETRIES):
+            response = requests.request(method, url, headers=self.headers, **kwargs)
+            if response.ok:
+                return response.json() if response.text else {}
+            if response.status_code not in self._RETRYABLE or attempt == self._MAX_RETRIES - 1:
+                raise RuntimeError(
+                    f"GitHub API {method} {url} failed [{response.status_code}]: {response.text[:500]}"
+                )
+            wait = self._RETRY_BASE * (2 ** attempt)
+            log.warning(
+                "GitHub API %s %s returned %s (attempt %d/%d) — retrying in %.0fs",
+                method, url, response.status_code, attempt + 1, self._MAX_RETRIES, wait,
             )
-        return response.json() if response.text else {}
+            time.sleep(wait)
+        raise RuntimeError(f"GitHub API {method} {url} failed after {self._MAX_RETRIES} attempts")
 
     # ── Issues ──────────────────────────────────────────────────────────────
 
