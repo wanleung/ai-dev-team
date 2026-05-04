@@ -1,0 +1,112 @@
+<h2>Multi-Repo, Multi-Label Design</h2>
+<p class="subtitle">How one watcher handles many repos × labels, with resource limits</p>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px">
+
+  <!-- Left: Per-label YAML + main.py -->
+  <div>
+    <div style="background:#1e1e2e;border:1px solid #89b4fa;border-radius:8px;padding:16px">
+      <div class="label" style="color:#89b4fa">Per-label pipeline files</div>
+      <pre style="background:#12121e;border-radius:6px;padding:12px;font-size:12px;margin-top:10px;overflow-x:auto">pipelines/
+  ai-feature.yaml    ← full PM→Arch→Eng→QA
+  ai-fix.yaml        ← minimal Eng→Review
+  ai-docs.yaml       ← DocOrchestrator
+  ai-refactor.yaml   ← Engineer only
+  ai-custom.yaml     ← your pipeline.yaml</pre>
+      <div style="font-size:13px;margin-top:10px;color:#cdd6f4">
+        <b>main.py impact:</b> Add <code>--pipeline ai-feature</code> flag.<br>
+        No flag → uses default (first pipeline or a config default).<br>
+        Dev can also pass <code>--label ai-fix</code> to simulate a label trigger.
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: Concurrency model -->
+  <div>
+    <div style="background:#1e1e2e;border:1px solid #a6e3a1;border-radius:8px;padding:16px">
+      <div class="label" style="color:#a6e3a1">Concurrency: Work Queue + Semaphore</div>
+      <div style="margin-top:12px;font-size:13px">
+        <div style="background:#1a2a1a;border-radius:6px;padding:10px;font-family:monospace;font-size:12px">
+          # repos.yaml / config<br>
+          max_concurrent: 1   ← safe for Ollama<br>
+          max_concurrent: 3   ← fine for OpenAI<br>
+          max_concurrent: 10  ← hosted APIs
+        </div>
+        <div style="margin-top:12px">
+          <b>Flow:</b>
+          <ol style="padding-left:20px;line-height:1.8">
+            <li>Watcher polls all repos (single thread)</li>
+            <li>Found issues → pushed to a <b>work queue</b></li>
+            <li>N worker threads pull from queue</li>
+            <li>Each worker acquires a <b>semaphore slot</b></li>
+            <li>LLM call runs; slot released when done</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:16px;background:#1e1e2e;border:1px solid #cba6f7;border-radius:8px;padding:16px">
+  <div class="label" style="color:#cba6f7">Full flow diagram</div>
+  <div style="margin-top:12px;overflow-x:auto">
+    <div style="display:flex;align-items:flex-start;gap:16px;min-width:700px;font-size:12px">
+
+      <div style="flex:0 0 140px;background:#2a1a2a;border:1px solid #cba6f7;border-radius:6px;padding:10px;text-align:center">
+        <div style="color:#cba6f7;font-weight:bold">Watcher poll</div>
+        <div style="margin-top:6px">Every N minutes</div>
+        <div>Scans repos.yaml<br>repos × labels</div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding-top:20px">
+        <div style="width:30px;height:2px;background:#888"></div>
+        <div style="color:#888;font-size:11px;margin-top:2px">issues found</div>
+      </div>
+
+      <div style="flex:0 0 160px;background:#1a2a1a;border:1px solid #a6e3a1;border-radius:6px;padding:10px;text-align:center">
+        <div style="color:#a6e3a1;font-weight:bold">Work Queue</div>
+        <div style="margin-top:6px;font-family:monospace;font-size:11px">
+          { repo, label, issue_number }<br>
+          { repo, label, issue_number }<br>
+          ...
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding-top:20px">
+        <div style="width:30px;height:2px;background:#888"></div>
+        <div style="color:#888;font-size:11px;margin-top:2px">dequeue</div>
+      </div>
+
+      <div style="flex:0 0 180px">
+        <div style="background:#1a1a2a;border:1px solid #89b4fa;border-radius:6px;padding:10px;text-align:center;margin-bottom:8px">
+          <div style="color:#89b4fa;font-weight:bold">Semaphore (max_concurrent)</div>
+          <div style="margin-top:6px;font-size:11px">
+            Worker 1 ▶ pipelines/ai-feature.yaml<br>
+            Worker 2 ▶ pipelines/ai-fix.yaml<br>
+            <span style="color:#666">Worker 3 ⏸ waiting...</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding-top:20px">
+        <div style="width:30px;height:2px;background:#888"></div>
+        <div style="color:#888;font-size:11px;margin-top:2px">load</div>
+      </div>
+
+      <div style="flex:0 0 160px;background:#2a2a1a;border:1px solid #f9e2af;border-radius:6px;padding:10px;text-align:center">
+        <div style="color:#f9e2af;font-weight:bold">Pipeline runner</div>
+        <div style="margin-top:6px;font-size:11px">
+          Reads pipelines/&lt;label&gt;.yaml<br>
+          Runs stages in order<br>
+          Falls back to built-in if no file
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:16px;background:#1a1a2a;border:1px solid #89b4fa;border-radius:8px;padding:16px">
+  <div class="label" style="color:#89b4fa">Ollama-safe: max_concurrent=1</div>
+  <p style="font-size:13px;margin-top:8px">With <code>max_concurrent: 1</code>, only one pipeline runs at a time. The queue ensures no work is lost — issues pile up in the queue and are processed one by one. No parallel LLM calls.</p>
+</div>

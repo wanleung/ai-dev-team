@@ -1,0 +1,74 @@
+<h2>Blocky Pipeline — Which approach?</h2>
+<p class="subtitle">How should users compose custom stage sequences?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>YAML Block Config</h3>
+      <p>Define a custom stage sequence directly in <code>config.yaml</code> as an ordered list of named blocks. No UI — pure text.</p>
+      <pre style="background:#1e1e2e;color:#cdd6f4;padding:10px;border-radius:6px;font-size:12px;margin-top:8px">pipeline:
+  blocks:
+    - pm
+    - pm_reviewer
+    - architect
+    - qa_planner
+    - qa_write
+    - engineer
+    - reviewer
+    - deploy_tester</pre>
+      <div class="pros-cons" style="margin-top:8px">
+        <div class="pros"><h4>Pros</h4><ul><li>No extra tooling</li><li>Git-versionable</li><li>Works today</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>No visual feedback</li><li>Easy to typo stage names</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Web Drag-and-Drop UI</h3>
+      <p>A browser-based block editor: drag stage blocks into a sequence, toggle options per block, export to <code>config.yaml</code>.</p>
+      <div style="background:#1e1e2e;border-radius:8px;padding:12px;margin-top:8px;font-size:13px">
+        <div style="color:#89b4fa;margin-bottom:6px">🧩 Pipeline Builder</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <div style="background:#313244;border:2px solid #89b4fa;border-radius:6px;padding:6px 10px;color:#cdd6f4">📋 PM</div>
+          <div style="color:#6c7086;padding:6px">→</div>
+          <div style="background:#313244;border:2px solid #a6e3a1;border-radius:6px;padding:6px 10px;color:#cdd6f4">🏗️ Architect</div>
+          <div style="color:#6c7086;padding:6px">→</div>
+          <div style="background:#313244;border:2px solid #f38ba8;border-radius:6px;padding:6px 10px;color:#cdd6f4">🧪 QA Write</div>
+          <div style="color:#6c7086;padding:6px">→</div>
+          <div style="background:#313244;border:2px dashed #6c7086;border-radius:6px;padding:6px 10px;color:#6c7086">+ Add block</div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:8px">
+        <div class="pros"><h4>Pros</h4><ul><li>Visual, intuitive</li><li>Validates connections</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Extra tool to build &amp; maintain</li><li>Separate from main run flow</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>YAML blocks + named presets</h3>
+      <p>Extend YAML config: define reusable named presets (like <code>tdd</code>, <code>standard</code>) AND allow a custom ordered list in the same file. Best of both worlds.</p>
+      <pre style="background:#1e1e2e;color:#cdd6f4;padding:10px;border-radius:6px;font-size:12px;margin-top:8px">pipeline:
+  mode: custom   # or: standard, tdd
+
+  # Only used when mode: custom
+  custom_stages:
+    - pm
+    - architect
+    - qa_planner
+    - qa_write      # TDD style
+    - engineer
+    - reviewer
+    - deploy_tester</pre>
+      <div class="pros-cons" style="margin-top:8px">
+        <div class="pros"><h4>Pros</h4><ul><li>Presets for common flows</li><li>Full custom when needed</li><li>Backwards compatible</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Slightly more config surface</li></ul></div>
+      </div>
+    </div>
+  </div>
+</div>

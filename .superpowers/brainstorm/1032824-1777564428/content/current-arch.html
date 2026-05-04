@@ -1,0 +1,67 @@
+<h2>Current Architecture — The Problem</h2>
+<p class="subtitle">Multiple entry points, each hardwired to one pipeline type</p>
+
+<div class="section">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:16px">
+
+    <div style="background:#1e1e2e;border:1px solid #444;border-radius:8px;padding:20px">
+      <div class="label" style="color:#f38ba8">GitHub Actions Triggers</div>
+      <div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">
+        <div style="background:#2a1a1a;border:1px solid #f38ba8;border-radius:6px;padding:10px;font-family:monospace;font-size:13px">
+          label: <b>ai-feature</b><br>
+          <span style="color:#888">→ feature-build.yml</span><br>
+          <span style="color:#cba6f7">→ build_feature.py</span><br>
+          <span style="color:#666">→ Orchestrator (hardcoded)</span>
+        </div>
+        <div style="background:#2a1a1a;border:1px solid #f38ba8;border-radius:6px;padding:10px;font-family:monospace;font-size:13px">
+          label: <b>ai-fix</b><br>
+          <span style="color:#888">→ bug-fix.yml</span><br>
+          <span style="color:#cba6f7">→ fix_issue.py</span><br>
+          <span style="color:#666">→ BugFixOrchestrator (hardcoded)</span>
+        </div>
+        <div style="background:#2a1a1a;border:1px solid #f38ba8;border-radius:6px;padding:10px;font-family:monospace;font-size:13px">
+          label: <b>documentation</b><br>
+          <span style="color:#888">→ (manual only)</span><br>
+          <span style="color:#666">→ DocOrchestrator (hardcoded)</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:#1e1e2e;border:1px solid #444;border-radius:8px;padding:20px">
+      <div class="label" style="color:#a6e3a1">Watcher (Polling)</div>
+      <div style="margin-top:12px">
+        <div style="background:#1a2a1a;border:1px solid #a6e3a1;border-radius:6px;padding:10px;font-family:monospace;font-size:13px">
+          watcher.py + repos.yaml<br>
+          <span style="color:#888">polls every hour</span><br><br>
+          <span style="color:#cba6f7">feature_label → Orchestrator</span><br>
+          <span style="color:#cba6f7">bug_label → BugFixOrchestrator</span><br>
+          <span style="color:#cba6f7">doc_label → DocOrchestrator</span><br>
+          <span style="color:#666;font-size:11px">still 3 hardcoded pipeline types</span>
+        </div>
+      </div>
+      <div style="margin-top:16px">
+        <div class="label" style="color:#89b4fa">CLI (Manual)</div>
+        <div style="background:#1a1a2a;border:1px solid #89b4fa;border-radius:6px;padding:10px;margin-top:8px;font-family:monospace;font-size:13px">
+          main.py<br>
+          <span style="color:#888">→ Orchestrator only</span><br>
+          <span style="color:#666">+ --config-builder</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="margin-top:20px;background:#2a2a1a;border:1px solid #f9e2af;border-radius:8px;padding:16px">
+    <div class="label" style="color:#f9e2af">Problems</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:10px;font-size:13px">
+      <div>❌ Adding a new pipeline type = new .py file + new .yml + modify watcher</div>
+      <div>❌ build_feature.py &amp; fix_issue.py duplicate watcher logic</div>
+      <div>❌ Pipeline sequence is hardcoded — can't use pipeline.yaml per label</div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:16px;background:#1a2a1a;border:1px solid #a6e3a1;border-radius:8px;padding:16px">
+  <div class="label" style="color:#a6e3a1">Proposed Direction</div>
+  <p style="margin-top:8px;font-size:14px">One watcher process. Config maps labels → pipeline sequences (using the pipeline.yaml format). Adding a new pipeline = add a block to the config. No new Python files.</p>
+</div>

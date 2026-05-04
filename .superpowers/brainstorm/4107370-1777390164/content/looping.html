@@ -1,0 +1,76 @@
+<h2>How should loops work in custom stages?</h2>
+<p class="subtitle">Current pipeline has built-in review loops (PM ↔ PM Reviewer, Architect ↔ Architect Reviewer). In blocky mode, how are they expressed?</p>
+
+<div class="options">
+
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Implicit Loop Pairs</h3>
+      <p>Certain stage pairs auto-loop when placed adjacent. No extra syntax needed — the pipeline detects known reviewer pairs.</p>
+      <pre style="background:#1e1e2e;color:#cdd6f4;padding:10px;border-radius:6px;font-size:12px;margin-top:8px">custom_stages:
+  - pm              # ← these two auto-loop
+  - pm_reviewer     #   (max_prd_revisions times)
+  - architect
+  - architect_reviewer  # ← also auto-loops
+  - engineer
+  - reviewer</pre>
+      <p style="color:#a6e3a1;font-size:12px;margin-top:6px">✅ Simple config, familiar feel<br>⚠️ Magic behaviour — not obvious from config alone</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Explicit Loop Block</h3>
+      <p>A special <code>loop:</code> block wraps stages that should repeat, with a <code>max:</code> count and an <code>until:</code> condition (e.g. APPROVED verdict).</p>
+      <pre style="background:#1e1e2e;color:#cdd6f4;padding:10px;border-radius:6px;font-size:12px;margin-top:8px">custom_stages:
+  - loop:
+      max: 3
+      until: APPROVED
+      stages:
+        - pm
+        - pm_reviewer
+  - architect
+  - loop:
+      max: 3
+      until: APPROVED
+      stages:
+        - architect
+        - architect_reviewer
+  - engineer
+  - reviewer</pre>
+      <p style="color:#a6e3a1;font-size:12px;margin-top:6px">✅ Explicit, any stage can loop<br>⚠️ Verbose YAML — hard to write by hand</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Hybrid: Implicit pairs + GUI generator</h3>
+      <p>Keep implicit loop pairs for known reviewer stages (simple case). Provide a <strong>GUI config generator</strong> as a web tool — drag blocks, configure loop counts, export valid YAML. The YAML is still the source of truth.</p>
+      <div style="background:#1e1e2e;border-radius:8px;padding:12px;margin-top:8px;font-size:12px">
+        <div style="color:#89b4fa;margin-bottom:8px">🧩 GUI Config Generator → exports to config.yaml</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <div style="background:#313244;border:2px solid #89b4fa;border-radius:6px;padding:5px 9px;color:#cdd6f4">📋 PM</div>
+          <div style="background:#1e1e2e;border:2px solid #f9e2af;border-radius:6px;padding:5px 9px;color:#f9e2af">🔁 +PM Review<br><span style="font-size:10px;color:#6c7086">max: 3</span></div>
+          <div style="color:#6c7086">→</div>
+          <div style="background:#313244;border:2px solid #a6e3a1;border-radius:6px;padding:5px 9px;color:#cdd6f4">🏗️ Architect</div>
+          <div style="background:#1e1e2e;border:2px solid #f9e2af;border-radius:6px;padding:5px 9px;color:#f9e2af">🔁 +Arch Review<br><span style="font-size:10px;color:#6c7086">max: 3</span></div>
+          <div style="color:#6c7086">→</div>
+          <div style="background:#313244;border:2px dashed #6c7086;border-radius:6px;padding:5px 9px;color:#6c7086">+ Add</div>
+        </div>
+        <div style="margin-top:10px">
+          <button style="background:#89b4fa;color:#1e1e2e;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer">Export config.yaml ↓</button>
+        </div>
+      </div>
+      <p style="color:#a6e3a1;font-size:12px;margin-top:8px">✅ Easy to use, validates structure<br>✅ YAML remains human-readable<br>⚠️ GUI tool needs to be built</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="section" style="margin-top:20px;padding:12px;background:#1e1e2e;border-radius:8px;border-left:3px solid #89b4fa">
+  <span class="label">Note on GUI generator</span>
+  <p style="margin:6px 0 0">The GUI would be a small local web app (<code>python main.py --config-builder</code>) — opens in browser, lets you drag stage blocks, set loop counts and skip flags, then generates a validated <code>config.yaml</code> snippet to copy or save. No separate install needed.</p>
+</div>
