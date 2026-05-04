@@ -23,6 +23,7 @@ class GitHubModelsBackend(OpenAICompatibleBackend):
         inter_call_delay: int = 0,
         max_retries: int = _DEFAULT_MAX_RETRIES,
         retry_delay: float = _DEFAULT_BASE_DELAY,
+        stream: bool = True,
     ) -> None:
         token = github_token or os.environ.get("GITHUB_TOKEN")
         if not token:
@@ -38,4 +39,5 @@ class GitHubModelsBackend(OpenAICompatibleBackend):
             inter_call_delay=inter_call_delay,
             max_retries=max_retries,
             retry_delay=retry_delay,
+            stream=stream,
         )

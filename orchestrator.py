@@ -513,6 +513,7 @@ class Orchestrator(TestFixLoopMixin):
         ollama_preserve_thinking: bool = False,
         ollama_stream: bool = True,
         opencode_stream: bool = True,
+        github_models_stream: bool = True,
         nvidia_nim_api_key: Optional[str] = None,
         nvidia_nim_base_url: Optional[str] = None,
         max_revisions: int = 3,
@@ -560,6 +561,7 @@ class Orchestrator(TestFixLoopMixin):
         self.ollama_preserve_thinking = ollama_preserve_thinking
         self.ollama_stream = ollama_stream
         self.opencode_stream = opencode_stream
+        self.github_models_stream = github_models_stream
         self.max_revisions = max_revisions
         self.max_prd_revisions = max_prd_revisions
         self.max_design_revisions = max_design_revisions
@@ -596,6 +598,7 @@ class Orchestrator(TestFixLoopMixin):
                               "ollama_think": ollama_think, "ollama_preserve_thinking": ollama_preserve_thinking,
                               "ollama_stream": ollama_stream,
                               "opencode_stream": opencode_stream,
+                              "github_models_stream": github_models_stream,
                               "nvidia_nim_api_key": nvidia_nim_api_key,
                               "nvidia_nim_base_url": nvidia_nim_base_url,
                               "retry_delay": retry_delay, "max_api_retries": max_api_retries,
@@ -611,6 +614,7 @@ class Orchestrator(TestFixLoopMixin):
             "ollama_preserve_thinking": ollama_preserve_thinking,
             "ollama_stream": ollama_stream,
             "opencode_stream": opencode_stream,
+            "github_models_stream": github_models_stream,
         }
         if nvidia_nim_api_key is not None:
             self._llm_cfg["nvidia_nim_api_key"] = nvidia_nim_api_key
@@ -791,7 +795,11 @@ class Orchestrator(TestFixLoopMixin):
 
         if not use_factory:
             from agents.backends.github_models import GitHubModelsBackend
-            primary = GitHubModelsBackend(model=model, github_token=self._github_token)
+            primary = GitHubModelsBackend(
+                model=model,
+                github_token=self._github_token,
+                stream=cfg.get("github_models_stream", True),
+            )
             fallback_cfgs: list[dict] = cfg.get("fallbacks") or []
             if not fallback_cfgs:
                 return primary
@@ -930,6 +938,7 @@ class Orchestrator(TestFixLoopMixin):
             ollama_preserve_thinking=llm.get("ollama_preserve_thinking", False),
             ollama_stream=llm.get("ollama_stream", True),
             opencode_stream=llm.get("opencode_stream", True),
+            github_models_stream=llm.get("github_models_stream", True),
             max_revisions=pipeline.get("max_revisions", 3),
             max_prd_revisions=pipeline.get("max_prd_revisions", 3),
             max_design_revisions=pipeline.get("max_design_revisions", 3),

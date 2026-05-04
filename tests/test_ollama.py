@@ -237,7 +237,8 @@ def test_ollama_extra_body_think_false():
 
 
 def test_non_ollama_not_streaming():
-    """call() does NOT use stream=True for non-Ollama (github_models) backend."""
+    """GitHub Models backend now uses stream=True by default (CF 524 prevention).
+    This test verifies the stream kwarg is passed as True to the API."""
     with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_fake"}):
         import importlib
         import agents.base_agent as ba
@@ -245,16 +246,24 @@ def test_non_ollama_not_streaming():
 
         agent = ba.BaseAgent(model="openai/gpt-4.1")
 
-        mock_response = MagicMock()
-        mock_response.choices[0].message.content = "Response"
+        # Mock streaming response (iterable of chunks)
+        mock_chunk = MagicMock()
+        mock_chunk.choices = [MagicMock()]
+        mock_chunk.choices[0].delta.content = "Response"
+        mock_chunk.choices[0].finish_reason = None
+        mock_finish = MagicMock()
+        mock_finish.choices = [MagicMock()]
+        mock_finish.choices[0].delta.content = None
+        mock_finish.choices[0].finish_reason = "stop"
+
         agent.client = MagicMock()
-        agent.client.chat.completions.create.return_value = mock_response
+        agent.client.chat.completions.create.return_value = iter([mock_chunk, mock_finish])
 
         agent.call("Hello")
 
         call_kwargs = agent.client.chat.completions.create.call_args.kwargs
-        # stream should not be True (either absent or False)
-        assert not call_kwargs.get("stream")
+        # GitHub Models uses stream=True by default to prevent CF 524 timeouts
+        assert call_kwargs.get("stream") is True
 
 
 def test_ollama_no_timeout():
@@ -535,3 +544,42 @@ def test_opencode_stream_reaches_backend_via_factory(model_prefix):
         assert factory_cfg.get("model") == f"{model_prefix}gpt-4.1"
 
 
+def test_orchestrator_passes_github_models_stream():
+    """Orchestrator stores github_models_stream and passes it through to agent_kwargs."""
+    from orchestrator import Orchestrator
+
+    orc = Orchestrator(
+        github_token="ghp_fake",
+        github_models_stream=False,
+    )
+    assert orc.github_models_stream is False
+    assert orc.agent_kwargs.get("github_models_stream") is False
+
+
+def test_github_models_stream_reaches_backend_via_factory():
+    """Verifies _build_factory_cfg_and_create() passes github_models_stream→stream
+    when constructing GitHubModelsBackend (the not use_factory branch)."""
+    from orchestrator import Orchestrator
+    from unittest.mock import MagicMock, patch
+
+    orc = Orchestrator(
+        github_token="ghp_fake",
+        github_models_stream=False,
+    )
+
+    cfg = {
+        "model": "openai/gpt-4.1",
+        "github_models_stream": False,
+    }
+
+    with patch("agents.backends.github_models.GitHubModelsBackend") as mock_cls:
+        mock_cls.return_value = MagicMock()
+        # Need to patch the import inside the method
+        with patch.dict("sys.modules", {}):
+            import agents.backends.github_models as ghm_mod
+            ghm_mod.GitHubModelsBackend = mock_cls
+            orc._build_factory_cfg_and_create(cfg)
+
+        mock_cls.assert_called_once()
+        kwargs = mock_cls.call_args[1]  # keyword args
+        assert kwargs.get("stream") is False, "Expected stream=False passed to GitHubModelsBackend"
