@@ -29,6 +29,15 @@ source: local
 - Settings via `pydantic-settings` `BaseSettings` with `.env` support; never `os.getenv` inline
 - Background tasks: use `BackgroundTasks` for fire-and-forget; Celery for reliable queuing
 - Always version API routes: `/api/v1/...`
+- SQLAlchemy 2.x `DeclarativeBase` must be **subclassed**, never instantiated:
+  ```python
+  # ✅ correct
+  class Base(DeclarativeBase):
+      pass
+
+  # ❌ wrong — Base.metadata raises AttributeError
+  Base = DeclarativeBase()
+  ```
 
 ## For Code Reviewers
 - Reject endpoints without `response_model` — breaks OpenAPI schema
@@ -36,6 +45,7 @@ source: local
 - Verify all DB operations use async (`await session.execute(...)`)
 - Check that migration files are committed for every schema change
 - Flag missing `status_code` on create endpoints (should be `201`)
+- Flag `Base = DeclarativeBase()` — must be `class Base(DeclarativeBase): pass` (instantiation breaks `.metadata`)
 
 ## For QA Engineers
 - Use `httpx.AsyncClient` with `app` transport for integration tests (not `TestClient` for async)
