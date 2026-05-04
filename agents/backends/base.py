@@ -26,6 +26,11 @@ _log = logging.getLogger(__name__)
 _DEFAULT_MAX_RETRIES: int = int(os.environ.get("AGENT_MAX_RETRIES", "3"))
 _DEFAULT_BASE_DELAY: float = float(os.environ.get("AGENT_RETRY_BASE_DELAY", "1.0"))
 
+# When a 5xx error carries retry_after >= this threshold (seconds), short
+# exponential-backoff retries are useless — skip them and let FallbackLLMBackend
+# switch to the next backend immediately.  Override via AGENT_FAST_FAIL_RETRY_AFTER.
+_FAST_FAIL_RETRY_AFTER: int = int(os.environ.get("AGENT_FAST_FAIL_RETRY_AFTER", "30"))
+
 # Errors that FallbackLLMBackend uses to trigger a switch to the next backend.
 # These are infrastructure/transient failures — not caller errors.
 FALLBACK_ERRORS = (
@@ -38,6 +43,14 @@ FALLBACK_ERRORS = (
 )
 
 
+def _get_retry_after(exc: BaseException) -> int:
+    """Return the retry_after value (seconds) from a server error body, or 0."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        return int(body.get("retry_after", 0) or 0)
+    return 0
+
+
 def _retry_with_backoff(
     fn,
     max_retries: int = _DEFAULT_MAX_RETRIES,
@@ -48,6 +61,10 @@ def _retry_with_backoff(
     Retryable: APIConnectionError, APITimeoutError, RateLimitError, InternalServerError
                (and Anthropic equivalents when installed).
     Non-retryable: AuthenticationError, BadRequestError — raised immediately.
+
+    Fast-fail: if the error body carries retry_after >= _FAST_FAIL_RETRY_AFTER seconds,
+               skip exponential retries and raise immediately so FallbackLLMBackend can
+               switch backends without waiting.  (e.g. Cloudflare 524 with retry_after=120)
     """
     _retryable: list = [
         _OAIConnError,
@@ -78,6 +95,13 @@ def _retry_with_backoff(
             raise
         except _retryable_tuple as exc:  # type: ignore[misc]
             last_exc = exc
+            retry_after = _get_retry_after(exc)
+            if retry_after >= _FAST_FAIL_RETRY_AFTER:
+                _log.warning(
+                    "Fast-failing (retry_after=%ds >= threshold %ds): %s: %s",
+                    retry_after, _FAST_FAIL_RETRY_AFTER, type(exc).__name__, str(exc)[:120],
+                )
+                raise
             if attempt < max_retries:
                 delay = base_delay * (2 ** attempt) * random.uniform(0.9, 1.1)
                 _log.warning(
