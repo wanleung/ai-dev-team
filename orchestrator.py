@@ -2069,6 +2069,7 @@ class Orchestrator(TestFixLoopMixin):
         """
         # Step 1: PM writes initial PRD
         if "pm" not in result.completed_stages:
+            self._tracker.mark_in_progress("pm")
             try:
                 self._run_stage(
                     "📋 Product Manager",
@@ -2080,15 +2081,20 @@ class Orchestrator(TestFixLoopMixin):
                 self._pause_for_clarification(result, "pm", exc.questions)
                 return False
             if result.errors:
+                self._tracker.mark_failed("pm", result.errors[-1])
+                result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
             result.completed_stages.append("pm")
+            self._tracker.mark_done("pm")
+            result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
         else:
             console.print("  ⏭️  [dim]📋 Product Manager — skipped (checkpoint)[/dim]")
 
         # Step 2: Initial PM Reviewer pass
         if "pm_reviewer" not in result.completed_stages:
+            self._tracker.mark_in_progress("pm_reviewer")
             self._run_stage(
                 "📝 PM Reviewer",
                 "Reviewing PRD for completeness...",
@@ -2096,9 +2102,13 @@ class Orchestrator(TestFixLoopMixin):
                 lambda: self._stage_pm_reviewer(result, requirement),
             )
             if result.errors:
+                self._tracker.mark_failed("pm_reviewer", result.errors[-1])
+                result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
             result.completed_stages.append("pm_reviewer")
+            self._tracker.mark_done("pm_reviewer")
+            result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
         else:
             console.print("  ⏭️  [dim]📝 PM Reviewer — skipped (checkpoint)[/dim]")
@@ -2125,6 +2135,8 @@ class Orchestrator(TestFixLoopMixin):
                 f"  🔄 [yellow]PRD NEEDS REVISION (round {round_num}/{self.max_prd_revisions})"
                 f" — sending back to PM...[/yellow]"
             )
+            self._tracker.add_stage(ProgressStage(key, f"🔄 PRD Revision {round_num}"))
+            self._tracker.mark_in_progress(key)
             self._run_stage(
                 "📋 Product Manager",
                 f"Revising PRD based on reviewer feedback (round {round_num})...",
@@ -2132,6 +2144,8 @@ class Orchestrator(TestFixLoopMixin):
                 lambda rn=round_num: self._stage_pm_revision(result, requirement, rn),
             )
             if result.errors:
+                self._tracker.mark_failed(key, result.errors[-1])
+                result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
 
@@ -2143,10 +2157,14 @@ class Orchestrator(TestFixLoopMixin):
                 lambda: self._stage_pm_reviewer(result, requirement),
             )
             if result.errors:
+                self._tracker.mark_failed(key, result.errors[-1])
+                result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
 
             result.completed_stages.append(key)
+            self._tracker.mark_done(key)
+            result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
         else:
             # for-else: exited without break → max rounds hit, still NEEDS REVISION
@@ -2174,6 +2192,8 @@ class Orchestrator(TestFixLoopMixin):
             )
 
         result.completed_stages.append("pm_review_loop")
+        self._tracker.mark_done("pm_review_loop")
+        result.progress_comment_id = self._tracker.comment_id
         self._save_checkpoint(result)
         return True
 
