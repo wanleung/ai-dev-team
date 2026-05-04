@@ -2116,6 +2116,8 @@ class Orchestrator(TestFixLoopMixin):
         # Step 3: Revision loop (skip if disabled)
         if self.max_prd_revisions == 0:
             result.completed_stages.append("pm_review_loop")
+            self._tracker.mark_done("pm_review_loop")
+            result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
             return True
 
@@ -2183,6 +2185,8 @@ class Orchestrator(TestFixLoopMixin):
                             f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
                         )
                     result.completed_stages.append("pm_review_loop")
+                    self._tracker.mark_done("pm_review_loop")
+                    result.progress_comment_id = self._tracker.comment_id
                     self._save_checkpoint(result)
                     return False
 
