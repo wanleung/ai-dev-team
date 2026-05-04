@@ -219,3 +219,12 @@ def test_delete_issue_comment_ignores_404(client):
     )
     # Should not raise
     client.delete_issue_comment(99)
+
+
+def test_delete_issue_comment_reraises_non_404(client):
+    """A server error (500) must propagate, not be silently swallowed."""
+    client._request = MagicMock(
+        side_effect=RuntimeError("GitHub API DELETE ... failed [500]: Internal Server Error")
+    )
+    with pytest.raises(RuntimeError, match=r"\[500\]"):
+        client.delete_issue_comment(99)
