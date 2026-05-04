@@ -72,6 +72,11 @@ llm:
   # ── Ollama-specific settings ───────────────────────────────────────────────
   ollama_url: "http://localhost:11434"   # URL of your Ollama instance
 
+  # Bearer key sent to the Ollama endpoint (or LiteLLM proxy master_key).
+  # Defaults to "ollama" (the standard Ollama no-auth value).
+  # If you run LiteLLM with master_key: "sk-local", set: ollama_api_key: "sk-local"
+  # ollama_api_key: "sk-local"
+
   # Set to false to suppress chain-of-thought (recommended for qwen3, deepseek-r1)
   # When false, passes think=false to Ollama API — much faster responses
   ollama_think: false

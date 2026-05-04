@@ -30,6 +30,7 @@ class OllamaBackend(OpenAICompatibleBackend):
         self,
         model: str,
         ollama_url: str = "http://localhost:11434",
+        api_key: str = "ollama",
         think: bool = False,
         preserve_thinking: bool = False,
         stream: bool = True,
@@ -42,7 +43,7 @@ class OllamaBackend(OpenAICompatibleBackend):
         self._stream = stream
         client = OpenAI(
             base_url=f"{ollama_url.rstrip('/')}/v1",
-            api_key="ollama",
+            api_key=api_key,
             timeout=(
                 httpx.Timeout(timeout=_ollama_timeout, connect=10.0)
                 if _ollama_timeout
