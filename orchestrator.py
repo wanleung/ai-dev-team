@@ -525,6 +525,7 @@ class Orchestrator(TestFixLoopMixin):
         pipeline_mode: str = "standard",
         stage_skips: dict[str, bool] | None = None,
         pipeline_yaml_stages: "list | None" = None,
+        progress_tracker_mode: str = "summary",
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -709,6 +710,7 @@ class Orchestrator(TestFixLoopMixin):
         self._mode: str = pipeline_mode
         self._stage_skips: dict[str, bool] = stage_skips or {}
         self._pipeline_yaml_stages: "list | None" = pipeline_yaml_stages
+        self.progress_tracker_mode: str = progress_tracker_mode
 
     # ── Backend factory helpers ───────────────────────────────────────────────
 
@@ -931,6 +933,7 @@ class Orchestrator(TestFixLoopMixin):
             pipeline_mode=pipeline_mode,
             stage_skips=stage_skips,
             pipeline_yaml_stages=pipeline_yaml_stages,
+            progress_tracker_mode=pipeline.get("progress_tracker", "summary"),
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
@@ -1427,6 +1430,31 @@ class Orchestrator(TestFixLoopMixin):
             for name in stage_names
             if name in registry and not self._stage_skips.get(name, False)
         ]
+
+    def _expected_stages(self) -> list[ProgressStage]:
+        """Return the ordered list of stages expected for this pipeline run.
+
+        Revision rounds (prd_revision_N, design_revision_N) are excluded here —
+        they are added dynamically via tracker.add_stage() as they actually begin.
+        """
+        stages: list[ProgressStage] = []
+
+        if getattr(self, '_pipeline_yaml_stages', None) is None:
+            # Standard pipeline: fixed PM + Arch loops first
+            stages += [
+                ProgressStage("pm",                "📋 Product Manager"),
+                ProgressStage("pm_reviewer",       "🔎 PM Reviewer"),
+                ProgressStage("pm_review_loop",    "✔️  PRD Approved"),
+                ProgressStage("architect",         "🏗️  Architect"),
+                ProgressStage("architect_reviewer","🔎 Architect Reviewer"),
+                ProgressStage("architect_review_loop", "✔️  Design Approved"),
+            ]
+
+        # Mode-driven stages (engineer, reviewer, QA, etc.)
+        for stage in self._build_stage_list():
+            stages.append(ProgressStage(stage.checkpoint_key, stage.label))
+
+        return stages
 
     def _run_loop_stage(self, loop_stage: "PipelineStage", result: "PipelineResult") -> bool:
         """Execute a loop block from pipeline.yaml.
