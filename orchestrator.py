@@ -172,6 +172,10 @@ class PipelineResult:
     design_reviewer_draft: str = ""   # reviewer's suggested design (for Architect.run_revision)
     last_verdict: str = ""
     """Set by reviewer stages inside a loop block; checked against loop_until."""
+    next_label: Optional[str] = None
+    """If set, the watcher will apply this label after completion to chain the next pipeline.
+    Can be set explicitly by any stage (e.g. code_reviewer sets 'ai-fix' when changes requested).
+    Also computed automatically by the watcher from chaining rules in config.yaml."""
 
     def to_dict(self) -> dict:
         return {
@@ -217,6 +221,7 @@ class PipelineResult:
             "design_reviewer_draft": self.design_reviewer_draft,
             "design_output": self.design_output,
             "last_verdict": self.last_verdict,
+            "next_label": self.next_label,
         }
 
     @classmethod
@@ -234,7 +239,7 @@ class PipelineResult:
                     "deploy_retry_count", "deploy_fix_history",
                     "prd_revision_count", "design_revision_count",
                     "prd_reviewer_draft", "design_reviewer_draft",
-                    "design_output", "last_verdict"]:
+                    "design_output", "last_verdict", "next_label"]:
             setattr(r, key, data.get(key, getattr(r, key)))
         return r
 

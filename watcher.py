@@ -156,7 +156,7 @@ def run_pipeline(
     issue_log = log_dir / f"issue-{issue_number}-{ts}.log"
 
     try:
-        _dispatch(
+        result = _dispatch(
             label=label,
             tracker_repo=tracker_repo,
             target_repo=target_repo,
@@ -166,9 +166,48 @@ def run_pipeline(
             log_file=issue_log,
             logger=logger,
         )
-        add_label(tracker_repo, issue_number, LABEL_COMPLETE)
-        remove_label(tracker_repo, issue_number, LABEL_RUNNING)
-        logger.info("    ✅ Issue #%d complete", issue_number)
+
+        # ── Pipeline chaining ─────────────────────────────────────────────────
+        # Check if the result warrants automatic re-triggering (e.g. tests failed,
+        # code review requested changes). The next_label can be set explicitly by
+        # an agent during the run, or resolved from config-level chaining rules.
+        pipeline_cfg = _load_pipeline_config()
+        chaining_cfg = (pipeline_cfg.get("pipeline") or {}).get("chaining") or {}
+        next_label = _resolve_next_label(result, chaining_cfg)
+
+        if next_label:
+            # Chain: remove agent-complete, apply the follow-up trigger label so
+            # the watcher picks up the issue again on the next cycle.
+            remove_label(tracker_repo, issue_number, LABEL_RUNNING)
+            # Remove any previous terminal labels so SKIP_LABELS won't block it
+            for stale in (LABEL_COMPLETE, LABEL_FAILED):
+                try:
+                    remove_label(tracker_repo, issue_number, stale)
+                except Exception:
+                    pass
+            ensure_label(tracker_repo, next_label, "c5def5")
+            add_label(tracker_repo, issue_number, next_label)
+            post_comment(
+                tracker_repo,
+                issue_number,
+                f"## 🔁 Pipeline Chaining → `{next_label}`\n\n"
+                f"The pipeline completed but follow-up work was detected "
+                f"(verdict: `{result.verdict or 'n/a'}`, "
+                f"tests_passed: `{result.tests_passed}`, "
+                f"deploy_tests_passed: `{result.deploy_tests_passed}`).\n\n"
+                f"Automatically re-queued with label `{next_label}`. "
+                f"The watcher will pick this up on the next cycle.\n\n"
+                f"To stop chaining, remove the `{next_label}` label.",
+            )
+            logger.info(
+                "    🔁 Issue #%d chained → label=%s (verdict=%s, tests_passed=%s)",
+                issue_number, next_label, result.verdict, result.tests_passed,
+            )
+        else:
+            add_label(tracker_repo, issue_number, LABEL_COMPLETE)
+            remove_label(tracker_repo, issue_number, LABEL_RUNNING)
+            logger.info("    ✅ Issue #%d complete", issue_number)
+
         return True
 
     except Exception as exc:  # noqa: BLE001
@@ -226,8 +265,12 @@ def _dispatch(
     num_engineers: int,
     log_file: Path,
     logger: logging.Logger,
-) -> None:
-    """Run the unified Orchestrator with the pipeline file selected by ``label``."""
+) -> "PipelineResult":
+    """Run the unified Orchestrator with the pipeline file selected by ``label``.
+
+    Returns the PipelineResult so the caller can inspect verdict, test results,
+    and ``next_label`` for pipeline chaining.
+    """
     token = os.environ.get("GITHUB_TOKEN")
 
     pipeline_cfg = _load_pipeline_config()
@@ -279,9 +322,40 @@ def _dispatch(
             else:
                 logger.info("    Using built-in default pipeline (no pipelines/%s.yaml)", label)
 
-            orch.run(requirement, trigger_issue_body=issue_body, issue_number=issue_number)
+            result = orch.run(requirement, trigger_issue_body=issue_body, issue_number=issue_number)
+            return result
         finally:
             sys.stdout, sys.stderr = old_stdout, old_stderr
+
+
+def _resolve_next_label(result: "PipelineResult", chaining_cfg: dict) -> Optional[str]:
+    """Determine whether the pipeline result should chain to a follow-up label.
+
+    Priority order:
+    1. ``result.next_label`` — explicitly set by an agent/stage during the run.
+    2. Config rules in ``pipeline.chaining`` — evaluated against result flags.
+
+    Returns the label string to apply, or None if no chaining needed.
+    """
+    # 1. Explicit label set by an agent during the pipeline
+    if result.next_label:
+        return result.next_label
+
+    if not chaining_cfg:
+        return None
+
+    # 2. Config-driven rules
+    if result.tests_passed is False or result.deploy_tests_passed is False:
+        label = chaining_cfg.get("on_test_failure")
+        if label:
+            return label
+
+    if result.verdict and "CHANGES" in result.verdict.upper():
+        label = chaining_cfg.get("on_review_issues")
+        if label:
+            return label
+
+    return None
 
 
 def _parse_target_repo(body: str) -> str | None:

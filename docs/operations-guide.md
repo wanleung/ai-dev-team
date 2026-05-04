@@ -1,0 +1,618 @@
+# AI Software House — Operations Guide
+
+## Table of Contents
+
+1. [Connecting to Local Ollama](#1-connecting-to-local-ollama)
+2. [Multi-Ollama Pool Setup](#2-multi-ollama-pool-setup)
+3. [LiteLLM Proxy for Multi-Host Isolation](#3-litellm-proxy-for-multi-host-isolation)
+4. [RAG MCP — Moving to a New Machine or Rebuilding](#4-rag-mcp--moving-to-a-new-machine-or-rebuilding)
+5. [Reading GitHub Issues, PRs and Comments](#5-reading-github-issues-prs-and-comments)
+6. [Pipeline Self-Chaining (Auto Re-Label)](#6-pipeline-self-chaining-auto-re-label)
+
+---
+
+## 1. Connecting to Local Ollama
+
+The Ollama backend uses the OpenAI-compatible API exposed by Ollama at `/v1`.
+
+### Localhost
+
+```yaml
+# config.yaml or config.local.yaml
+llm:
+  model: "ollama/llama3.2"         # any model pulled in Ollama
+  ollama_url: "http://localhost:11434"
+  ollama_think: false              # disable CoT — faster responses
+  ollama_stream: true
+```
+
+### Remote Ollama on LAN
+
+```yaml
+llm:
+  model: "ollama/qwen3.6"
+  ollama_url: "http://10.100.1.30:11434"
+  ollama_stream: true              # REQUIRED for remote — prevents TCP idle timeout
+```
+
+### Per-Agent Override (mixed cloud + local)
+
+Route specific agents to Ollama while keeping cloud for others:
+
+```yaml
+llm:
+  model: "openai/gpt-4.1"         # default = cloud
+  overrides:
+    engineer: "ollama/qwen2.5-coder"
+    qa_engineer: "ollama/qwen2.5-coder"
+    # cloud agents (architect, PM, etc.) use the default model above
+```
+
+### Verify Ollama is Running
+
+```bash
+curl http://localhost:11434/api/tags   # list available models
+ollama pull qwen2.5-coder              # pull a model if needed
+```
+
+### Useful Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `OLLAMA_TIMEOUT` | none (infinite) | Request timeout in seconds. Set to `300` if you see timeouts on large models. |
+
+### Run the Pipeline with Ollama
+
+```bash
+python main.py "Build a REST API" --model ollama/qwen2.5-coder --no-github
+```
+
+---
+
+## 2. Multi-Ollama Pool Setup
+
+### Scenario
+
+- **Fast machine**: 1 thread, powerful/smart model (e.g. qwen3.6)
+- **Low-end cluster**: multiple threads, cheaper model (e.g. qwen2.5-coder)
+
+### How Pools Work
+
+The `llm.pools` setting in `config.yaml` controls a per-backend semaphore. All `ollama/*` models share a single `"ollama"` semaphore — there is no per-host distinction natively.
+
+### Option A: Native Per-Agent Routing (simple, limited isolation)
+
+Route smart agents to the fast machine and bulk agents to the cluster via `ollama_url` in dict-form overrides. The semaphore is shared, but routing is correct:
+
+```yaml
+# config.local.yaml
+llm:
+  # Default → low-end cluster (cheap, multi-threaded)
+  model: "ollama/qwen2.5-coder"
+  ollama_url: "http://10.100.1.50:11434"   # low-end cluster
+  ollama_stream: true
+
+  pools:
+    ollama: 4    # allow up to 4 concurrent across ALL ollama hosts
+
+  overrides:
+    # Reasoning-heavy agents → fast smart machine (1 thread only)
+    architect:
+      model: "ollama/qwen3.6"
+      ollama_url: "http://10.100.1.30:11434"
+      ollama_think: true
+      ollama_stream: true
+
+    architect_reviewer:
+      model: "ollama/qwen3.6"
+      ollama_url: "http://10.100.1.30:11434"
+      ollama_stream: true
+
+    tier_reviewer:
+      model: "ollama/qwen3.6"
+      ollama_url: "http://10.100.1.30:11434"
+      ollama_think: true
+      ollama_stream: true
+
+    # Bulk agents → low-end cluster
+    engineer:
+      model: "ollama/qwen2.5-coder"
+      ollama_url: "http://10.100.1.50:11434"
+      ollama_think: false
+      ollama_stream: true
+
+    junior_engineer:
+      model: "ollama/qwen2.5-coder"
+      ollama_url: "http://10.100.1.50:11434"
+      ollama_think: false
+      ollama_stream: true
+
+    qa_engineer:
+      model: "ollama/qwen2.5-coder"
+      ollama_url: "http://10.100.1.50:11434"
+      ollama_think: false
+      ollama_stream: true
+```
+
+**Limitation**: The shared `ollama` semaphore does not enforce per-host concurrency. Use Option B (LiteLLM) for proper isolation.
+
+---
+
+## 3. LiteLLM Proxy for Multi-Host Isolation
+
+LiteLLM proxy sits in front of both Ollama servers, exposes a single OpenAI-compatible endpoint, and enforces per-model RPM limits independently. No code changes to ai-software-house are needed.
+
+### Step 1 — Install LiteLLM
+
+```bash
+pip install litellm[proxy]
+```
+
+### Step 2 — Configure LiteLLM
+
+Create `litellm_config.yaml` (on the machine running ai-software-house, or any reachable host):
+
+```yaml
+model_list:
+  # Smart machine — 1 concurrent request max
+  - model_name: smart-llm
+    litellm_params:
+      model: ollama/qwen3.6
+      api_base: http://10.100.1.30:11434
+    model_info:
+      rpm: 1        # enforces serial access to this host
+
+  # Low-end cluster — 4 concurrent requests
+  - model_name: cheap-llm
+    litellm_params:
+      model: ollama/qwen2.5-coder
+      api_base: http://10.100.1.50:11434
+    model_info:
+      rpm: 4
+
+general_settings:
+  master_key: "sk-local"   # remove this line to disable auth
+```
+
+### Step 3 — Start the Proxy
+
+```bash
+litellm --config litellm_config.yaml --port 4000
+```
+
+### Step 4 — Point ai-software-house at LiteLLM
+
+```yaml
+# config.local.yaml
+llm:
+  model: "ollama/cheap-llm"
+  ollama_url: "http://localhost:4000"   # LiteLLM proxy
+  ollama_stream: true
+
+  # Relax local semaphore — LiteLLM handles rate limiting per host
+  pools:
+    ollama: 10
+
+  overrides:
+    architect:
+      model: "ollama/smart-llm"
+      ollama_url: "http://localhost:4000"
+      ollama_think: true
+      ollama_stream: true
+
+    architect_reviewer:
+      model: "ollama/smart-llm"
+      ollama_url: "http://localhost:4000"
+      ollama_stream: true
+
+    tier_reviewer:
+      model: "ollama/smart-llm"
+      ollama_url: "http://localhost:4000"
+      ollama_think: true
+      ollama_stream: true
+
+    engineer:
+      model: "ollama/cheap-llm"
+      ollama_url: "http://localhost:4000"
+      ollama_think: false
+
+    junior_engineer:
+      model: "ollama/cheap-llm"
+      ollama_url: "http://localhost:4000"
+      ollama_think: false
+
+    qa_engineer:
+      model: "ollama/cheap-llm"
+      ollama_url: "http://localhost:4000"
+      ollama_think: false
+```
+
+### Comparison: Native vs LiteLLM
+
+| | Native (Option A) | LiteLLM Proxy (Option B) |
+|---|---|---|
+| Per-agent URL routing | ✅ | ✅ |
+| Per-host concurrency control | ❌ shared semaphore | ✅ per-model RPM |
+| Load balancing across cluster nodes | ❌ | ✅ |
+| Setup complexity | Low | Medium |
+| Code changes required | None | None |
+
+**Recommendation**: Use LiteLLM if the low-end cluster has 3+ machines or if you need strict isolation of the smart machine's single thread.
+
+---
+
+## 4. RAG MCP — Moving to a New Machine or Rebuilding
+
+The RAG service stores embeddings in a PostgreSQL + pgvector Docker named volume (`pgdata`).
+
+### Check disk usage first
+
+```bash
+docker system df              # overall Docker disk usage
+docker volume ls              # list volumes
+docker volume inspect rag-mcp_pgdata   # see mountpoint and size
+```
+
+### Option A: Rebuild from Source (Recommended)
+
+The RAG index is fully regeneratable from your codebase and docs. Use this unless re-indexing would take many hours.
+
+```bash
+# On the new machine
+cd ai-software-house/rag-mcp
+
+# Configure environment
+cp .env.example .env
+nano .env    # set POSTGRES_USER, POSTGRES_PASSWORD, OLLAMA_BASE_URL, etc.
+
+# Start services
+docker compose up -d
+
+# Apply schema migration
+docker exec $(docker compose ps -q postgres) \
+  psql -U rag -d rag -f /dev/stdin < migrations/001_create_rag_embeddings.sql
+
+# Re-index your sources (repeat for each source)
+python indexer.py --source codebase --path /path/to/your/repo --ext py,ts,go
+python indexer.py --source docs --path /path/to/docs --ext md,txt,rst
+python indexer.py --source memory --db /path/to/memory.db
+python indexer.py --source url --url https://docs.example.com --depth 3
+```
+
+### Option B: Migrate Docker Volume (preserve existing index)
+
+Use this to avoid re-indexing large amounts of crawled URL content.
+
+**On the old machine:**
+```bash
+cd ai-software-house/rag-mcp
+
+# Dump the database to a file
+docker compose exec postgres \
+  pg_dump -U rag -d rag --no-owner --no-acl -F c -f /tmp/rag_backup.dump
+
+# Copy dump out of container
+docker compose cp postgres:/tmp/rag_backup.dump ./rag_backup.dump
+
+# Transfer to new machine
+scp ./rag_backup.dump user@new-machine:~/rag_backup.dump
+```
+
+**On the new machine:**
+```bash
+cd ai-software-house/rag-mcp
+cp .env.example .env && nano .env
+
+# Start postgres only first (wait for healthy)
+docker compose up -d postgres
+
+# Restore the dump
+docker compose cp ~/rag_backup.dump postgres:/tmp/rag_backup.dump
+docker compose exec postgres \
+  pg_restore -U rag -d rag --no-owner --clean /tmp/rag_backup.dump
+
+# Start the full stack
+docker compose up -d
+```
+
+### Free Space on the Old Machine
+
+After migrating or rebuilding on the new machine, clean up the old one:
+
+```bash
+cd ai-software-house/rag-mcp
+
+docker compose down                    # stop the RAG stack
+docker volume rm rag-mcp_pgdata        # delete the volume data
+docker image prune -a                  # remove unused images
+docker system prune                    # clean build cache and dangling resources
+```
+
+### Update config.yaml After Moving
+
+Point the MCP server config at the new host:
+
+```yaml
+# config.yaml or config.local.yaml
+mcp:
+  servers:
+    - name: rag
+      type: http
+      url: "http://<new-machine-ip>:8001/mcp"
+```
+
+---
+
+## 5. Reading GitHub Issues, PRs and Comments
+
+### What Works Automatically Today
+
+| Source | Agents that see it | How |
+|---|---|---|
+| **Issue body** | All (PM first) | `watcher.py` passes it as `requirement` + `trigger_issue_body` |
+| **Issue comments** | Architect only | `_fetch_design_from_issue()` scans comments for `🏗️ System Design` |
+| **PR body** | Engineer (revision loop) | `run_revision()` reads it for context |
+| **PR review comments** | Engineer (revision loop) | `_collect_pr_feedback()` reads inline + review-level comments |
+
+> **Note**: Issue comments are NOT passed to PM/Engineer on the initial pipeline run — only the issue body is. Human comments added after the issue was created are ignored unless it's a revision loop.
+
+---
+
+### Method 1: GitHub MCP Server (agents actively query GitHub)
+
+This is the cleanest approach. Agents that support tool-calling (Code Reviewer, QA Planner, Senior Engineer) get live GitHub tools: `get_issue`, `list_issue_comments`, `get_pull_request`, `list_pull_request_comments`, `list_issues`, etc.
+
+**Step 1 — Install the official GitHub MCP server:**
+```bash
+npm install -g @modelcontextprotocol/server-github
+```
+
+**Step 2 — Add to `config.yaml`:**
+```yaml
+mcp:
+  servers:
+    - name: github
+      type: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-github"]
+      env:
+        GITHUB_TOKEN: "${GITHUB_TOKEN}"
+
+    # Keep your existing servers
+    - name: google_search
+      type: http
+      url: "http://10.100.1.8:8000/mcp"
+
+    - name: rag
+      type: http
+      url: "http://localhost:8001/mcp"
+```
+
+**Step 3 — Enable MCP for engineers if needed (`config.yaml`):**
+```yaml
+team:
+  senior_engineer_use_mcp: true   # give senior engineers GitHub tools
+  junior_engineer_use_mcp: false  # keep junior fast (no tool overhead)
+```
+
+**Available GitHub MCP tools agents can call:**
+- `get_issue` — read issue body + metadata
+- `list_issue_comments` — read all comments on an issue
+- `get_pull_request` — read PR body + status
+- `list_pull_request_comments` — read PR review comments
+- `list_issues` — query issues by label/state
+
+> ⚠️ Only agents with tool-calling support use MCP. Code Reviewer and QA Planner always have MCP. Engineer requires `senior_engineer_use_mcp: true`.
+
+---
+
+### Method 2: Pass Issue Comments into the Requirement (all agents see them)
+
+Modify `watcher.py` `_dispatch()` to fetch comments and append them to the requirement before the pipeline runs. All agents (PM, Architect, Engineer) will see the full discussion thread.
+
+Find this block in `watcher.py` (around line 254):
+```python
+tracker_gh = GitHubClient(tracker_repo, token)
+issue = tracker_gh.get_issue(issue_number)
+issue_body = issue.get("body") or ""
+requirement = (issue_body or issue.get("title") or "").strip()
+```
+
+Replace with:
+```python
+tracker_gh = GitHubClient(tracker_repo, token)
+issue = tracker_gh.get_issue(issue_number)
+issue_body = issue.get("body") or ""
+
+# Fetch human comments and append to requirement
+issue_comments = tracker_gh.get_issue_comments(issue_number)
+human_comments = [
+    c["body"] for c in issue_comments
+    if not c.get("user", {}).get("login", "").endswith("[bot]")
+]
+if human_comments:
+    comments_block = (
+        "\n\n---\n\n## Additional Context (Issue Comments)\n\n"
+        + "\n\n---\n\n".join(human_comments)
+    )
+    issue_body = issue_body + comments_block
+
+requirement = (issue_body or issue.get("title") or "").strip()
+```
+
+---
+
+### Method 3: Write Full Context in the Issue Body (no code changes)
+
+The simplest approach. When creating a GitHub issue, include all context, constraints, and references in the body. The watcher already passes the full body to PM.
+
+**Recommended issue template:**
+```markdown
+## Requirement
+Build a booking API with calendar integration.
+
+## Context / Constraints
+- Must integrate with the existing `UserService`
+- See PR #42 for the data model we agreed on
+- Authentication: use JWT (see issue #38 for spec)
+
+**Target repo:** wanleung/mybooking
+
+## Acceptance Criteria
+- [ ] POST /bookings creates a booking
+- [ ] GET /bookings/:id returns booking details
+- [ ] Booking conflicts return HTTP 409
+```
+
+---
+
+### How the Revision Loop Reads PR Comments
+
+When a human leaves review comments on a generated PR, the watcher detects the `agent-waiting` label and triggers `run_revision()` automatically. It reads:
+
+1. **PR review comments** (`get_pr_review_comments`) — inline code annotations
+2. **PR review submissions** (`get_pr_reviews`) — APPROVED / CHANGES_REQUESTED bodies
+3. **PR body** — original spec and linked issue number
+4. **Linked issue comments** — fetches architect's system design from the issue thread
+
+The engineer then re-implements using the feedback and pushes a new commit to the same branch. Labels track revision rounds (`ai-revision-1`, `ai-revision-2`, etc.) up to `max_revisions` in `config.yaml`.
+
+---
+
+### Summary: Which Method to Use
+
+| Goal | Method |
+|---|---|
+| Agents actively query any issue/PR during pipeline | MCP GitHub server (Method 1) |
+| PM + all agents get full discussion thread | Patch `watcher.py` (Method 2) |
+| Simple one-off requirements | Write full context in issue body (Method 3) |
+| PR human review triggers code revision | Already built-in — leave review comments on the PR |
+
+**Recommended combination**: Method 3 for structured issue bodies + Method 1 (MCP) for Code Reviewer and QA Planner to look up related issues/PRs at review time.
+
+---
+
+### GitHub Token Scopes Required
+
+```
+repo → contents      (read/write — for branch/file operations)
+       issues        (read/write — for creating/labelling issues)
+       pull_requests (read/write — for creating PRs and reading reviews)
+```
+
+Create or update token at: https://github.com/settings/personal-access-tokens/new
+
+```bash
+export GITHUB_TOKEN=ghp_your_token_here
+```
+
+---
+
+## 6. Pipeline Self-Chaining (Auto Re-Label)
+
+### Problem
+
+After a pipeline completes, the watcher adds `agent-complete` and skips the issue on future cycles. If tests failed or the code reviewer requested changes, a human had to manually remove `agent-complete` and re-add a trigger label (e.g. `ai-fix`) before the agent could continue.
+
+### Solution
+
+The watcher now inspects `PipelineResult` after each run and automatically applies a follow-up trigger label when conditions are met — no human intervention needed.
+
+**Flow:**
+```
+Issue #42 (ai-feature)
+  → watcher picks up → agent-running
+  → pipeline runs → tests fail
+  → watcher sees tests_passed=False
+  → removes agent-running, adds ai-fix        ← chaining
+  → posts comment explaining why
+  → next watcher cycle picks up ai-fix label
+  → ai-fix pipeline runs → fixes failing tests
+  → tests pass → adds agent-complete          ← done
+```
+
+---
+
+### Configuration (`config.yaml`)
+
+```yaml
+pipeline:
+  chaining:
+    # Apply this label when unit tests or deploy tests fail after max retries
+    on_test_failure: "ai-fix"
+
+    # Apply this label when code reviewer verdict is CHANGES REQUESTED
+    on_review_issues: "ai-fix"
+
+    # Set to null (or omit) to disable a rule
+    # on_test_failure: ~
+```
+
+The chained label must be one of the trigger labels already configured in `repos.yaml` (under `feature_label` / `bug_label`).
+
+To **disable chaining entirely**, set all rules to null or remove the `chaining` block:
+```yaml
+pipeline:
+  chaining: {}
+```
+
+---
+
+### Priority Order
+
+When deciding the next label, the system uses this priority:
+
+| Priority | Source | When |
+|---|---|---|
+| 1 (highest) | `result.next_label` set by an agent | Agent explicitly requests a follow-up |
+| 2 | `chaining.on_test_failure` | `tests_passed=False` or `deploy_tests_passed=False` |
+| 3 | `chaining.on_review_issues` | `verdict` contains "CHANGES" |
+| — | None → `agent-complete` | All conditions clean |
+
+---
+
+### Setting `next_label` Explicitly from an Agent/Stage
+
+Any stage in the orchestrator can set `result.next_label` to override config rules. For example, in a custom pipeline YAML stage or by editing a role:
+
+```python
+# In a custom stage function in orchestrator.py:
+def _stage_my_check(self, result: PipelineResult) -> None:
+    # ... run some check ...
+    if some_condition:
+        result.next_label = "ai-review"   # watcher will chain to this
+```
+
+Or in `pipelines/ai-feature.yaml`, after the reviewer stage, if you want to always queue a human review:
+```yaml
+# The orchestrator's stage can set next_label = "needs-human-review"
+# and the watcher will apply it after completion.
+```
+
+---
+
+### What the Watcher Posts to the Issue
+
+When chaining is triggered, the watcher automatically posts a comment:
+
+```
+🔁 Pipeline Chaining → `ai-fix`
+
+The pipeline completed but follow-up work was detected
+(verdict: `CHANGES REQUESTED`, tests_passed: `False`, deploy_tests_passed: `None`).
+
+Automatically re-queued with label `ai-fix`.
+The watcher will pick this up on the next cycle.
+
+To stop chaining, remove the `ai-fix` label.
+```
+
+---
+
+### Files Changed
+
+| File | Change |
+|---|---|
+| `orchestrator.py` | Added `next_label: Optional[str]` field to `PipelineResult` |
+| `watcher.py` | `_dispatch()` now returns `PipelineResult`; added `_resolve_next_label()`; `run_pipeline()` applies chaining |
+| `config.yaml` | Added `pipeline.chaining` section with `on_test_failure` and `on_review_issues` rules |
