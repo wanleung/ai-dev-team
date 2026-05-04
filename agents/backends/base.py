@@ -37,6 +37,8 @@ FALLBACK_ERRORS = (
     ConnectionError,
     httpx.ConnectError,
     httpx.TimeoutException,
+    httpx.RemoteProtocolError,  # server closed connection mid-stream (e.g. LiteLLM timeout)
+    httpx.ReadError,            # TCP read error during streaming
     _OAIConnError,
     _OAITimeoutError,
     _OAIServerError,  # covers HTTP 503/502/504 — triggers backend fallback

@@ -147,3 +147,18 @@ def test_ollama_stream_thinking_no_content_with_preserve():
     result = b.call([{"role": "user", "content": "hi"}])
     assert "full design here" in result  # reasoning content captured, not lost
 
+
+
+def test_ollama_stream_empty_raises_server_error():
+    """When stream returns zero chunks (LiteLLM timed out server-side), raise ConnectionError
+    instead of returning empty string — lets FallbackLLMBackend switch backends."""
+    from agents.backends.ollama import OllamaBackend
+
+    with patch("agents.backends.ollama.OpenAI") as mock_cls:
+        mock_client = MagicMock()
+        # Return empty stream (0 chunks) — simulates LiteLLM closing stream with no output
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: iter([])
+        mock_cls.return_value = mock_client
+        b = OllamaBackend(model="ollama/thinker", think=True, stream=True, max_retries=0)
+    with pytest.raises(ConnectionError, match="no content"):
+        b.call([{"role": "user", "content": "hi"}])
