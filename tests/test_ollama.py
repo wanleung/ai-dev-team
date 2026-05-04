@@ -469,3 +469,15 @@ def test_model_helper_dict_no_model_key_falls_back():
     assert orc.pm_reviewer._api_model == "llama4"
 
 
+def test_orchestrator_passes_opencode_stream():
+    """Orchestrator stores opencode_stream and passes it through to agent_kwargs."""
+    from orchestrator import Orchestrator
+
+    orc = Orchestrator(
+        github_token="ghp_fake",
+        opencode_stream=False,
+    )
+    assert orc.opencode_stream is False
+    assert orc.agent_kwargs.get("opencode_stream") is False
+
+
