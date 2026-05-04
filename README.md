@@ -29,6 +29,7 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - ⚡ **Two-level concurrency** — per-repo `parallel_issues` cap + global `settings.max_parallel`; per-LLM-backend semaphore pools keep local Ollama at 1 concurrent call
 - **Resilient checkpoints** — atomic writes prevent corruption on Ctrl+C; best-checkpoint-wins logic survives bad config runs
 - 🗺️ **Repo context awareness** — before engineering, the pipeline injects the full repo file tree into PM/Architect prompts (small repos) or auto-indexes the codebase into RAG (large repos), so agents understand what already exists before writing code
+- 🔁 **Pipeline self-chaining** — after a run, agents automatically re-label issues for follow-up pipelines (bug fix, re-review) without human intervention; configurable rules in `config.yaml`
 
 ---
 
@@ -826,7 +827,10 @@ Every hour (or on --once for GitHub Actions):
     → Look up the pipeline YAML for that label
     → Label issue agent-queued
     → Run the pipeline in a thread (bounded by max_parallel + per-repo parallel_issues)
-    → On success: label agent-complete
+    → On success: inspect result for chaining conditions (see below)
+        → If tests failed → apply chaining label (e.g. ai-fix) instead of agent-complete
+        → If code reviewer requested changes → apply chaining label
+        → Otherwise → label agent-complete
     → On failure: label agent-failed + post error comment
 ```
 
@@ -836,8 +840,32 @@ Every hour (or on --once for GitHub Actions):
 |---|---|
 | `agent-queued` | Picked up this run, pipeline starting |
 | `agent-running` | Pipeline actively running |
-| `agent-complete` | ✅ Pipeline finished successfully |
+| `agent-complete` | ✅ Pipeline finished successfully — no follow-up needed |
 | `agent-failed` | ❌ Pipeline failed — remove label to retry |
+
+### 🔁 Pipeline Self-Chaining
+
+When a run completes with issues (failing tests, reviewer changes requested), the watcher automatically swaps the completion label for a follow-up trigger label — no human needed to re-queue.
+
+```
+Issue #42 (ai-feature)
+  → tests fail
+  → watcher adds ai-fix instead of agent-complete
+  → posts comment explaining the chain
+  → next watcher cycle picks up ai-fix → runs fix pipeline
+  → tests pass → adds agent-complete ← done
+```
+
+**Configure in `config.yaml`:**
+```yaml
+pipeline:
+  chaining:
+    on_test_failure: "ai-fix"      # label to apply when tests fail
+    on_review_issues: "ai-fix"     # label to apply when reviewer requests changes
+    # set to ~ (null) to disable a rule
+```
+
+> 📖 See [`docs/operations-guide.md` § 6](docs/operations-guide.md#6-pipeline-self-chaining-auto-re-label) for full details, priority rules, and how to set `next_label` from a custom stage.
 
 ### Configure repos.yaml
 
@@ -1629,3 +1657,18 @@ framework_docs:
 ## 📄 License
 
 GNU General Public License v3.0 or later (GPL-3.0-or-later). See [LICENSE](LICENSE) for details.
+
+---
+
+## 📖 Operations Guide
+
+For operational topics not covered above, see [`docs/operations-guide.md`](docs/operations-guide.md):
+
+| Section | Topic |
+|---|---|
+| [§1](docs/operations-guide.md#1-connecting-to-local-ollama) | Connecting to local Ollama (localhost, LAN, per-agent override) |
+| [§2](docs/operations-guide.md#2-multi-ollama-pool-setup) | Multi-Ollama pool: smart machine + low-end cluster |
+| [§3](docs/operations-guide.md#3-litellm-proxy-for-multi-host-isolation) | LiteLLM proxy for per-host concurrency control |
+| [§4](docs/operations-guide.md#4-rag-mcp--moving-to-a-new-machine-or-rebuilding) | RAG MCP — migration to a new machine or full rebuild |
+| [§5](docs/operations-guide.md#5-reading-github-issues-prs-and-comments) | Reading GitHub issues, PRs, and comments (3 methods) |
+| [§6](docs/operations-guide.md#6-pipeline-self-chaining-auto-re-label) | Pipeline self-chaining — auto re-label for follow-up runs |

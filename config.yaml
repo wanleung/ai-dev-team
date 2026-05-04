@@ -241,6 +241,29 @@ pipeline:
   max_test_retries: 5
   max_deploy_retries: 5
 
+  # ── Pipeline chaining ────────────────────────────────────────────────────────
+  # After a pipeline completes, the watcher can automatically re-label the issue
+  # to trigger a follow-up pipeline run — without human intervention.
+  #
+  # How it works:
+  #   1. An agent can set result.next_label = "ai-fix" during the run (explicit).
+  #   2. OR the watcher inspects the result after completion and applies rules below.
+  #
+  # Priority: explicit next_label from agent > on_test_failure > on_review_issues
+  #
+  # The chained label must be a watcher trigger label (defined in repos.yaml
+  # feature_label / bug_label). The watcher removes agent-complete and adds the
+  # new label so the issue is picked up again on the next cycle.
+  #
+  # Set a rule to null (or omit it) to disable that chaining behaviour.
+  # Set all rules to null to disable chaining entirely (default behaviour).
+  chaining:
+    # Apply this label when unit tests or deploy tests failed after max retries
+    on_test_failure: "ai-fix"
+    # Apply this label when the code reviewer verdict is CHANGES REQUESTED
+    on_review_issues: "ai-fix"
+    # Future: on_deploy_failure, on_prd_rejected, etc. can be added here
+
 # ── Repo Context Awareness ──────────────────────────────────────────────────
 # Controls how the pipeline reads the target repo's existing code structure.
 #
