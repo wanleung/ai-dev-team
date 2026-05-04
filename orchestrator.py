@@ -1768,6 +1768,8 @@ class Orchestrator(TestFixLoopMixin):
             result.issue_url = pm_result["issue_url"]
         else:
             pm_result = self.pm.run(effective_req)
+        if not pm_result.get("prd", "").strip():
+            raise RuntimeError("Product Manager produced an empty PRD — LLM may have returned no content.")
         result.prd = pm_result["prd"]
         result.project_name = pm_result["project_name"]
 
@@ -1788,12 +1790,25 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_pm_reviewer(self, result: PipelineResult, requirement: str) -> None:
         """Review the PM's PRD. If revision needed, update prd + project_name."""
-        if self.github and result.issue_number:
-            rev_result = self.pm_reviewer.run_with_github(
-                result.prd, requirement, result.project_name, self.github, result.issue_number
+        if not result.prd or not result.prd.strip():
+            raise RuntimeError(
+                "Cannot review PRD: result.prd is empty. "
+                "The PM stage may have failed to produce output."
             )
-        else:
-            rev_result = self.pm_reviewer.run(result.prd, requirement, result.project_name)
+        # Run LLM first; post to GitHub separately so a transient 502 doesn't
+        # lose the review result and cause a duplicate comment on the next retry.
+        rev_result = self.pm_reviewer.run(result.prd, requirement, result.project_name)
+
+        if self.github and result.issue_number:
+            verdict_emoji = {
+                PMReviewerAgent.VERDICT_APPROVED: "✅",
+                PMReviewerAgent.VERDICT_SUGGESTIONS: "💡",
+                PMReviewerAgent.VERDICT_REVISION: "🔄",
+            }.get(rev_result["verdict"], "🔍")
+            self.github.add_issue_comment(
+                result.issue_number,
+                f"## {verdict_emoji} PRD Review (PMReviewer)\n\n{rev_result['review']}",
+            )
 
         result.prd_review = rev_result["review"]
         result.prd_verdict = rev_result["verdict"]
@@ -1809,6 +1824,7 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_pm_revision(self, result: PipelineResult, requirement: str, round_num: int) -> None:
         """PM rewrites the PRD using reviewer feedback and reviewer's draft."""
+        previous_prd = result.prd
         pm_result = self.pm.run_revision(
             original_prd=result.prd,
             review=result.prd_review,
@@ -1816,8 +1832,13 @@ class Orchestrator(TestFixLoopMixin):
             requirement=requirement,
             project_name=result.project_name,
         )
-        result.prd = pm_result["prd"]
-        result.project_name = pm_result["project_name"]
+        revised_prd = pm_result.get("prd", "").strip()
+        if revised_prd:
+            result.prd = pm_result["prd"]
+            result.project_name = pm_result["project_name"]
+        else:
+            console.print("  ⚠️  [yellow]PM revision returned empty PRD — keeping previous version.[/yellow]")
+            result.prd = previous_prd
         result.prd_revision_count = round_num
 
     def _prd_revision_loop(self, result: PipelineResult, requirement: str) -> bool:
@@ -2318,12 +2339,15 @@ class Orchestrator(TestFixLoopMixin):
                 )
 
     def _stage_reviewer(self, result: PipelineResult) -> None:
+        # Run LLM first; post to GitHub separately so a transient 502 doesn't
+        # lose the review result and cause a duplicate comment on the next retry.
+        rev_result = self.reviewer.run(result.all_files, result.prd, result.project_name)
         if self.target_github and result.pr_number:
-            rev_result = self.reviewer.run_with_github(
-                result.all_files, result.prd, result.project_name, self.target_github, result.pr_number
+            self.target_github.add_pr_review(
+                result.pr_number,
+                body=f"## 🔍 Code Review (CodeReviewerAgent)\n\n{rev_result['review']}",
+                event="COMMENT",
             )
-        else:
-            rev_result = self.reviewer.run(result.all_files, result.prd, result.project_name)
         result.review = rev_result["review"]
         result.verdict = rev_result["verdict"]
 
@@ -2332,20 +2356,23 @@ class Orchestrator(TestFixLoopMixin):
         cross_repo = self.target_github is not self.github and self.target_github is not None
         github_client = self.github  # test plan posted to tracker issue
 
+        repo = github_client.repo if github_client and hasattr(github_client, "repo") else ""
+        # Run LLM first; post to GitHub separately so a transient 502 doesn't
+        # lose the plan and cause a duplicate comment on the next retry.
+        plan_result = self.qa_planner.run(
+            result.prd, result.design, result.all_files, result.project_name, repo=repo
+        )
+
         if github_client and result.issue_number:
-            plan_result = self.qa_planner.run_with_github(
-                result.prd,
-                result.design,
-                result.all_files,
-                result.project_name,
-                github_client,
-                issue_number=result.issue_number,
-                pr_number=result.pr_number if not cross_repo else None,
-            )
-        else:
-            plan_result = self.qa_planner.run(
-                result.prd, result.design, result.all_files, result.project_name
-            )
+            status = "✅" if plan_result["success"] else "⚠️"
+            ac_count = len(plan_result["acceptance_criteria"])
+            summary = f"{status} **{ac_count} acceptance criteria identified**" if ac_count else status
+            comment_body = f"## 📋 Test Plan ({summary})\n\n{plan_result['test_plan']}"
+            pr_number = result.pr_number if not cross_repo else None
+            if pr_number:
+                github_client.add_pr_comment(pr_number, comment_body)
+            else:
+                github_client.add_issue_comment(result.issue_number, comment_body)
 
         result.qa_plan = plan_result["test_plan"]
         result.qa_acceptance_criteria = plan_result["acceptance_criteria"]
