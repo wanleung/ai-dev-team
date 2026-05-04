@@ -91,6 +91,10 @@ llm:
   # Prevents TCP idle timeouts on NAT/firewall between this machine and Ollama
   ollama_stream: true
 
+  # Set to true to stream tokens over HTTP for opencode-go and opencode-zen models
+  # Prevents Cloudflare 524 timeout errors during long-running requests
+  opencode_stream: true
+
   # Per-agent model overrides — mix backends freely per agent.
   # Example: use Claude for reasoning-heavy roles, GPT-4.1-mini for repetitive ones.
   overrides:
