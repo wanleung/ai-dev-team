@@ -68,6 +68,43 @@ def test_llm_backend_is_abstract():
         LLMBackend()  # cannot instantiate abstract class
 
 
+    """When the error body has retry_after >= threshold, retries are skipped immediately."""
+    import openai
+    from agents.backends.base import _retry_with_backoff
+    calls = []
+    body = {"retry_after": 120, "status": 524}
+    def fn():
+        calls.append(1)
+        raise openai.InternalServerError(
+            "524 timeout",
+            response=MagicMock(status_code=524, headers={}),
+            body=body,
+        )
+    with patch("time.sleep") as mock_sleep:
+        with pytest.raises(openai.InternalServerError):
+            _retry_with_backoff(fn, max_retries=3, base_delay=0.01)
+    assert len(calls) == 1        # raised on first attempt — no retries
+    mock_sleep.assert_not_called() # no sleep
+
+
+def test_retry_does_not_fast_fail_on_small_retry_after():
+    """When retry_after is small (< threshold), normal retries proceed."""
+    import openai
+    from agents.backends.base import _retry_with_backoff
+    calls = []
+    body = {"retry_after": 5}  # below the 30s default threshold
+    def fn():
+        calls.append(1)
+        raise openai.InternalServerError(
+            "503", response=MagicMock(status_code=503, headers={}), body=body,
+        )
+    with patch("time.sleep"):
+        with pytest.raises(openai.InternalServerError):
+            _retry_with_backoff(fn, max_retries=2, base_delay=0.01)
+    assert len(calls) == 3  # initial + 2 retries
+
+
+
 def test_openai_compatible_backend_call():
     from agents.backends.base import OpenAICompatibleBackend
     mock_client = MagicMock()
