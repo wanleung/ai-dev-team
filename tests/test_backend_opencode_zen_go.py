@@ -61,7 +61,7 @@ def test_opencode_go_non_minimax_uses_openai_client():
     from agents.backends.opencode_go import OpenCodeGoBackend
     with patch("agents.backends.opencode_go.OpenAI") as mock_oai:
         mock_oai.return_value = MagicMock()
-        with patch.dict(os.environ, {"OPENCODE_ZEN_API_KEY": "key_test"}):
+        with patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "key_test"}):
             b = OpenCodeGoBackend(model="opencode-go/kimi-k2.5")
     assert b.model == "kimi-k2.5"
     assert b.supports_tools() is True
@@ -71,7 +71,7 @@ def test_opencode_go_minimax_uses_anthropic_client():
     from agents.backends.opencode_go import OpenCodeGoBackend
     with patch("agents.backends.opencode_go.anthropic") as mock_ant:
         mock_ant.Anthropic.return_value = MagicMock()
-        with patch.dict(os.environ, {"OPENCODE_ZEN_API_KEY": "key_test"}):
+        with patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "key_test"}):
             b = OpenCodeGoBackend(model="opencode-go/minimax-m2.7")
     assert b.supports_tools() is False
 
@@ -115,7 +115,7 @@ def test_opencode_go_default_stream_true():
     from agents.backends.opencode_go import OpenCodeGoBackend
     with patch("agents.backends.opencode_go.OpenAI") as mock_oai:
         mock_oai.return_value = MagicMock()
-        with patch.dict(os.environ, {"OPENCODE_ZEN_API_KEY": "key_test"}):
+        with patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "key_test"}):
             backend = OpenCodeGoBackend(model="opencode-go/kimi-k2.5")
     # Verify the underlying OpenAICompatibleBackend has _stream=True
     assert backend._oai_backend._stream is True
@@ -126,7 +126,7 @@ def test_opencode_go_stream_false_disables_streaming():
     from agents.backends.opencode_go import OpenCodeGoBackend
     with patch("agents.backends.opencode_go.OpenAI") as mock_oai:
         mock_oai.return_value = MagicMock()
-        with patch.dict(os.environ, {"OPENCODE_ZEN_API_KEY": "key_test"}):
+        with patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "key_test"}):
             backend = OpenCodeGoBackend(model="opencode-go/kimi-k2.5", stream=False)
     # Verify the underlying OpenAICompatibleBackend has _stream=False
     assert backend._oai_backend._stream is False
@@ -145,11 +145,11 @@ def test_opencode_go_call_streams_when_enabled():
     mock_chunk_3.choices[0].delta.content = None
     
     mock_oai_client = MagicMock()
-    mock_oai_client.chat.completions.create.return_value = iter([mock_chunk_1, mock_chunk_2, mock_chunk_3])
+    mock_oai_client.chat.completions.create.side_effect = lambda *a, **kw: iter([mock_chunk_1, mock_chunk_2, mock_chunk_3])
     
     with patch("agents.backends.opencode_go.OpenAI") as mock_oai:
         mock_oai.return_value = mock_oai_client
-        with patch.dict(os.environ, {"OPENCODE_ZEN_API_KEY": "key_test"}):
+        with patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "key_test"}):
             backend = OpenCodeGoBackend(model="opencode-go/kimi-k2.5", stream=True)
     
     # Call with streaming enabled
@@ -161,3 +161,62 @@ def test_opencode_go_call_streams_when_enabled():
     # Verify create was called with stream=True
     _, kwargs = mock_oai_client.chat.completions.create.call_args
     assert kwargs["stream"] is True
+
+
+# ── OpenCodeZenBackend streaming tests ──────────────────────────────────────────
+
+def test_opencode_zen_default_stream_true():
+    """Construct OpenCodeZenBackend with no stream argument and verify default is True."""
+    from agents.backends.opencode_zen import OpenCodeZenBackend
+    with patch("agents.backends.opencode_zen.OpenAI") as mock_oai:
+        mock_oai.return_value = MagicMock()
+        with patch.dict(os.environ, {"OPENCODE_ZEN_API_KEY": "key_test"}):
+            backend = OpenCodeZenBackend(model="opencode-zen/gpt-4.1")
+    assert backend._oai_backend._stream is True
+
+
+def test_opencode_zen_stream_false_disables_streaming():
+    """Construct OpenCodeZenBackend with stream=False and verify streaming is disabled."""
+    from agents.backends.opencode_zen import OpenCodeZenBackend
+    with patch("agents.backends.opencode_zen.OpenAI") as mock_oai:
+        mock_oai.return_value = MagicMock()
+        with patch.dict(os.environ, {"OPENCODE_ZEN_API_KEY": "key_test"}):
+            backend = OpenCodeZenBackend(model="opencode-zen/gpt-4.1", stream=False)
+    assert backend._oai_backend._stream is False
+
+
+def test_opencode_zen_call_streams_when_enabled():
+    """Call OpenCodeZenBackend with stream=True and verify it streams the response."""
+    from agents.backends.opencode_zen import OpenCodeZenBackend
+
+    mock_chunk_1 = MagicMock()
+    mock_chunk_1.choices[0].delta.content = "Hello "
+    mock_chunk_2 = MagicMock()
+    mock_chunk_2.choices[0].delta.content = "World"
+    mock_chunk_3 = MagicMock()
+    mock_chunk_3.choices[0].delta.content = None
+
+    mock_oai_client = MagicMock()
+    mock_oai_client.chat.completions.create.side_effect = lambda *a, **kw: iter([mock_chunk_1, mock_chunk_2, mock_chunk_3])
+
+    with patch("agents.backends.opencode_zen.OpenAI") as mock_oai:
+        mock_oai.return_value = mock_oai_client
+        with patch.dict(os.environ, {"OPENCODE_ZEN_API_KEY": "key_test"}):
+            backend = OpenCodeZenBackend(model="opencode-zen/gpt-4.1", stream=True)
+
+    result = backend.call([{"role": "user", "content": "hello"}])
+
+    assert result == "Hello World"
+
+    _, kwargs = mock_oai_client.chat.completions.create.call_args
+    assert kwargs["stream"] is True
+
+
+def test_opencode_go_stream_true_ignored_for_minimax():
+    """stream=True must not affect MiniMax routing — Anthropic path is always used."""
+    from agents.backends.opencode_go import OpenCodeGoBackend
+    with patch("agents.backends.opencode_go.anthropic") as mock_ant:
+        mock_ant.Anthropic.return_value = MagicMock()
+        with patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "key_test"}):
+            b = OpenCodeGoBackend(model="opencode-go/minimax-m2.7", stream=True)
+    assert b._oai_backend is None

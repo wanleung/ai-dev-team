@@ -63,6 +63,7 @@ class OpenCodeZenBackend(LLMBackend):
         inter_call_delay: int = 0,
         max_retries: int = _DEFAULT_MAX_RETRIES,
         retry_delay: float = _DEFAULT_BASE_DELAY,
+        stream: bool = True,
     ) -> None:
         key, base = _zen_key_and_base(api_key, base_url)
         bare_model = model.removeprefix("opencode-zen/")
@@ -83,6 +84,7 @@ class OpenCodeZenBackend(LLMBackend):
             self._oai_backend = OpenAICompatibleBackend(
                 model=bare_model, client=client,
                 inter_call_delay=inter_call_delay, max_retries=max_retries, retry_delay=retry_delay,
+                stream=stream,
             )
             self._anthropic_client = None
 
