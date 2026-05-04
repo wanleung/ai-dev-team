@@ -1,0 +1,119 @@
+# AI Software House Configuration
+# Copy this file and edit to match your setup.
+
+# ── LLM Settings ───────────────────────────────────────────────────────────
+llm:
+  # Default model for all agents (used when no per-agent override is set)
+  #
+  # ── GitHub Models API (GITHUB_TOKEN required) ──────────────────────────
+  #   OpenAI   : openai/gpt-4.1, openai/gpt-4.1-mini, openai/gpt-4.1-nano
+  #   Mistral  : mistral-ai/mistral-small-2503
+  #   DeepSeek : deepseek/deepseek-r1
+  #   Meta     : meta-llama-3.1-405b-instruct
+  #
+  # ── Anthropic Claude API (ANTHROPIC_API_KEY required) ──────────────────
+  #   claude-3-5-sonnet-20241022   (fast, smart — recommended)
+  #   claude-3-7-sonnet-20250219   (extended thinking)
+  #   claude-3-5-haiku-20241022    (fastest, cheapest)
+  #   claude-3-opus-20240229       (most capable)
+  #
+  # Claude models are auto-detected by name prefix "claude-" and will use
+  # the Anthropic API automatically. No extra config needed.
+  #model: "opencode-go/qwen3.5-plus"
+  model: "ollama/qwen3.6"
+  ollama_url: "http://10.100.1.30:11434"
+
+  # Global Ollama defaults (can be overridden per-agent below)
+  ollama_think: false    # false = suppress chain-of-thought (faster)
+  ollama_stream: true    # true = stream tokens (required for remote Ollama over LAN)
+
+  #opencode/opencode-go/qwen3.6-plus
+  #opencode-go/qwen3.6-plus
+  #nvidia-nim/z-ai/glm-5.1
+
+  # Per-agent model overrides — string form or dict form:
+  #   string: "ollama/qwen3.6"
+  #   dict:   model: "ollama/qwen3.6"
+  #           ollama_think: true   # override global default for this agent
+  #           ollama_stream: true
+  overrides:
+    # ── Non-Ollama agents (opencode) ──────────────────────────────────────
+    product_manager: "opencode/opencode-go/qwen3.6-plus"
+    pm_reviewer: "opencode/opencode-go/qwen3.6-plus"
+    architect_reviewer: "opencode/opencode-go/qwen3.6-plus"
+    deployment_tester: "opencode/opencode-go/qwen3.6-plus"
+    summariser: "opencode/opencode-go/qwen3.5-plus"
+    memory_bank_updater: "opencode/opencode-go/qwen3.6-plus"
+    documentation_agent: "opencode/opencode-go/qwen3.5-plus"
+
+    # ── Ollama agents (dict form for per-agent control) ───────────────────
+    architect:
+      model: "opencode-go/qwen3.6-plus"
+      fallbacks:
+        - model: "ollama/qwen3.6"
+          ollama_think: true     # reasoning-heavy — let it think for better designs
+          ollama_stream: true
+          ollama_preserve_thinking: true
+
+    engineer:
+      model: "opencode-go/qwen3.6-plus"
+      fallbacks:
+        - model: "ollama/qwen3.6"
+          ollama_think: false    # runs many times — keep fast
+          ollama_stream: true
+
+    code_reviewer:
+      model: "opencode-go/qwen3.6-plus"
+      fallbacks:
+        - model: "ollama/qwen3.6"
+          ollama_think: false    # needs tool-calling — thinking adds overhead
+          ollama_stream: true
+
+    qa_planner:
+      model: "opencode-go/qwen3.6-plus"
+      fallbacks:
+        - model: "ollama/qwen3.6"
+          ollama_think: true    # needs tool-calling — thinking adds overhead
+          ollama_stream: true
+          ollama_preserve_thinking: true
+
+    qa_engineer:
+      model: "opencode-go/qwen3.6-plus"
+      fallbacks:
+        - model: "ollama/qwen3.6"
+          ollama_think: false    # runs many times — keep fast
+          ollama_stream: true
+
+    senior_engineer:
+      model: "opencode-go/qwen3.6-plus"
+      fallbacks:
+        - model: "ollama/qwen3.6"
+          ollama_think: true
+          ollama_preserve_thinking: true
+          ollama_stream: true 
+
+    junior_engineer:
+      model: "opencode-go/qwen3.6-plus"
+      fallbacks:
+        - model: "ollama/qwen3.6"
+          ollama_think: false
+          ollama_stream: false
+
+    tier_reviewer:
+      model: "opencode-go/qwen3.6-plus"
+      fallbacks:
+        - model: "ollama/qwen3.6"
+          ollama_think: true
+          ollama_stream: true
+          ollama_preserve_thinking: true
+
+team:
+  # Number of parallel Engineer agents (each handles a separate module)
+  # num_engineers: 1
+
+  num_senior_engineers: 1        # parallel workers for senior tier
+  num_junior_engineers: 1        # parallel workers for junior tier
+  junior_quality_gate: true      # run per-module tests on junior output before senior stage
+  junior_test_retries: 3         # retries before escalating failing junior module to senior
+  senior_engineer_use_mcp: true  # give senior engineers MCP/RAG tools (set false for LLMs without tool-calling)
+  junior_engineer_use_mcp: false

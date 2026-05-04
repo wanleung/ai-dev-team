@@ -1,0 +1,61 @@
+<h2>Design: Unified Pipeline Architecture</h2>
+<p class="subtitle">Section 2 of 4 — Watcher Redesign (Per-Repo Queues + LLM Pools)</p>
+
+<div style="margin-top:16px;background:#1e1e2e;border:1px solid #89b4fa;border-radius:8px;padding:16px">
+  <div class="label" style="color:#89b4fa">repos.yaml — new fields</div>
+  <pre style="background:#12121e;border-radius:6px;padding:10px;font-size:12px;margin-top:10px">repos:
+  - repo: owner/repo-A
+    tracker_repo: owner/tracker-A
+    parallel_issues: 2       # NEW: run 2 issues at once (default: 1)
+    labels:
+      ai-feature:
+        pipeline: ai-feature  # optional override; default = label name
+      ai-fix: {}
+
+  - repo: owner/repo-B
+    tracker_repo: owner/tracker-B
+    parallel_issues: 1        # sequential
+    labels:
+      ai-feature: {}
+      ai-custom:
+        pipeline: my-custom-pipeline   # maps to pipelines/my-custom-pipeline.yaml</pre>
+</div>
+
+<div style="margin-top:16px;background:#1e1e2e;border:1px solid #a6e3a1;border-radius:8px;padding:16px">
+  <div class="label" style="color:#a6e3a1">config.yaml — new llm.pools section</div>
+  <pre style="background:#12121e;border-radius:6px;padding:10px;font-size:12px;margin-top:10px">llm:
+  # ... existing settings unchanged ...
+  pools:                        # NEW: per-backend concurrency limits
+    ollama: 1                   # only 1 simultaneous Ollama call
+    openai: 10                  # 10 concurrent OpenAI calls
+    opencode-zen: 5
+    opencode-go: 5
+    anthropic: 5
+    # default for unlisted backends: 5</pre>
+</div>
+
+<div style="margin-top:16px;background:#1e1e2e;border:1px solid #cba6f7;border-radius:8px;padding:16px">
+  <div class="label" style="color:#cba6f7">watcher.py internals</div>
+  <pre style="background:#12121e;border-radius:6px;padding:10px;font-size:12px;margin-top:10px">Global: LLMPoolManager (one Semaphore per backend, from config)
+           │
+           ├── Repo A: ThreadPoolExecutor(max_workers=parallel_issues)
+           │     ├── Worker thread: issue #3 → load pipelines/ai-feature.yaml → run
+           │     └── Worker thread: issue #5 → load pipelines/ai-fix.yaml → run
+           │
+           └── Repo B: ThreadPoolExecutor(max_workers=1)
+                 └── Worker thread: issue #12 → load pipelines/ai-feature.yaml → run
+
+Each LLM call in base_agent.py:
+  with llm_pool.acquire(backend_name):
+      response = self._call_llm(...)    # only N calls at a time per backend</pre>
+</div>
+
+<div style="margin-top:16px;background:#1e1e2e;border:1px solid #f9e2af;border-radius:8px;padding:16px">
+  <div class="label" style="color:#f9e2af">What stays the same</div>
+  <ul style="font-size:13px;margin-top:8px;padding-left:20px;line-height:1.8">
+    <li>Poll interval (configurable, default 1 hour)</li>
+    <li>Already-processed issue tracking (lock file / processed set)</li>
+    <li>All existing repos.yaml repo entries still valid — new fields are optional with defaults</li>
+    <li>PR feedback loop watcher (separate, unaffected)</li>
+  </ul>
+</div>

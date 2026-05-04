@@ -1,0 +1,117 @@
+<h2>Blocky Pipeline — Full Design</h2>
+<p class="subtitle">pipeline.yaml + GUI Config Builder (<code>python main.py --config-builder</code>)</p>
+
+<div class="section">
+  <h3>1. pipeline.yaml — Stage Flow Config</h3>
+  <p>A separate file defining the full execution sequence with explicit loops. When present, fully replaces <code>pipeline.mode</code> in <code>config.yaml</code>.</p>
+  <pre style="background:#1e1e2e;color:#cdd6f4;padding:14px;border-radius:8px;font-size:12px;line-height:1.7"># pipeline.yaml
+stages:
+  - loop:
+      max: 3
+      until: APPROVED
+      stages:
+        - pm
+        - pm_reviewer
+
+  - loop:
+      max: 3
+      until: APPROVED
+      stages:
+        - architect
+        - architect_reviewer
+
+  - qa_planner
+  - qa_write          <span style="color:#6c7086"># TDD: tests before code</span>
+  - tier_review
+  - junior_engineer
+  - senior_engineer
+  - test_fix
+  - reviewer
+  - deploy_tester
+  - deploy_fix</pre>
+  <p style="font-size:12px;color:#a6e3a1;margin-top:6px">✅ Explicit loops &nbsp;•&nbsp; ✅ Any stage can be skipped by omitting it &nbsp;•&nbsp; ✅ Git-versionable</p>
+</div>
+
+<div class="section">
+  <h3>2. GUI Config Builder</h3>
+  <p>Launched via <code>python main.py --config-builder</code> — opens in browser, generates <code>pipeline.yaml</code>.</p>
+
+  <div style="background:#1e1e2e;border-radius:10px;overflow:hidden;border:1px solid #313244">
+    <div style="background:#181825;padding:8px 14px;color:#cdd6f4;font-size:13px;display:flex;justify-content:space-between;align-items:center">
+      <span>🧩 Pipeline Config Builder</span>
+      <button style="background:#a6e3a1;color:#1e1e2e;border:none;border-radius:4px;padding:4px 12px;font-size:12px">Save pipeline.yaml ↓</button>
+    </div>
+    <div style="display:flex;min-height:200px">
+
+      <!-- Palette -->
+      <div style="width:130px;background:#181825;padding:10px;border-right:1px solid #313244">
+        <div style="color:#6c7086;font-size:10px;text-transform:uppercase;margin-bottom:8px">Blocks</div>
+        <div style="display:flex;flex-direction:column;gap:5px;font-size:11px">
+          <div style="background:#313244;border-radius:4px;padding:4px 8px;color:#89b4fa;cursor:grab">📋 PM</div>
+          <div style="background:#313244;border-radius:4px;padding:4px 8px;color:#89b4fa;cursor:grab">🔎 PM Review</div>
+          <div style="background:#313244;border-radius:4px;padding:4px 8px;color:#a6e3a1;cursor:grab">🏗️ Architect</div>
+          <div style="background:#313244;border-radius:4px;padding:4px 8px;color:#a6e3a1;cursor:grab">🔎 Arch Review</div>
+          <div style="background:#313244;border-radius:4px;padding:4px 8px;color:#f38ba8;cursor:grab">🧪 QA Planner</div>
+          <div style="background:#313244;border-radius:4px;padding:4px 8px;color:#f38ba8;cursor:grab">✍️ QA Write</div>
+          <div style="background:#313244;border-radius:4px;padding:4px 8px;color:#fab387;cursor:grab">👷 Engineer</div>
+          <div style="background:#313244;border-radius:4px;padding:4px 8px;color:#cba6f7;cursor:grab">🔁 Loop</div>
+        </div>
+      </div>
+
+      <!-- Canvas -->
+      <div style="flex:1;padding:12px;display:flex;flex-direction:column;gap:8px">
+        <!-- Loop block -->
+        <div style="border:2px solid #f9e2af;border-radius:8px;padding:8px;background:#1e1e2e">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="color:#f9e2af;font-size:12px">🔁 Loop — max: <input type="number" value="3" style="width:36px;background:#313244;border:none;color:#cdd6f4;border-radius:3px;padding:2px 4px"> until: APPROVED</span>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;padding-left:8px">
+            <div style="background:#313244;border:1px solid #89b4fa;border-radius:5px;padding:4px 8px;font-size:11px;color:#89b4fa">📋 PM</div>
+            <div style="background:#313244;border:1px solid #89b4fa;border-radius:5px;padding:4px 8px;font-size:11px;color:#89b4fa">🔎 PM Review</div>
+          </div>
+        </div>
+
+        <!-- Loop block 2 -->
+        <div style="border:2px solid #f9e2af;border-radius:8px;padding:8px;background:#1e1e2e">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="color:#f9e2af;font-size:12px">🔁 Loop — max: <input type="number" value="3" style="width:36px;background:#313244;border:none;color:#cdd6f4;border-radius:3px;padding:2px 4px"> until: APPROVED</span>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;padding-left:8px">
+            <div style="background:#313244;border:1px solid #a6e3a1;border-radius:5px;padding:4px 8px;font-size:11px;color:#a6e3a1">🏗️ Architect</div>
+            <div style="background:#313244;border:1px solid #a6e3a1;border-radius:5px;padding:4px 8px;font-size:11px;color:#a6e3a1">🔎 Arch Review</div>
+          </div>
+        </div>
+
+        <!-- Flat stages -->
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <div style="background:#313244;border:1px solid #f38ba8;border-radius:5px;padding:4px 8px;font-size:11px;color:#f38ba8">🧪 QA Planner</div>
+          <div style="background:#313244;border:1px solid #f38ba8;border-radius:5px;padding:4px 8px;font-size:11px;color:#f38ba8">✍️ QA Write</div>
+          <div style="background:#313244;border:1px solid #fab387;border-radius:5px;padding:4px 8px;font-size:11px;color:#fab387">👷 Engineer</div>
+          <div style="background:#313244;border:1px dashed #6c7086;border-radius:5px;padding:4px 8px;font-size:11px;color:#6c7086">+ Drop block here</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>3. How config.yaml is affected</h3>
+  <div style="display:flex;gap:12px;flex-wrap:wrap">
+    <div style="flex:1;min-width:200px;background:#1e1e2e;border-radius:8px;padding:10px">
+      <div style="color:#a6e3a1;font-size:11px;margin-bottom:6px">When pipeline.yaml exists</div>
+      <pre style="font-size:11px;color:#cdd6f4;margin:0">pipeline:
+  mode: <span style="color:#6c7086;text-decoration:line-through">standard</span>
+  <span style="color:#6c7086"># ↑ ignored — pipeline.yaml
+  # takes full control</span></pre>
+    </div>
+    <div style="flex:1;min-width:200px;background:#1e1e2e;border-radius:8px;padding:10px">
+      <div style="color:#89b4fa;font-size:11px;margin-bottom:6px">When pipeline.yaml is absent</div>
+      <pre style="font-size:11px;color:#cdd6f4;margin:0">pipeline:
+  mode: standard  <span style="color:#a6e3a1"># ✅ used</span>
+  <span style="color:#6c7086"># falls back to
+  # built-in MODES</span></pre>
+    </div>
+  </div>
+</div>
+
+<p style="text-align:center;color:#6c7086;font-size:12px;margin-top:16px">Does this design look right? Let me know in the terminal.</p>

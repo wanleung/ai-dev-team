@@ -1,0 +1,98 @@
+<h2>Two-Level Concurrency Model</h2>
+<p class="subtitle">Per-repo issue queues + per-LLM-backend connection pools</p>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px">
+
+  <!-- Level 1: Per-repo queues -->
+  <div style="background:#1e1e2e;border:1px solid #a6e3a1;border-radius:8px;padding:16px">
+    <div class="label" style="color:#a6e3a1">Level 1 — Per-repo issue queues</div>
+    <pre style="background:#12121e;border-radius:6px;padding:10px;font-size:12px;margin-top:10px"># repos.yaml
+repos:
+  - repo: owner/repo-A
+    parallel_issues: 2    # process 2 issues at once
+  - repo: owner/repo-B
+    parallel_issues: 1    # sequential per repo
+  - repo: owner/repo-C
+    parallel_issues: false # also sequential</pre>
+    <div style="margin-top:12px;font-size:13px">
+      Repo A issues run 2 at a time, but they don't block Repo B's queue at all. Each repo has an independent worker pool.
+    </div>
+    <div style="margin-top:12px">
+      <div style="display:flex;gap:8px;font-size:12px">
+        <div style="background:#1a2a1a;border:1px solid #a6e3a1;border-radius:4px;padding:8px;flex:1;text-align:center">
+          Repo A<br>Queue: [#3, #5, #8]<br>Running: #3, #5
+        </div>
+        <div style="background:#1a1a2a;border:1px solid #89b4fa;border-radius:4px;padding:8px;flex:1;text-align:center">
+          Repo B<br>Queue: [#12]<br>Running: #12
+        </div>
+        <div style="background:#2a1a1a;border:1px solid #f38ba8;border-radius:4px;padding:8px;flex:1;text-align:center">
+          Repo C<br>Queue: []<br>Running: —
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Level 2: LLM backend pools -->
+  <div style="background:#1e1e2e;border:1px solid #cba6f7;border-radius:8px;padding:16px">
+    <div class="label" style="color:#cba6f7">Level 2 — Per-LLM backend pools</div>
+    <pre style="background:#12121e;border-radius:6px;padding:10px;font-size:12px;margin-top:10px"># config.yaml
+llm:
+  pools:
+    ollama:     1   # only 1 call at a time
+    openai:     10  # plenty of capacity
+    anthropic:  5
+    opencode:   3</pre>
+    <div style="margin-top:12px;font-size:13px">
+      Each agent knows its backend. Before making an LLM call, it acquires a slot from that backend's pool semaphore. Released after response.
+    </div>
+    <div style="margin-top:12px">
+      <div style="font-size:12px">
+        <div style="background:#2a2a1a;border:1px solid #f9e2af;border-radius:4px;padding:8px;margin-bottom:6px">
+          🟡 Ollama pool (slots: 1/1 used)<br>
+          EngineerAgent #3 ▶ calling... [BLOCKED: other agents wait]
+        </div>
+        <div style="background:#1a2a1a;border:1px solid #a6e3a1;border-radius:4px;padding:8px">
+          🟢 OpenAI pool (slots: 3/10 used)<br>
+          PMAgent #5 ▶ calling...<br>
+          ArchAgent #8 ▶ calling...<br>
+          ReviewAgent #12 ▶ calling...
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:16px;background:#1e1e2e;border:1px solid #f9e2af;border-radius:8px;padding:16px">
+  <div class="label" style="color:#f9e2af">Mixed-backend scenario</div>
+  <div style="margin-top:12px;font-size:13px">
+    <p>You could configure your feature pipeline to use <b>OpenAI for PM/Architect</b> (fast) and <b>Ollama for Engineer</b> (free, local). The Ollama pool ensures only one local call happens at a time even if 5 pipelines are running simultaneously.</p>
+    <pre style="background:#12121e;border-radius:6px;padding:10px;font-size:12px;margin-top:8px">agents:
+  product_manager: { backend: openai, model: gpt-4.1 }
+  architect:        { backend: openai, model: gpt-4.1 }
+  engineer:         { backend: ollama, model: qwen2.5-coder }  ← joins Ollama pool
+  code_reviewer:    { backend: openai, model: gpt-4.1-mini }</pre>
+  </div>
+</div>
+
+<div style="margin-top:16px;background:#1e1e2e;border:1px solid #89b4fa;border-radius:8px;padding:16px">
+  <div class="label" style="color:#89b4fa">What changes</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;font-size:13px">
+    <div>
+      <b>repos.yaml</b> gains:<br>
+      <code>parallel_issues: N</code> per repo entry
+    </div>
+    <div>
+      <b>config.yaml</b> gains:<br>
+      <code>llm.pools.&lt;backend&gt;: N</code>
+    </div>
+    <div>
+      <b>watcher.py</b> refactored to:<br>
+      per-repo thread pools (not one global loop)
+    </div>
+    <div>
+      <b>base_agent.py</b> gains:<br>
+      acquire/release from global LLM pool semaphore
+    </div>
+  </div>
+</div>

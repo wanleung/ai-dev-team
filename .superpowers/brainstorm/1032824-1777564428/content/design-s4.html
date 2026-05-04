@@ -1,0 +1,81 @@
+<h2>Design: Unified Pipeline Architecture</h2>
+<p class="subtitle">Section 4 of 4 — main.py CLI Changes + Testing Strategy</p>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px">
+
+  <div style="background:#1e1e2e;border:1px solid #89b4fa;border-radius:8px;padding:16px">
+    <div class="label" style="color:#89b4fa">main.py new flags</div>
+    <pre style="background:#12121e;border-radius:6px;padding:10px;font-size:12px;margin-top:10px"># Current usage:
+python main.py "Build a todo app"
+
+# New optional flags:
+python main.py "Build a todo app" --pipeline ai-feature
+python main.py "Fix the login bug" --pipeline ai-fix
+python main.py --list-pipelines  # show available pipelines/
+
+# Default (no --pipeline flag):
+# uses pipelines/ai-feature.yaml if it exists,
+# else falls back to built-in feature pipeline</pre>
+  </div>
+
+  <div style="background:#1e1e2e;border:1px solid #cba6f7;border-radius:8px;padding:16px">
+    <div class="label" style="color:#cba6f7">Testing strategy</div>
+    <div style="font-size:13px;margin-top:10px;display:flex;flex-direction:column;gap:8px">
+      <div style="background:#1a1a2a;border-radius:4px;padding:8px">
+        <b>Step 1 tests:</b> Merge orchestrators<br>
+        All 52 existing tests must still pass.<br>
+        Add tests: BugFix stages available in stage registry
+      </div>
+      <div style="background:#1a1a2a;border-radius:4px;padding:8px">
+        <b>Step 2 tests:</b> Pipeline YAML loading<br>
+        Test: load ai-feature.yaml, run 1 mock stage<br>
+        Test: fallback to built-in when no YAML
+      </div>
+      <div style="background:#1a1a2a;border-radius:4px;padding:8px">
+        <b>Step 3 tests:</b> Watcher queues + pools<br>
+        Test: parallel_issues=2 runs 2 concurrent<br>
+        Test: LLM pool semaphore limits calls
+      </div>
+      <div style="background:#1a1a2a;border-radius:4px;padding:8px">
+        <b>Step 4 tests:</b> --once mode<br>
+        Test: watcher --once exits after 1 issue
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:16px;background:#1e1e2e;border:1px solid #a6e3a1;border-radius:8px;padding:16px">
+  <div class="label" style="color:#a6e3a1">Full file change summary</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px;font-size:12px">
+    <div>
+      <b style="color:#f38ba8">Deleted</b><br>
+      bug_fix_orchestrator.py<br>
+      doc_orchestrator.py<br>
+      build_feature.py<br>
+      fix_issue.py
+    </div>
+    <div>
+      <b style="color:#f9e2af">Modified</b><br>
+      orchestrator.py (absorb classes)<br>
+      watcher.py (queues + pools + --once)<br>
+      repos.yaml (add parallel_issues)<br>
+      config.yaml (add llm.pools)<br>
+      main.py (add --pipeline flag)<br>
+      .github/workflows/*.yml
+    </div>
+    <div>
+      <b style="color:#a6e3a1">Created</b><br>
+      pipelines/ai-feature.yaml<br>
+      pipelines/ai-fix.yaml<br>
+      pipelines/ai-docs.yaml<br>
+      llm_pool.py (LLMPoolManager)<br>
+      tests/test_watcher_queues.py<br>
+      tests/test_llm_pool.py
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:16px;background:#2a2a1a;border:1px solid #f9e2af;border-radius:8px;padding:14px;font-size:13px">
+  <b>Backwards compatibility:</b> All new config fields are optional with defaults (parallel_issues defaults to 1, pools default to 5 or 1 for ollama). Existing repos.yaml and config.yaml work without changes.
+</div>
