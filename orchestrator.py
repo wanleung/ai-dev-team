@@ -324,6 +324,8 @@ class PipelineResult:
     """If set, the watcher will apply this label after completion to chain the next pipeline.
     Can be set explicitly by any stage (e.g. code_reviewer sets 'ai-fix' when changes requested).
     Also computed automatically by the watcher from chaining rules in config.yaml."""
+    progress_comment_id: Optional[int] = None
+    """GitHub comment ID of the progress tracker comment, for resuming from checkpoints."""
 
     def to_dict(self) -> dict:
         return {
@@ -370,6 +372,7 @@ class PipelineResult:
             "design_output": self.design_output,
             "last_verdict": self.last_verdict,
             "next_label": self.next_label,
+            "progress_comment_id": self.progress_comment_id,
         }
 
     @classmethod
@@ -387,7 +390,8 @@ class PipelineResult:
                     "deploy_retry_count", "deploy_fix_history",
                     "prd_revision_count", "design_revision_count",
                     "prd_reviewer_draft", "design_reviewer_draft",
-                    "design_output", "last_verdict", "next_label"]:
+                    "design_output", "last_verdict", "next_label",
+                    "progress_comment_id"]:
             setattr(r, key, data.get(key, getattr(r, key)))
         return r
 
