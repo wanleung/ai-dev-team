@@ -202,3 +202,20 @@ def test_list_files_single_file_response():
     with patch.object(client, "_request", return_value=file_response):
         result = client.list_files("docs/README.md", ref="main")
     assert result == [{"name": "README.md", "type": "file", "path": "docs/README.md"}]
+
+
+# ── delete_issue_comment ──────────────────────────────────────────────────────
+
+def test_delete_issue_comment_calls_correct_endpoint(client):
+    _mock_request(client, {})
+    client.delete_issue_comment(99)
+    client._request.assert_called_once_with("DELETE", "/repos/owner/repo/issues/comments/99")
+
+
+def test_delete_issue_comment_ignores_404(client):
+    """A 404 (already deleted) must not raise."""
+    client._request = MagicMock(
+        side_effect=RuntimeError("GitHub API DELETE ... failed [404]: Not Found")
+    )
+    # Should not raise
+    client.delete_issue_comment(99)
