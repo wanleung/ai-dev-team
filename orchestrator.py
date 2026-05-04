@@ -7,8 +7,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-
-log = logging.getLogger(__name__)
 import re
 import subprocess
 import sys
@@ -50,6 +48,8 @@ from memory_store import MemoryStore
 from skills_loader import SkillContext, SkillLoader
 from test_fix_loop import TestFixLoopMixin
 from tools import builtin_tools, CombinedToolRegistry, MCPToolRegistry
+
+log = logging.getLogger(__name__)
 
 console = Console()
 
@@ -128,6 +128,7 @@ class ProgressStage:
     key: str
     label: str
     status: str = "pending"   # pending | in_progress | done | failed | skipped
+    error: str = ""           # populated by mark_failed()
 
 
 class ProgressTracker:
@@ -139,6 +140,8 @@ class ProgressTracker:
         off      — all methods are no-ops.
     """
 
+    _VALID_MODES: frozenset = frozenset({"summary", "verbose", "off"})
+
     _ICONS = {
         "pending":     "⬜",
         "in_progress": "🔄",
@@ -148,6 +151,8 @@ class ProgressTracker:
     }
 
     def __init__(self, github, issue_number: Optional[int], mode: str) -> None:
+        if mode not in self._VALID_MODES:
+            raise ValueError(f"ProgressTracker: invalid mode {mode!r}; expected one of {sorted(self._VALID_MODES)}")
         self.github = github
         self.issue_number = issue_number
         self.mode = mode          # "summary" | "verbose" | "off"
@@ -211,7 +216,7 @@ class ProgressTracker:
             if stage.key == key:
                 stage.status = status
                 if error:
-                    stage.error = error  # type: ignore[attr-defined]
+                    stage.error = error
                 if self.mode == "summary":
                     self._post_summary()
                 return
@@ -228,7 +233,7 @@ class ProgressTracker:
         for stage in self.stages:
             icon = self._ICONS.get(stage.status, "⬜")
             line = f"- {icon} {stage.label}"
-            if stage.status == "failed" and getattr(stage, "error", ""):
+            if stage.status == "failed" and stage.error:
                 line += f" — {stage.error}"
             lines.append(line)
         return "\n".join(lines)
