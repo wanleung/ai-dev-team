@@ -1443,7 +1443,7 @@ class Orchestrator(TestFixLoopMixin):
             # Standard pipeline: fixed PM + Arch loops first
             stages += [
                 ProgressStage("pm",                "📋 Product Manager"),
-                ProgressStage("pm_reviewer",       "🔎 PM Reviewer"),
+                ProgressStage("pm_reviewer",       "📝 PM Reviewer"),
                 ProgressStage("pm_review_loop",    "✔️  PRD Approved"),
                 ProgressStage("architect",         "🏗️  Architect"),
                 ProgressStage("architect_reviewer","🔎 Architect Reviewer"),

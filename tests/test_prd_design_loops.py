@@ -458,9 +458,10 @@ def test_pipeline_result_progress_comment_id_round_trips():
 
 
 def test_orchestrator_progress_tracker_mode_default():
-    o = Orchestrator.__new__(Orchestrator)
-    o.progress_tracker_mode = "summary"
-    assert o.progress_tracker_mode == "summary"
+    """__init__() default for progress_tracker_mode is 'summary'."""
+    import inspect
+    sig = inspect.signature(Orchestrator.__init__)
+    assert sig.parameters["progress_tracker_mode"].default == "summary"
 
 
 def test_from_config_reads_progress_tracker_key(tmp_path, monkeypatch):
