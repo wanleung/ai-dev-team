@@ -146,12 +146,17 @@ class OpenAICompatibleBackend(LLMBackend):
         inter_call_delay: int = 0,
         max_retries: int = _DEFAULT_MAX_RETRIES,
         retry_delay: float = _DEFAULT_BASE_DELAY,
+        stream: bool = False,
     ) -> None:
         self.model = model
         self._client = client
         self._inter_call_delay = inter_call_delay
         self._max_retries = max_retries
         self._retry_delay = retry_delay
+        # Only set _stream if a subclass hasn't already set it in its own __init__
+        # (e.g. OllamaBackend sets self._stream before calling super().__init__()).
+        if not hasattr(self, "_stream"):
+            self._stream = stream
 
     def _extra_body(self) -> dict:
         """Return additional kwargs for chat.completions.create().
@@ -167,8 +172,45 @@ class OpenAICompatibleBackend(LLMBackend):
     def _pre_call(self) -> None:
         pass
 
+    def _stream_call(self, messages: list[dict]) -> str:
+        """Collect a streaming response into a single string.
+
+        Args:
+            messages: Full message list in OpenAI chat format.
+
+        Returns:
+            Assembled and post-processed assistant reply text.
+        """
+        if self._inter_call_delay > 0:
+            time.sleep(self._inter_call_delay)
+
+        def _collect(stream) -> str:
+            collected = ""
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    collected += delta
+            return collected
+
+        reply = _retry_with_backoff(
+            lambda: _collect(
+                self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                    stream=True,
+                    **self._extra_body(),
+                )
+            ),
+            max_retries=self._max_retries,
+            base_delay=self._retry_delay,
+        )
+        return self._post_process(reply)
+
     def call(self, messages: list[dict]) -> str:
         self._pre_call()
+        if self._stream:
+            return self._stream_call(messages)
         if self._inter_call_delay > 0:
             time.sleep(self._inter_call_delay)
         response = _retry_with_backoff(
