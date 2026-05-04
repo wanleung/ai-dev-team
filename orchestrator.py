@@ -820,7 +820,7 @@ class Orchestrator(TestFixLoopMixin):
             if cfg.get("nvidia_nim_base_url"):
                 factory_cfg["nvidia_nim_base_url"] = cfg["nvidia_nim_base_url"]
         elif model.startswith("opencode-go/") or model.startswith("opencode-zen/"):
-            factory_cfg["opencode_stream"] = cfg.get("opencode_stream", True)
+            factory_cfg["stream"] = cfg.get("opencode_stream", True)
         # All other backends (anthropic, copilot) use env-var auth and need no extra config keys.
 
         from agents.backends.factory import _make_single_backend

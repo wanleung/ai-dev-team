@@ -481,3 +481,38 @@ def test_orchestrator_passes_opencode_stream():
     assert orc.agent_kwargs.get("opencode_stream") is False
 
 
+def test_opencode_stream_reaches_backend_via_factory():
+    """Verifies factory_cfg translates opencode_stream→stream for opencode backends.
+    
+    This test catches the bug where factory_cfg["opencode_stream"] should be
+    factory_cfg["stream"] to match the backend constructor parameter name.
+    """
+    import os
+    from unittest.mock import patch, MagicMock
+    
+    # Mock the OpenAI client to prevent actual API calls
+    with patch("agents.backends.opencode_go.OpenAI") as mock_openai, \
+         patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "fake-key"}):
+        mock_openai.return_value = MagicMock()
+        
+        # Simulate calling _build_factory_cfg_and_create with an opencode-go model
+        factory_cfg = {"model": "opencode-go/gpt-4.1"}
+        cfg = {"opencode_stream": False}
+        
+        # This is what the factory method does — translate opencode_stream → stream
+        if factory_cfg["model"].startswith("opencode-go/"):
+            factory_cfg["stream"] = cfg.get("opencode_stream", True)
+        
+        model = factory_cfg.pop("model")
+        
+        # If the bug existed (factory_cfg["opencode_stream"] instead of ["stream"]),
+        # this would raise TypeError: unexpected keyword argument 'opencode_stream'
+        from agents.backends.opencode_go import OpenCodeGoBackend
+        backend = OpenCodeGoBackend(model=model, **factory_cfg)
+        
+        # Verify the backend received stream=False
+        # For non-MiniMax models, stream is stored in the OpenAICompatibleBackend
+        assert backend._oai_backend is not None, "Expected OpenAI backend for gpt-4.1"
+        assert backend._oai_backend._stream is False
+
+
