@@ -386,6 +386,7 @@ def _make_full_orch(mode: str = "standard"):
     o.repo_context_loader = None
     o.repo_auto_indexer = None
     o._github_token = None
+    o.progress_tracker_mode = "off"
 
     # Minimal result fixture
     def fake_load_checkpoint(req):

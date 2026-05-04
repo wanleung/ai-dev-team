@@ -1853,6 +1853,21 @@ class Orchestrator(TestFixLoopMixin):
         else:
             result = PipelineResult(requirement=requirement)
 
+        # ── Progress tracker ───────────────────────────────────────────────────
+        self._tracker = ProgressTracker(
+            github=self.github,
+            issue_number=result.issue_number,
+            mode=self.progress_tracker_mode,
+        )
+        self._tracker.set_stages(self._expected_stages())
+        if result.progress_comment_id:
+            # Resuming from checkpoint: reuse existing comment, replay done stages
+            self._tracker.restore(result.progress_comment_id)
+            for key in result.completed_stages:
+                self._tracker._set_status(key, "done")
+        # Keep result in sync with tracker's comment_id
+        result.progress_comment_id = self._tracker.comment_id
+
         # Pre-set issue_number if provided by caller (allows pause before PM creates it)
         if issue_number is not None and not result.issue_number:
             result.issue_number = issue_number
@@ -1896,23 +1911,31 @@ class Orchestrator(TestFixLoopMixin):
             # Checkpoint resume: skip if already completed
             if stage.checkpoint_key in result.completed_stages or stage.name in result.completed_stages:
                 console.print(f"  ⏭️  [dim]{stage.label} — skipped (checkpoint)[/dim]")
+                self._tracker.mark_skipped(stage.checkpoint_key)
                 continue
 
             # Conditional skip (e.g. test_fix skipped when no test_files)
             if stage.skip_if(result):
                 console.print(f"  ⏭️  [dim]{stage.label} — skipped[/dim]")
+                self._tracker.mark_skipped(stage.checkpoint_key)
                 continue
+
+            self._tracker.mark_in_progress(stage.checkpoint_key)
 
             if stage.loop_stages:
                 # Loop block from pipeline.yaml
                 ok = self._run_loop_stage(stage, result)
                 if not ok:
+                    self._tracker.mark_failed(stage.checkpoint_key)
+                    result.progress_comment_id = self._tracker.comment_id
                     self._save_checkpoint(result)
                     return self._finish(result, start_time)
             else:
                 self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result))
 
                 if result.errors:
+                    self._tracker.mark_failed(stage.checkpoint_key, result.errors[-1])
+                    result.progress_comment_id = self._tracker.comment_id
                     self._save_checkpoint(result)
                     return self._finish(result, start_time)
 
@@ -1921,6 +1944,8 @@ class Orchestrator(TestFixLoopMixin):
                 result.completed_stages.append("engineer")
 
             result.completed_stages.append(stage.checkpoint_key)
+            self._tracker.mark_done(stage.checkpoint_key)
+            result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
 
             # Early pipeline stop (e.g. code review: CHANGES REQUESTED)
