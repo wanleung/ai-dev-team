@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+
+log = logging.getLogger(__name__)
 import re
 import subprocess
 import sys
@@ -118,6 +120,147 @@ class ClarificationNeeded(Exception):
     def __init__(self, questions: list[str]) -> None:
         self.questions = questions
         super().__init__(f"Clarification needed: {len(questions)} question(s)")
+
+
+@dataclass
+class ProgressStage:
+    """One stage entry in the pipeline progress tracker."""
+    key: str
+    label: str
+    status: str = "pending"   # pending | in_progress | done | failed | skipped
+
+
+class ProgressTracker:
+    """Posts and updates a pipeline-progress comment on a GitHub issue.
+
+    Modes:
+        summary  — one comment, deleted and re-posted on every state change.
+        verbose  — individual comment per state transition (no deletes).
+        off      — all methods are no-ops.
+    """
+
+    _ICONS = {
+        "pending":     "⬜",
+        "in_progress": "🔄",
+        "done":        "✅",
+        "failed":      "❌",
+        "skipped":     "⏭️",
+    }
+
+    def __init__(self, github, issue_number: Optional[int], mode: str) -> None:
+        self.github = github
+        self.issue_number = issue_number
+        self.mode = mode          # "summary" | "verbose" | "off"
+        self.stages: list[ProgressStage] = []
+        self.comment_id: Optional[int] = None
+
+    # ── Public API ────────────────────────────────────────────────────────
+
+    def set_stages(self, stages: list[ProgressStage]) -> None:
+        """Set the full ordered list of expected stages and post the initial comment."""
+        self.stages = list(stages)
+        if self.mode == "summary":
+            self._post_summary()
+
+    def add_stage(self, stage: ProgressStage) -> None:
+        """Append a dynamic stage (e.g. revision rounds) and refresh the comment."""
+        self.stages.append(stage)
+        if self.mode == "summary":
+            self._post_summary()
+
+    def restore(self, comment_id: Optional[int]) -> None:
+        """On checkpoint resume — reuse the existing comment_id without re-posting."""
+        if comment_id:
+            self.comment_id = comment_id
+
+    def mark_in_progress(self, key: str) -> None:
+        """Mark a stage as in-progress."""
+        self._set_status(key, "in_progress")
+        if self.mode == "verbose":
+            label = self._label(key)
+            self._safe_post(f"🔄 **{label}** — starting…")
+
+    def mark_done(self, key: str) -> None:
+        """Mark a stage as done."""
+        self._set_status(key, "done")
+        if self.mode == "verbose":
+            label = self._label(key)
+            self._safe_post(f"✅ **{label}** — complete")
+
+    def mark_failed(self, key: str, error: str = "") -> None:
+        """Mark a stage as failed, with an optional error message."""
+        self._set_status(key, "failed", error=error)
+        if self.mode == "verbose":
+            label = self._label(key)
+            msg = f"❌ **{label}** — failed"
+            if error:
+                msg += f": {error}"
+            self._safe_post(msg)
+
+    def mark_skipped(self, key: str) -> None:
+        """Mark a stage as skipped."""
+        self._set_status(key, "skipped")
+        if self.mode == "verbose":
+            label = self._label(key)
+            self._safe_post(f"⏭️ **{label}** — skipped")
+
+    # ── Internals ─────────────────────────────────────────────────────────
+
+    def _set_status(self, key: str, status: str, error: str = "") -> None:
+        for stage in self.stages:
+            if stage.key == key:
+                stage.status = status
+                if error:
+                    stage.error = error  # type: ignore[attr-defined]
+                if self.mode == "summary":
+                    self._post_summary()
+                return
+        # Unknown key — ignore silently
+
+    def _label(self, key: str) -> str:
+        for stage in self.stages:
+            if stage.key == key:
+                return stage.label
+        return key
+
+    def _render(self) -> str:
+        lines = ["## 🤖 Pipeline Progress\n"]
+        for stage in self.stages:
+            icon = self._ICONS.get(stage.status, "⬜")
+            line = f"- {icon} {stage.label}"
+            if stage.status == "failed" and getattr(stage, "error", ""):
+                line += f" — {stage.error}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _post_summary(self) -> None:
+        if not self.github or not self.issue_number:
+            return
+        self._safe_delete()
+        resp = self._safe_add(self._render())
+        if resp:
+            self.comment_id = resp.get("id")
+
+    def _safe_delete(self) -> None:
+        if self.comment_id and self.github:
+            try:
+                self.github.delete_issue_comment(self.comment_id)
+            except Exception as exc:
+                log.warning("ProgressTracker: failed to delete comment %s: %s", self.comment_id, exc)
+
+    def _safe_add(self, body: str) -> Optional[dict]:
+        """Post a new comment, returning the response dict or None on error."""
+        try:
+            return self.github.add_issue_comment(self.issue_number, body)
+        except Exception as exc:
+            log.warning("ProgressTracker: failed to post comment: %s", exc)
+            return None
+
+    def _safe_post(self, body: str) -> None:
+        """Verbose-mode single comment post."""
+        if not self.github or not self.issue_number:
+            return
+        self._safe_add(body)
 
 
 @dataclass
