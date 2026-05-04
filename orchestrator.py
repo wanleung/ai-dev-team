@@ -1774,14 +1774,17 @@ class Orchestrator(TestFixLoopMixin):
     def _stage_architect(self, result: PipelineResult) -> None:
         ctx = self._build_clarification_context(result.clarification_history, stage="architect")
         effective_prd = f"{ctx}\n\n---\n\n{result.prd}" if ctx else result.prd
-        if self.github and result.issue_number:
-            arch_result = self.architect.run_with_github(
-                effective_prd, result.project_name, self.github, result.issue_number
-            )
-        else:
-            arch_result = self.architect.run(effective_prd, result.project_name)
+        # Always run LLM first so result.design is set even if GitHub post fails.
+        arch_result = self.architect.run(effective_prd, result.project_name)
+        if not arch_result.get("design", "").strip():
+            raise RuntimeError("Architect produced an empty design — LLM may have returned no content.")
         result.design = arch_result["design"]
         result.modules = arch_result["modules"]
+        if self.github and result.issue_number:
+            self.github.add_issue_comment(
+                result.issue_number,
+                f"## 🏗️ System Design (Architect)\n\n{result.design}",
+            )
 
     def _stage_pm_reviewer(self, result: PipelineResult, requirement: str) -> None:
         """Review the PM's PRD. If revision needed, update prd + project_name."""
@@ -1934,6 +1937,7 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_arch_revision(self, result: PipelineResult, round_num: int) -> None:
         """Ask ArchitectAgent to revise the design based on reviewer feedback."""
+        previous_design = result.design
         rev_result = self.architect.run_revision(
             original_design=result.design,
             prd=result.prd,
@@ -1941,7 +1945,12 @@ class Orchestrator(TestFixLoopMixin):
             draft_revision=result.design_reviewer_draft or "",
             project_name=result.project_name or "",
         )
-        result.design = rev_result["design"]
+        revised = rev_result.get("design", "").strip()
+        if revised:
+            result.design = rev_result["design"]
+        else:
+            console.print("  ⚠️  [yellow]Architect revision returned empty — keeping previous design.[/yellow]")
+            result.design = previous_design
         if rev_result.get("modules"):
             result.modules = rev_result["modules"]
         result.design_revision_count = round_num
@@ -2058,6 +2067,11 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_architect_reviewer(self, result: PipelineResult) -> None:
         """Review the Architect's design. Store draft; only self-patch when max_design_revisions == 0."""
+        if not result.design or not result.design.strip():
+            raise RuntimeError(
+                "Cannot review design: result.design is empty. "
+                "The architect stage may have failed to produce output."
+            )
         if self.github and result.issue_number:
             rev_result = self.architect_reviewer.run_with_github(
                 result.design, result.prd, result.project_name, self.github, result.issue_number
