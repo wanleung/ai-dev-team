@@ -197,6 +197,12 @@ pipeline:
   # Revision loop rounds for System Design (Architect ↔ Architect Reviewer). 0 = disable.
   max_design_revisions: 3
 
+  # Progress tracker: post a live pipeline-progress comment to the GitHub issue.
+  # summary  — one comment, updated on every state change (default)
+  # verbose  — one comment per stage transition
+  # off      — disabled
+  progress_tracker: summary
+
   # ── Pipeline mode ──────────────────────────────────────────────────────────
   # Controls the stage execution order.
   #
