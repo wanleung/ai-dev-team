@@ -136,6 +136,7 @@ def test_run_revision_architect_agent():
 
 def _make_orch(max_prd=3, stop=False, max_design_revisions=3, stop_design=False):
     """Minimal orchestrator for loop testing."""
+    from orchestrator import ProgressTracker
     o = Orchestrator.__new__(Orchestrator)
     o.max_prd_revisions = max_prd
     o.max_design_revisions = max_design_revisions
@@ -149,6 +150,8 @@ def _make_orch(max_prd=3, stop=False, max_design_revisions=3, stop_design=False)
     o.pm_reviewer = MagicMock()
     o.architect = MagicMock()
     o.architect_reviewer = MagicMock()
+    # No-op tracker (mode="off") so tracker calls in loop methods are safe
+    o._tracker = ProgressTracker(github=None, issue_number=None, mode="off")
     return o
 
 
