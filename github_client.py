@@ -112,6 +112,15 @@ class GitHubClient:
             json={"body": body},
         )
 
+    def delete_issue_comment(self, comment_id: int) -> None:
+        """Delete a GitHub issue comment. Silently ignores 404 (already deleted)."""
+        try:
+            self._request("DELETE", f"/repos/{self.repo}/issues/comments/{comment_id}")
+        except RuntimeError as exc:
+            if "[404]" in str(exc):
+                return
+            raise
+
     def get_issue(self, issue_number: int) -> dict:
         """Fetch a single issue by number."""
         return self._request("GET", f"/repos/{self.repo}/issues/{issue_number}")
