@@ -3,14 +3,12 @@ from __future__ import annotations
 
 import os
 import re
-import time
 
 import httpx
 from openai import OpenAI
 
 from agents.backends.base import (
     OpenAICompatibleBackend,
-    _retry_with_backoff,
     _DEFAULT_MAX_RETRIES,
     _DEFAULT_BASE_DELAY,
 )
@@ -83,55 +81,3 @@ class OllamaBackend(OpenAICompatibleBackend):
         if self._preserve_thinking:
             return text.strip()
         return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-
-    def call(self, messages: list[dict]) -> str:
-        """Send messages to Ollama and return the assistant reply.
-
-        Uses streaming if ``stream=True`` (the default), otherwise falls back
-        to the parent class non-streaming path.
-
-        Args:
-            messages: Full message list in OpenAI chat format.
-
-        Returns:
-            Assistant reply text, with <think> blocks stripped if applicable.
-        """
-        self._pre_call()
-        if self._stream:
-            return self._stream_call(messages)
-        return super().call(messages)
-
-    def _stream_call(self, messages: list[dict]) -> str:
-        """Collect a streaming response from Ollama into a single string.
-
-        Args:
-            messages: Full message list in OpenAI chat format.
-
-        Returns:
-            Assembled and post-processed assistant reply text.
-        """
-        if self._inter_call_delay > 0:
-            time.sleep(self._inter_call_delay)
-
-        def _collect(stream) -> str:
-            collected = ""
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    collected += delta
-            return collected
-
-        reply = _retry_with_backoff(
-            lambda: _collect(
-                self._client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=0.3,
-                    stream=True,
-                    **self._extra_body(),
-                )
-            ),
-            max_retries=self._max_retries,
-            base_delay=self._retry_delay,
-        )
-        return self._post_process(reply)
