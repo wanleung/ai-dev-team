@@ -2078,6 +2078,8 @@ class Orchestrator(TestFixLoopMixin):
                     lambda: self._stage_pm(result, requirement),
                 )
             except ClarificationNeeded as exc:
+                self._tracker.mark_failed("pm", "Awaiting clarification")
+                result.progress_comment_id = self._tracker.comment_id
                 self._pause_for_clarification(result, "pm", exc.questions)
                 return False
             if result.errors:
