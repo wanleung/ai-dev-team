@@ -1840,6 +1840,12 @@ class Orchestrator(TestFixLoopMixin):
             console.print("  ⚠️  [yellow]PM revision returned empty PRD — keeping previous version.[/yellow]")
             result.prd = previous_prd
         result.prd_revision_count = round_num
+        # Post revised PRD to GitHub so the reviewer (and humans) can read it.
+        if self.github and result.issue_number:
+            self.github.add_issue_comment(
+                result.issue_number,
+                f"## 📋 Revised PRD (Product Manager — round {round_num})\n\n{result.prd}",
+            )
 
     def _prd_revision_loop(self, result: PipelineResult, requirement: str) -> bool:
         """Run PM → PM Reviewer revision loop (up to max_prd_revisions rounds).
@@ -1975,6 +1981,12 @@ class Orchestrator(TestFixLoopMixin):
         if rev_result.get("modules"):
             result.modules = rev_result["modules"]
         result.design_revision_count = round_num
+        # Post revised design to GitHub so the reviewer (and humans) can read it.
+        if self.github and result.issue_number:
+            self.github.add_issue_comment(
+                result.issue_number,
+                f"## 🏗️ Revised System Design (Architect — round {round_num})\n\n{result.design}",
+            )
 
     def _design_revision_loop(self, result: PipelineResult) -> bool:
         """Run Architect + Architect Reviewer in a feedback loop, up to max_design_revisions rounds.
