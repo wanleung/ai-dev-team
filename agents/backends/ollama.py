@@ -98,6 +98,12 @@ class OllamaBackend(OpenAICompatibleBackend):
                 if delta.content:
                     content_parts.append(delta.content)
             content = "".join(content_parts)
+            if not content and not reasoning_parts:
+                # Stream completed with zero chunks — LiteLLM likely timed out server-side.
+                # Raise so _retry_with_backoff retries, and FallbackLLMBackend can switch backends.
+                raise ConnectionError(
+                    "Ollama stream returned no content (server may have timed out or model is unavailable)"
+                )
             if preserve and reasoning_parts:
                 thinking = "".join(reasoning_parts)
                 return f"<think>{thinking}</think>\n{content}"
