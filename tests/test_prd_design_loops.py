@@ -455,3 +455,39 @@ def test_pipeline_result_progress_comment_id_round_trips():
     data = r.to_dict()
     r2 = PipelineResult.from_dict(data)
     assert r2.progress_comment_id == 12345
+
+
+def test_orchestrator_progress_tracker_mode_default():
+    o = Orchestrator.__new__(Orchestrator)
+    o.progress_tracker_mode = "summary"
+    assert o.progress_tracker_mode == "summary"
+
+
+def test_from_config_reads_progress_tracker_key(tmp_path, monkeypatch):
+    import yaml
+    cfg = {
+        "llm": {"model": "gpt-4.1"},
+        "github": {"repo": "", "use_github": False},
+        "team": {},
+        "pipeline": {"progress_tracker": "verbose"},
+    }
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.dump(cfg))
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    o = Orchestrator.from_config(str(cfg_file))
+    assert o.progress_tracker_mode == "verbose"
+
+
+def test_from_config_progress_tracker_defaults_to_summary(tmp_path, monkeypatch):
+    import yaml
+    cfg = {
+        "llm": {"model": "gpt-4.1"},
+        "github": {"repo": "", "use_github": False},
+        "team": {},
+        "pipeline": {},
+    }
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.dump(cfg))
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    o = Orchestrator.from_config(str(cfg_file))
+    assert o.progress_tracker_mode == "summary"
