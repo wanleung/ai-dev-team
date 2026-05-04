@@ -481,38 +481,57 @@ def test_orchestrator_passes_opencode_stream():
     assert orc.agent_kwargs.get("opencode_stream") is False
 
 
-def test_opencode_stream_reaches_backend_via_factory():
-    """Verifies factory_cfg translates opencode_stream→stream for opencode backends.
+@pytest.mark.parametrize("model_prefix", [
+    "opencode-go/",
+    "opencode-zen/",
+])
+def test_opencode_stream_reaches_backend_via_factory(model_prefix):
+    """Verifies _build_factory_cfg_and_create() translates opencode_stream→stream.
     
-    This test catches the bug where factory_cfg["opencode_stream"] should be
-    factory_cfg["stream"] to match the backend constructor parameter name.
+    This test ensures that when the orchestrator's _build_factory_cfg_and_create()
+    method is called with an opencode-go or opencode-zen model, it correctly:
+    1. Translates opencode_stream to stream in factory_cfg
+    2. Does NOT pass opencode_stream to the backend factory
+    
+    The test patches _make_single_backend to capture what config is passed to it,
+    verifying the translation happened at the orchestrator level, not elsewhere.
     """
-    import os
-    from unittest.mock import patch, MagicMock
+    from orchestrator import Orchestrator
+    from unittest.mock import MagicMock, patch
     
-    # Mock the OpenAI client to prevent actual API calls
-    with patch("agents.backends.opencode_go.OpenAI") as mock_openai, \
-         patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "fake-key"}):
-        mock_openai.return_value = MagicMock()
+    # Create an orchestrator instance with opencode_stream=False
+    orc = Orchestrator(
+        github_token="ghp_fake",
+        opencode_stream=False,
+    )
+    
+    # Prepare the config dict that would come from YAML/orchestrator init
+    cfg = {
+        "model": f"{model_prefix}gpt-4.1",
+        "opencode_stream": False,
+    }
+    
+    # Patch _make_single_backend to capture what factory_cfg is passed to it
+    with patch("agents.backends.factory._make_single_backend") as mock_factory:
+        mock_backend = MagicMock()
+        mock_factory.return_value = mock_backend
         
-        # Simulate calling _build_factory_cfg_and_create with an opencode-go model
-        factory_cfg = {"model": "opencode-go/gpt-4.1"}
-        cfg = {"opencode_stream": False}
+        # Call the real method that should perform the translation
+        orc._build_factory_cfg_and_create(cfg)
         
-        # This is what the factory method does — translate opencode_stream → stream
-        if factory_cfg["model"].startswith("opencode-go/"):
-            factory_cfg["stream"] = cfg.get("opencode_stream", True)
+        # Verify _make_single_backend was called with stream=False, NOT opencode_stream
+        mock_factory.assert_called_once()
+        factory_cfg = mock_factory.call_args[0][0]  # First positional arg
         
-        model = factory_cfg.pop("model")
+        # Assert that stream=False was passed (the translation happened)
+        assert factory_cfg.get("stream") is False, \
+            f"Expected stream=False in factory_cfg for {model_prefix}"
         
-        # If the bug existed (factory_cfg["opencode_stream"] instead of ["stream"]),
-        # this would raise TypeError: unexpected keyword argument 'opencode_stream'
-        from agents.backends.opencode_go import OpenCodeGoBackend
-        backend = OpenCodeGoBackend(model=model, **factory_cfg)
+        # Assert that opencode_stream key was removed (not passed to backend)
+        assert "opencode_stream" not in factory_cfg, \
+            f"opencode_stream should not appear in factory_cfg for {model_prefix}"
         
-        # Verify the backend received stream=False
-        # For non-MiniMax models, stream is stored in the OpenAICompatibleBackend
-        assert backend._oai_backend is not None, "Expected OpenAI backend for gpt-4.1"
-        assert backend._oai_backend._stream is False
+        # Assert the model was preserved
+        assert factory_cfg.get("model") == f"{model_prefix}gpt-4.1"
 
 
