@@ -141,3 +141,32 @@ def test_openai_compatible_backend_max_turns_forces_final_response():
     result = backend.call_with_tools([{"role": "user", "content": "go"}], mock_tools, max_turns=2)
 
     assert result == "forced"
+
+
+def test_base_stream_call_assembles_chunks():
+    """OpenAICompatibleBackend._stream_call() collects chunks into a string."""
+    from agents.backends.base import OpenAICompatibleBackend
+
+    chunk1 = MagicMock(choices=[MagicMock(delta=MagicMock(content="Hel"))])
+    chunk2 = MagicMock(choices=[MagicMock(delta=MagicMock(content="lo"))])
+    chunk3 = MagicMock(choices=[MagicMock(delta=MagicMock(content=None))])  # None delta skipped
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = iter([chunk1, chunk2, chunk3])
+
+    b = OpenAICompatibleBackend(model="gpt-4.1", client=mock_client, stream=True)
+    result = b._stream_call([{"role": "user", "content": "hi"}])
+    assert result == "Hello"
+    call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs.get("stream") is True
+
+
+def test_openai_compatible_backend_call_dispatches_to_stream_call():
+    from agents.backends.base import OpenAICompatibleBackend
+    mock_client = MagicMock()
+    chunk = MagicMock(choices=[MagicMock(delta=MagicMock(content="hi"))])
+    mock_client.chat.completions.create.return_value = iter([chunk])
+    backend = OpenAICompatibleBackend(model="gpt-4.1", client=mock_client, stream=True)
+    result = backend.call([{"role": "user", "content": "hello"}])
+    assert result == "hi"
+    assert mock_client.chat.completions.create.call_args.kwargs.get("stream") is True
