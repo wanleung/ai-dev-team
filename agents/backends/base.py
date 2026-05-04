@@ -153,10 +153,7 @@ class OpenAICompatibleBackend(LLMBackend):
         self._inter_call_delay = inter_call_delay
         self._max_retries = max_retries
         self._retry_delay = retry_delay
-        # Only set _stream if a subclass hasn't already set it in its own __init__
-        # (e.g. OllamaBackend sets self._stream before calling super().__init__()).
-        if not hasattr(self, "_stream"):
-            self._stream = stream
+        self._stream = stream
 
     def _extra_body(self) -> dict:
         """Return additional kwargs for chat.completions.create().
@@ -192,6 +189,8 @@ class OpenAICompatibleBackend(LLMBackend):
                     collected += delta
             return collected
 
+        # The entire stream creation AND iteration is retried as a unit.
+        # If a mid-stream error occurs, the request restarts from scratch.
         reply = _retry_with_backoff(
             lambda: _collect(
                 self._client.chat.completions.create(

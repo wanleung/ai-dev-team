@@ -40,7 +40,6 @@ class OllamaBackend(OpenAICompatibleBackend):
     ) -> None:
         self._think = think
         self._preserve_thinking = preserve_thinking
-        self._stream = stream
         client = OpenAI(
             base_url=f"{ollama_url.rstrip('/')}/v1",
             api_key=api_key,
@@ -56,6 +55,7 @@ class OllamaBackend(OpenAICompatibleBackend):
             inter_call_delay=inter_call_delay,
             max_retries=max_retries,
             retry_delay=retry_delay,
+            stream=stream,
         )
 
     def _extra_body(self) -> dict:
