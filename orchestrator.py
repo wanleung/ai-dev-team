@@ -178,6 +178,14 @@ class ProgressTracker:
         if comment_id:
             self.comment_id = comment_id
 
+    def restore_stages(self, completed_keys: list) -> None:
+        """Replay completed stages from a checkpoint in-memory without posting N times."""
+        for stage in self.stages:
+            if stage.key in completed_keys:
+                stage.status = "done"
+        if self.mode == "summary":
+            self._post_summary()
+
     def mark_in_progress(self, key: str) -> None:
         """Mark a stage as in-progress."""
         self._set_status(key, "in_progress")
@@ -1853,24 +1861,24 @@ class Orchestrator(TestFixLoopMixin):
         else:
             result = PipelineResult(requirement=requirement)
 
+        # Pre-set issue_number if provided by caller (allows pause before PM creates it)
+        if issue_number is not None and not result.issue_number:
+            result.issue_number = issue_number
+
         # ── Progress tracker ───────────────────────────────────────────────────
         self._tracker = ProgressTracker(
             github=self.github,
             issue_number=result.issue_number,
             mode=self.progress_tracker_mode,
         )
-        self._tracker.set_stages(self._expected_stages())
         if result.progress_comment_id:
-            # Resuming from checkpoint: reuse existing comment, replay done stages
+            # Resuming: restore comment slot and replay done stages before set_stages
+            # so set_stages() deletes the old comment when re-posting
             self._tracker.restore(result.progress_comment_id)
-            for key in result.completed_stages:
-                self._tracker._set_status(key, "done")
+            self._tracker.restore_stages(result.completed_stages)
+        self._tracker.set_stages(self._expected_stages())
         # Keep result in sync with tracker's comment_id
         result.progress_comment_id = self._tracker.comment_id
-
-        # Pre-set issue_number if provided by caller (allows pause before PM creates it)
-        if issue_number is not None and not result.issue_number:
-            result.issue_number = issue_number
 
         console.print(Panel.fit(
             f"[bold cyan]🏢 AI Software House Pipeline[/bold cyan]\n"
@@ -1897,6 +1905,8 @@ class Orchestrator(TestFixLoopMixin):
                 console.print("  ⏭️  [dim]Design revision loop — skipped (checkpoint)[/dim]")
 
         # ── RAG index (always before engineer, not mode-dependent) ─────────────
+        # Sync issue_number into tracker — PM may have just created the GitHub issue
+        self._tracker.issue_number = result.issue_number
         if self.repo_auto_indexer and self.target_github and "rag_index" not in result.completed_stages:
             self._run_stage(
                 "📦 RAG Index",
