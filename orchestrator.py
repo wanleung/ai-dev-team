@@ -2236,21 +2236,29 @@ class Orchestrator(TestFixLoopMixin):
         """
         # Step 1: Architect
         if "architect" not in result.completed_stages:
+            self._tracker.mark_in_progress("architect")
             try:
                 self._run_stage("🏗️  Architect", "Designing system architecture...", result, lambda: self._stage_architect(result))
             except ClarificationNeeded as exc:
+                self._tracker.mark_failed("architect", "Awaiting clarification")
+                result.progress_comment_id = self._tracker.comment_id
                 self._pause_for_clarification(result, "architect", exc.questions)
                 return False
             if result.errors:
+                self._tracker.mark_failed("architect", result.errors[-1])
+                result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
             result.completed_stages.append("architect")
+            self._tracker.mark_done("architect")
+            result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
         else:
             console.print("  ⏭️  [dim]🏗️  Architect — skipped (checkpoint)[/dim]")
 
         # Step 2: Initial Architect Reviewer pass
         if "architect_reviewer" not in result.completed_stages:
+            self._tracker.mark_in_progress("architect_reviewer")
             self._run_stage(
                 "🔎 Architect Reviewer",
                 "Reviewing system design...",
@@ -2258,9 +2266,13 @@ class Orchestrator(TestFixLoopMixin):
                 lambda: self._stage_architect_reviewer(result),
             )
             if result.errors:
+                self._tracker.mark_failed("architect_reviewer", result.errors[-1])
+                result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
             result.completed_stages.append("architect_reviewer")
+            self._tracker.mark_done("architect_reviewer")
+            result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
         else:
             console.print("  ⏭️  [dim]🔎 Architect Reviewer — skipped (checkpoint)[/dim]")
@@ -2268,6 +2280,8 @@ class Orchestrator(TestFixLoopMixin):
         # Step 3: Revision loop (skip if disabled)
         if self.max_design_revisions == 0:
             result.completed_stages.append("architect_review_loop")
+            self._tracker.mark_done("architect_review_loop")
+            result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
             return True
 
@@ -2287,6 +2301,8 @@ class Orchestrator(TestFixLoopMixin):
                 f"  🔄 [yellow]DESIGN NEEDS REVISION (round {round_num}/{self.max_design_revisions})"
                 f" — sending back to Architect...[/yellow]"
             )
+            self._tracker.add_stage(ProgressStage(key, f"🔄 Design Revision {round_num}"))
+            self._tracker.mark_in_progress(key)
             self._run_stage(
                 "🏗️  Architect",
                 f"Revising design based on reviewer feedback (round {round_num})...",
@@ -2294,6 +2310,8 @@ class Orchestrator(TestFixLoopMixin):
                 lambda rn=round_num: self._stage_arch_revision(result, rn),
             )
             if result.errors:
+                self._tracker.mark_failed(key, result.errors[-1])
+                result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
 
@@ -2305,10 +2323,14 @@ class Orchestrator(TestFixLoopMixin):
                 lambda: self._stage_architect_reviewer(result),
             )
             if result.errors:
+                self._tracker.mark_failed(key, result.errors[-1])
+                result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
 
             result.completed_stages.append(key)
+            self._tracker.mark_done(key)
+            result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
         else:
             # for-else: exited without break → max rounds hit, still NEEDS REVISION
@@ -2327,6 +2349,8 @@ class Orchestrator(TestFixLoopMixin):
                             f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
                         )
                     result.completed_stages.append("architect_review_loop")
+                    self._tracker.mark_done("architect_review_loop")
+                    result.progress_comment_id = self._tracker.comment_id
                     self._save_checkpoint(result)
                     return False
 
@@ -2336,6 +2360,8 @@ class Orchestrator(TestFixLoopMixin):
             )
 
         result.completed_stages.append("architect_review_loop")
+        self._tracker.mark_done("architect_review_loop")
+        result.progress_comment_id = self._tracker.comment_id
         self._save_checkpoint(result)
         return True
 
