@@ -99,7 +99,7 @@ class BaseAgent:
         ollama_think: bool = False,
         ollama_preserve_thinking: bool = False,
         ollama_stream: bool = True,
-        opencode_go_stream: bool = True,
+        opencode_stream: bool = True,
         opencode_zen_api_key: Optional[str] = None,
         opencode_zen_base_url: Optional[str] = None,
         opencode_go_base_url: Optional[str] = None,
@@ -118,7 +118,7 @@ class BaseAgent:
         self._ollama_think = ollama_think
         self._ollama_preserve_thinking = ollama_preserve_thinking
         self._ollama_stream = ollama_stream
-        self._opencode_go_stream = opencode_go_stream
+        self._opencode_stream = opencode_stream
         self._history: list[dict] = []
 
         if llm is not None:
@@ -132,7 +132,7 @@ class BaseAgent:
                 ollama_think=ollama_think,
                 ollama_preserve_thinking=ollama_preserve_thinking,
                 ollama_stream=ollama_stream,
-                opencode_go_stream=opencode_go_stream,
+                opencode_stream=opencode_stream,
                 opencode_zen_api_key=opencode_zen_api_key,
                 opencode_zen_base_url=opencode_zen_base_url,
                 opencode_go_base_url=opencode_go_base_url,
@@ -221,7 +221,7 @@ class BaseAgent:
         ollama_think: bool,
         ollama_preserve_thinking: bool,
         ollama_stream: bool,
-        opencode_go_stream: bool,
+        opencode_stream: bool,
         opencode_zen_api_key: Optional[str],
         opencode_zen_base_url: Optional[str],
         opencode_go_base_url: Optional[str],
@@ -273,7 +273,7 @@ class BaseAgent:
                 model=model,
                 api_key=opencode_zen_api_key,
                 base_url=opencode_go_base_url,
-                stream=opencode_go_stream,
+                stream=opencode_stream,
                 **common,
             )
 
@@ -283,7 +283,7 @@ class BaseAgent:
                 model=model,
                 api_key=opencode_zen_api_key,
                 base_url=opencode_zen_base_url,
-                stream=opencode_go_stream,
+                stream=opencode_stream,
                 **common,
             )
 

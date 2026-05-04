@@ -131,7 +131,7 @@ def test_call_routes_go_chat_model_to_openai():
             mock_client = MagicMock()
             mock_cls.return_value = mock_client
             from agents.base_agent import BaseAgent
-            agent = BaseAgent(model="opencode-go/kimi-k2.5", opencode_go_stream=False)
+            agent = BaseAgent(model="opencode-go/kimi-k2.5", opencode_stream=False)
 
     mock_response = MagicMock()
     mock_response.choices[0].message.content = "kimi reply"
@@ -161,7 +161,7 @@ def test_call_with_tools_works_for_go_chat_models():
             mock_client = MagicMock()
             mock_cls.return_value = mock_client
             from agents.base_agent import BaseAgent
-            agent = BaseAgent(model="opencode-go/kimi-k2.5", opencode_go_stream=False)
+            agent = BaseAgent(model="opencode-go/kimi-k2.5", opencode_stream=False)
 
     mock_response = MagicMock()
     mock_response.choices[0].message.tool_calls = None
@@ -185,21 +185,21 @@ def test_call_with_tools_raises_for_go_minimax():
         agent.call_with_tools("task", tools)
 
 
-# ── opencode_go_stream parameter ──────────────────────────────────────────────
+# ── opencode_stream parameter ────────────────────────────────────────────────
 
-def test_base_agent_opencode_go_stream_default_true():
-    """BaseAgent with opencode-go model defaults opencode_go_stream to True."""
+def test_base_agent_opencode_stream_default_true():
+    """BaseAgent with opencode-go model defaults opencode_stream to True."""
     with patch.dict("os.environ", {"OPENCODE_ZEN_API_KEY": "zen-key"}):
         with patch("agents.backends.opencode_go.OpenAI"):
             from agents.base_agent import BaseAgent
             agent = BaseAgent(model="opencode-go/kimi-k2.5")
-    assert agent._opencode_go_stream is True
+    assert agent._opencode_stream is True
 
 
-def test_base_agent_opencode_go_stream_false():
-    """BaseAgent with opencode_go_stream=False stores it correctly."""
+def test_base_agent_opencode_stream_false():
+    """BaseAgent with opencode_stream=False stores it correctly."""
     with patch.dict("os.environ", {"OPENCODE_ZEN_API_KEY": "zen-key"}):
         with patch("agents.backends.opencode_go.OpenAI"):
             from agents.base_agent import BaseAgent
-            agent = BaseAgent(model="opencode-go/kimi-k2.5", opencode_go_stream=False)
-    assert agent._opencode_go_stream is False
+            agent = BaseAgent(model="opencode-go/kimi-k2.5", opencode_stream=False)
+    assert agent._opencode_stream is False
