@@ -512,6 +512,7 @@ class Orchestrator(TestFixLoopMixin):
         ollama_think: bool = False,
         ollama_preserve_thinking: bool = False,
         ollama_stream: bool = True,
+        opencode_stream: bool = True,
         nvidia_nim_api_key: Optional[str] = None,
         nvidia_nim_base_url: Optional[str] = None,
         max_revisions: int = 3,
@@ -558,6 +559,7 @@ class Orchestrator(TestFixLoopMixin):
         self.ollama_think = ollama_think
         self.ollama_preserve_thinking = ollama_preserve_thinking
         self.ollama_stream = ollama_stream
+        self.opencode_stream = opencode_stream
         self.max_revisions = max_revisions
         self.max_prd_revisions = max_prd_revisions
         self.max_design_revisions = max_design_revisions
@@ -593,6 +595,7 @@ class Orchestrator(TestFixLoopMixin):
                               "ollama_api_key": ollama_api_key,
                               "ollama_think": ollama_think, "ollama_preserve_thinking": ollama_preserve_thinking,
                               "ollama_stream": ollama_stream,
+                              "opencode_stream": opencode_stream,
                               "nvidia_nim_api_key": nvidia_nim_api_key,
                               "nvidia_nim_base_url": nvidia_nim_base_url,
                               "retry_delay": retry_delay, "max_api_retries": max_api_retries,
@@ -607,6 +610,7 @@ class Orchestrator(TestFixLoopMixin):
             "ollama_think": ollama_think,
             "ollama_preserve_thinking": ollama_preserve_thinking,
             "ollama_stream": ollama_stream,
+            "opencode_stream": opencode_stream,
         }
         if nvidia_nim_api_key is not None:
             self._llm_cfg["nvidia_nim_api_key"] = nvidia_nim_api_key
@@ -815,8 +819,9 @@ class Orchestrator(TestFixLoopMixin):
                 factory_cfg["nvidia_nim_api_key"] = cfg["nvidia_nim_api_key"]
             if cfg.get("nvidia_nim_base_url"):
                 factory_cfg["nvidia_nim_base_url"] = cfg["nvidia_nim_base_url"]
-        # All other backends (anthropic, copilot, opencode, opencode-zen,
-        # opencode-go) use env-var auth and need no extra config keys.
+        elif model.startswith("opencode-go/") or model.startswith("opencode-zen/"):
+            factory_cfg["opencode_stream"] = cfg.get("opencode_stream", True)
+        # All other backends (anthropic, copilot) use env-var auth and need no extra config keys.
 
         from agents.backends.factory import _make_single_backend
         primary = _make_single_backend(factory_cfg, github_token=self._github_token)
@@ -923,6 +928,7 @@ class Orchestrator(TestFixLoopMixin):
             ollama_think=llm.get("ollama_think", False),
             ollama_preserve_thinking=llm.get("ollama_preserve_thinking", False),
             ollama_stream=llm.get("ollama_stream", True),
+            opencode_stream=llm.get("opencode_stream", True),
             max_revisions=pipeline.get("max_revisions", 3),
             max_prd_revisions=pipeline.get("max_prd_revisions", 3),
             max_design_revisions=pipeline.get("max_design_revisions", 3),
