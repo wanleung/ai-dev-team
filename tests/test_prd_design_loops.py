@@ -442,3 +442,16 @@ def test_design_revision_loop_checkpoint_resume_no_duplicate_halt():
     # Should complete without halting (all rounds were already done)
     assert ok is True
     assert "architect_review_loop" in result.completed_stages
+
+
+def test_pipeline_result_progress_comment_id_default():
+    r = PipelineResult(requirement="x")
+    assert r.progress_comment_id is None
+
+
+def test_pipeline_result_progress_comment_id_round_trips():
+    r = PipelineResult(requirement="x")
+    r.progress_comment_id = 12345
+    data = r.to_dict()
+    r2 = PipelineResult.from_dict(data)
+    assert r2.progress_comment_id == 12345
