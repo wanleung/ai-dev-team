@@ -112,22 +112,25 @@ def test_per_watcher_settings_stored(tmp_path):
     assert "settings" not in w
 
 
-def test_broken_symlink_skipped(tmp_path):
+def test_broken_symlink_skipped(tmp_path, caplog):
     """Broken symlinks in repos-enabled/ are skipped with a warning."""
+    import logging
     cfg = tmp_path / "repos.yaml"
     _write(cfg, "settings:\n  max_parallel: 1\n")
 
     enabled = tmp_path / "repos-enabled"
     enabled.mkdir()
-    # Symlink pointing to a non-existent file
     os.symlink(tmp_path / "repos-available" / "ghost.yaml", enabled / "ghost.yaml")
 
-    result = load_watcher_config(cfg)
+    with caplog.at_level(logging.WARNING, logger="watcher"):
+        result = load_watcher_config(cfg)
+    assert "Broken symlink" in caplog.text
     assert result["watchers"] == []
 
 
-def test_duplicate_tracker_repo_enabled_wins(tmp_path):
+def test_duplicate_tracker_repo_enabled_wins(tmp_path, caplog):
     """If same tracker_repo appears in both legacy and repos-enabled/, enabled wins."""
+    import logging
     cfg = tmp_path / "repos.yaml"
     _write(cfg, """
         watchers:
@@ -149,8 +152,43 @@ def test_duplicate_tracker_repo_enabled_wins(tmp_path):
     enabled.mkdir()
     os.symlink(avail / "shared.yaml", enabled / "shared.yaml")
 
-    result = load_watcher_config(cfg)
+    with caplog.at_level(logging.WARNING, logger="watcher"):
+        result = load_watcher_config(cfg)
+    assert "Duplicate tracker_repo" in caplog.text
     repos = [w["tracker_repo"] for w in result["watchers"]]
     assert repos.count("owner/shared") == 1
     w = next(w for w in result["watchers"] if w["tracker_repo"] == "owner/shared")
     assert w["feature_label"] == "new-label"
+
+
+def test_non_yaml_files_in_enabled_are_ignored(tmp_path):
+    """README and .conf files in repos-enabled/ are silently skipped."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, "settings:\n  max_parallel: 1\n")
+    enabled = tmp_path / "repos-enabled"
+    enabled.mkdir()
+    (enabled / "README").write_text("don't parse me")
+    (enabled / "repo.conf").write_text("tracker_repo: owner/should-not-appear")
+
+    result = load_watcher_config(cfg)
+    assert result["watchers"] == []
+
+
+def test_missing_tracker_repo_in_enabled_is_skipped(tmp_path, caplog):
+    """repos-enabled/ file without tracker_repo is skipped with a warning."""
+    import logging
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, "settings:\n  max_parallel: 1\n")
+
+    avail = tmp_path / "repos-available"
+    avail.mkdir()
+    _write(avail / "broken-config.yaml", "feature_label: feature-request\n")
+
+    enabled = tmp_path / "repos-enabled"
+    enabled.mkdir()
+    os.symlink(avail / "broken-config.yaml", enabled / "broken-config.yaml")
+
+    with caplog.at_level(logging.WARNING, logger="watcher"):
+        result = load_watcher_config(cfg)
+    assert "no tracker_repo" in caplog.text
+    assert result["watchers"] == []

@@ -52,6 +52,7 @@ LABEL_COLOURS = {
 
 # ── Lock file prevents overlapping cron runs ─────────────────────────────────
 LOCK_FILE = Path(__file__).parent / ".watcher.lock"
+_log = logging.getLogger(__name__)
 
 
 def _gh_headers() -> dict:
@@ -252,23 +253,21 @@ def load_watcher_config(config_path: Path) -> dict:
     ``settings:`` blocks are stripped from the watcher entry and stored as
     ``_settings`` so callers can apply per-watcher overrides.
     """
-    _log = logging.getLogger(__name__)
-
     with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
 
     legacy_watchers: list[dict] = list(config.get("watchers") or [])
     seen: dict[str, int] = {}  # tracker_repo → index in merged list
 
-    for w in legacy_watchers:
+    for i, w in enumerate(legacy_watchers):
         repo = w.get("tracker_repo", "")
         if repo:
-            seen[repo] = legacy_watchers.index(w)
+            seen[repo] = i
 
     repos_enabled = config_path.parent / "repos-enabled"
     if repos_enabled.is_dir():
         for entry in sorted(repos_enabled.iterdir()):
-            if not entry.suffix == ".yaml":
+            if entry.suffix != ".yaml":
                 continue
             if not entry.exists():  # broken symlink
                 _log.warning("Broken symlink in repos-enabled/: %s — skipping", entry.name)
@@ -276,9 +275,12 @@ def load_watcher_config(config_path: Path) -> dict:
             with open(entry, encoding="utf-8") as f:
                 watcher_dict = yaml.safe_load(f) or {}
             per_settings = watcher_dict.pop("settings", None)
-            if per_settings:
+            if per_settings is not None:
                 watcher_dict["_settings"] = per_settings
             repo = watcher_dict.get("tracker_repo", "")
+            if not repo:
+                _log.warning("repos-enabled/%s has no tracker_repo — skipping", entry.name)
+                continue
             if repo in seen:
                 _log.warning(
                     "Duplicate tracker_repo '%s' in repos-enabled/%s — enabled-dir entry wins",
