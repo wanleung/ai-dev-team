@@ -9,6 +9,7 @@
 5. [Reading GitHub Issues, PRs and Comments](#5-reading-github-issues-prs-and-comments)
 6. [Pipeline Self-Chaining (Auto Re-Label)](#6-pipeline-self-chaining-auto-re-label)
 7. [Token Usage & Cost Tracking](#7-token-usage--cost-tracking)
+8. [Repo Watcher Config (repos-available / repos-enabled)](#8-repo-watcher-config-repos-available--repos-enabled)
 
 ---
 
@@ -721,3 +722,43 @@ print(result.token_usage)       # {"by_stage": {...}, "by_model": {...}}
 ```
 
 These fields are `None` / `0.0` / `{}` when `cost_tracking.enabled` is `false`.
+
+---
+
+## 8. Repo Watcher Config (repos-available / repos-enabled)
+
+Watcher entries are stored individually in `repos-available/<name>.yaml` (one file per
+tracked repository). Activate a repo by symlinking it into `repos-enabled/`:
+
+```bash
+# Enable a repo
+python watcher.py repo enable mcp-tfl
+
+# Disable a repo
+python watcher.py repo disable mcp-tfl
+
+# List all repos with enabled/disabled status
+python watcher.py repo list
+```
+
+**File format** (`repos-available/<name>.yaml`):
+
+```yaml
+tracker_repo: owner/repo-name
+default_target: ~          # null = same repo as tracker
+feature_label:
+  - feature-request
+  - ai-feature
+bug_label: bug
+doc_label: documentation
+enabled: true              # optional; defaults to true
+
+settings:                  # optional — overrides global settings for this repo only
+  model: gpt-4.1-mini
+  num_engineers: 1
+```
+
+**Global settings** in `repos.yaml` apply to all repos unless overridden per-repo.
+
+**`repos-enabled/`** is gitignored — each deployment manages its own symlinks.
+**`repos-available/`** is committed — it's the source of truth for all available configs.

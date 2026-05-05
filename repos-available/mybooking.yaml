@@ -1,0 +1,8 @@
+tracker_repo: wanleung/mybooking
+default_target: ~
+parallel_issues: 2
+labels:
+  ai-feature: ai-feature
+  ai-fix: ai-fix
+  ai-docs: ai-docs
+enabled: true
