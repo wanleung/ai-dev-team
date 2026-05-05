@@ -207,3 +207,19 @@ def test_openai_compatible_backend_call_dispatches_to_stream_call():
     result = backend.call([{"role": "user", "content": "hello"}])
     assert result == "hi"
     assert mock_client.chat.completions.create.call_args.kwargs.get("stream") is True
+
+
+def test_base_stream_call_skips_empty_choices_chunks():
+    """_stream_call must not raise IndexError on chunks with empty choices (OpenAI usage/stop chunks)."""
+    from agents.backends.base import OpenAICompatibleBackend
+
+    chunk_content = MagicMock(choices=[MagicMock(delta=MagicMock(content="hello"))])
+    chunk_empty = MagicMock(choices=[])   # final usage chunk — choices is empty list
+    chunk_none_content = MagicMock(choices=[MagicMock(delta=MagicMock(content=None))])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = iter([chunk_content, chunk_empty, chunk_none_content])
+
+    b = OpenAICompatibleBackend(model="gpt-4.1", client=mock_client, stream=True)
+    result = b._stream_call([{"role": "user", "content": "hi"}])
+    assert result == "hello"
