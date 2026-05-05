@@ -260,3 +260,88 @@ def test_run_pr_revision_exception_path(monkeypatch, tmp_path):
     assert any("kaboom" in c for c in calls["comments"])
     assert sys.stdout is saved_stdout, "stdout was not restored"
     assert sys.stderr is saved_stderr, "stderr was not restored"
+
+
+# ── _watch_prs integration tests ─────────────────────────────────────────────
+
+def test_watch_prs_dispatches_when_label_trigger(monkeypatch, tmp_path):
+    """_watch_prs calls _run_pr_revision when PR has the fix label."""
+    from watcher import _watch_prs
+    import logging
+
+    pr = {
+        "number": 10,
+        "title": "Bad PR",
+        "labels": [{"name": "ai-fix"}],
+        "draft": False,
+        "head": {"repo": {"full_name": "owner/target"}},
+    }
+    watchers = [{
+        "tracker_repo": "owner/tracker",
+        "default_target": "owner/target",
+        "enabled": True,
+        "_settings": {"watch_prs": True, "pr_fix_label": "ai-fix",
+                      "pr_failure_pattern": r"❌|FAILED", "max_pr_retries": 3,
+                      "watch_draft_prs": False},
+    }]
+
+    dispatched = []
+
+    monkeypatch.setattr("watcher.get_open_prs", lambda repo, skip_drafts=True: [pr])
+    monkeypatch.setattr("watcher.get_pr_comments", lambda repo, num: [])
+    monkeypatch.setattr("watcher._run_pr_revision", lambda pr, tracker, target, model, num_eng, log_dir, logger: dispatched.append(pr["number"]))
+
+    _watch_prs(watchers, {"model": "gpt-4.1", "num_engineers": 2}, tmp_path, False, logging.getLogger("test"))
+
+    assert 10 in dispatched
+
+
+def test_watch_prs_skips_when_disabled(monkeypatch, tmp_path):
+    """_watch_prs does not scan PRs when watch_prs is False."""
+    from watcher import _watch_prs
+    import logging
+
+    watchers = [{
+        "tracker_repo": "owner/tracker",
+        "default_target": "owner/target",
+        "enabled": True,
+        "_settings": {"watch_prs": False},
+    }]
+
+    get_open_prs_called = []
+    monkeypatch.setattr("watcher.get_open_prs", lambda *a, **k: get_open_prs_called.append(True) or [])
+
+    _watch_prs(watchers, {"model": "gpt-4.1", "num_engineers": 2}, tmp_path, False, logging.getLogger("test"))
+
+    assert get_open_prs_called == []
+
+
+def test_watch_prs_dry_run_does_not_dispatch(monkeypatch, tmp_path):
+    """_watch_prs does not dispatch in dry-run mode."""
+    from watcher import _watch_prs
+    import logging
+
+    pr = {
+        "number": 11,
+        "title": "PR",
+        "labels": [{"name": "ai-fix"}],
+        "draft": False,
+        "head": {"repo": {"full_name": "owner/target"}},
+    }
+    watchers = [{
+        "tracker_repo": "owner/tracker",
+        "default_target": "owner/target",
+        "enabled": True,
+        "_settings": {"watch_prs": True, "pr_fix_label": "ai-fix",
+                      "pr_failure_pattern": r"❌|FAILED", "max_pr_retries": 3,
+                      "watch_draft_prs": False},
+    }]
+
+    dispatched = []
+    monkeypatch.setattr("watcher.get_open_prs", lambda *a, **k: [pr])
+    monkeypatch.setattr("watcher.get_pr_comments", lambda *a: [])
+    monkeypatch.setattr("watcher._run_pr_revision", lambda *a, **k: dispatched.append(True))
+
+    _watch_prs(watchers, {"model": "gpt-4.1", "num_engineers": 2}, tmp_path, dry_run=True, logger=logging.getLogger("test"))
+
+    assert dispatched == []

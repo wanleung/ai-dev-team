@@ -655,6 +655,61 @@ def _run_pr_revision(
         )
 
 
+def _watch_prs(
+    watchers: list[dict],
+    global_settings: dict,
+    log_dir: Path,
+    dry_run: bool,
+    logger: logging.Logger,
+) -> None:
+    """Scan open PRs across all enabled watchers and dispatch fix runs as needed.
+
+    Only runs for watchers with watch_prs: true in their settings.
+    Per-watcher settings override global_settings (same _settings merge as watch()).
+    """
+    for w in watchers:
+        if not w.get("enabled", True):
+            continue
+        _w_settings = {**global_settings, **w.get("_settings", {})}
+        if not _w_settings.get("watch_prs", False):
+            continue
+
+        tracker_repo = w["tracker_repo"]
+        target_repo = w.get("default_target") or tracker_repo
+        model = _w_settings.get("model", "gpt-4.1")
+        num_engineers = _w_settings.get("num_engineers", 2)
+        pr_fix_label = _w_settings.get("pr_fix_label", "ai-fix")
+        pr_failure_pattern = _w_settings.get("pr_failure_pattern", r"❌|FAILED|tests? failed|test suite failed")
+        max_pr_retries = int(_w_settings.get("max_pr_retries", 3))
+        skip_drafts = not _w_settings.get("watch_draft_prs", False)
+
+        logger.info("Checking PRs in %s …", tracker_repo)
+        try:
+            prs = get_open_prs(target_repo, skip_drafts=skip_drafts)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to fetch PRs from %s: %s", target_repo, exc)
+            continue
+
+        for pr in prs:
+            pr_number = pr["number"]
+            try:
+                comments = get_pr_comments(target_repo, pr_number)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not fetch comments for PR #%d: %s", pr_number, exc)
+                comments = []
+
+            if not _should_fix_pr(pr, comments, pr_fix_label, pr_failure_pattern, max_pr_retries):
+                continue
+
+            logger.info("  🔧 PR #%d needs fixing (%s)", pr_number, pr.get("title", ""))
+
+            if dry_run:
+                logger.info("    [dry-run] Would run PR fix for #%d", pr_number)
+                continue
+
+            _run_pr_revision(pr, tracker_repo, target_repo, model, num_engineers, log_dir, logger)
+
+
 def _parse_target_repo(body: str) -> str | None:
     """Extract '**Target repo:** owner/repo' from issue body."""
     import re
@@ -924,6 +979,9 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
     # Check issues waiting for human clarification
     if not dry_run:
         check_waiting_issues(github_token, tracker_repos, workspace_dir, bot_login)
+
+    # Watch PRs for failures and dispatch fix runs
+    _watch_prs(watchers, global_settings, log_dir, dry_run, logger)
 
     # Collect all issues across all watchers
     tasks: list[dict] = []
