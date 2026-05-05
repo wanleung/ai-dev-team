@@ -793,7 +793,7 @@ On each watcher cycle, for repos with `watch_prs: true`, the watcher:
    - Does any comment body match `pr_failure_pattern`?
 3. Skips PRs that have `agent-running`, `agent-failed`, or have exhausted `max_pr_retries`
 4. Runs `run_revision()` — re-runs engineer → reviewer → QA, pushes commits to the PR branch
-5. Labels the PR `agent-complete` on success, or `agent-failed` if retries are exhausted
+5. Labels the PR `agent-complete` on success, or `agent-failed` if the orchestrator returns an error status or throws an exception.
 
 ### Retry tracking
 

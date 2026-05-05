@@ -161,8 +161,8 @@ def _should_fix_pr(
     labels = pr.get("labels", [])
     pr_label_names = {lbl.get("name", "") for lbl in labels}
 
-    # Skip if already being processed or gave up
-    if pr_label_names & {"agent-running", "agent-failed"}:
+    # Skip if already being processed, gave up, or already complete
+    if pr_label_names & {"agent-running", "agent-failed", "agent-complete"}:
         return False
 
     # Skip if retry cap reached
@@ -555,10 +555,12 @@ def _run_pr_revision(
     num_engineers: int,
     log_dir: Path,
     logger: logging.Logger,
+    pr_fix_label: str = "ai-fix",
 ) -> None:
     """Instantiate an Orchestrator and run run_revision() for a failing PR.
 
-    Manages agent-running / agent-complete / agent-failed labels on the PR.
+    Manages agent-running / agent-complete / agent-failed labels on the PR
+    in target_repo (where the PR actually lives).
     The attempt count label (ai-pr-fix-N) is added before calling run_revision().
     """
     pr_number = pr["number"]
@@ -584,11 +586,11 @@ def _run_pr_revision(
 
     logger.info("  🔄 PR #%d: starting fix attempt %d", pr_number, attempt)
 
-    # Mark as running and record attempt number
-    ensure_label(tracker_repo, LABEL_RUNNING, LABEL_COLOURS[LABEL_RUNNING])
-    ensure_label(tracker_repo, attempt_label, "c5def5")
-    add_label(tracker_repo, pr_number, LABEL_RUNNING)
-    add_label(tracker_repo, pr_number, attempt_label)
+    # Mark as running and record attempt number (labels go on the PR in target_repo)
+    ensure_label(target_repo, LABEL_RUNNING, LABEL_COLOURS[LABEL_RUNNING])
+    ensure_label(target_repo, attempt_label, "c5def5")
+    add_label(target_repo, pr_number, LABEL_RUNNING)
+    add_label(target_repo, pr_number, attempt_label)
 
     try:
         with open(log_file, "w", encoding="utf-8") as fh:
@@ -617,28 +619,28 @@ def _run_pr_revision(
                 status = result.get("status", "ok")
 
                 if status in ("max_revisions_reached", "error"):
-                    add_label(tracker_repo, pr_number, LABEL_FAILED)
-                    remove_label(tracker_repo, pr_number, LABEL_RUNNING)
+                    add_label(target_repo, pr_number, LABEL_FAILED)
+                    remove_label(target_repo, pr_number, LABEL_RUNNING)
                     post_comment(
-                        tracker_repo, pr_number,
+                        target_repo, pr_number,
                         f"❌ PR fix attempt {attempt} could not complete "
                         f"(status: `{status}`). Log: `{log_file}`\n\n"
                         "Remove `agent-failed` to retry manually.",
                     )
                     logger.info("  ❌ PR #%d fix attempt %d: %s", pr_number, attempt, status)
                 else:
-                    add_label(tracker_repo, pr_number, LABEL_COMPLETE)
-                    remove_label(tracker_repo, pr_number, LABEL_RUNNING)
+                    add_label(target_repo, pr_number, LABEL_COMPLETE)
+                    remove_label(target_repo, pr_number, LABEL_RUNNING)
                     # Remove trigger label so next cycle doesn't re-trigger
-                    remove_label(tracker_repo, pr_number, "ai-fix")
+                    remove_label(target_repo, pr_number, pr_fix_label)
                     logger.info("  ✅ PR #%d fix attempt %d complete", pr_number, attempt)
 
             except Exception as exc:  # noqa: BLE001
                 logger.error("  ❌ PR #%d fix attempt %d unhandled error: %s", pr_number, attempt, exc)
-                add_label(tracker_repo, pr_number, LABEL_FAILED)
-                remove_label(tracker_repo, pr_number, LABEL_RUNNING)
+                add_label(target_repo, pr_number, LABEL_FAILED)
+                remove_label(target_repo, pr_number, LABEL_RUNNING)
                 post_comment(
-                    tracker_repo, pr_number,
+                    target_repo, pr_number,
                     f"❌ PR fix attempt {attempt} failed with error: `{exc}`\n"
                     f"Log: `{log_file}`\n\nRemove `agent-failed` to retry.",
                 )
@@ -646,10 +648,10 @@ def _run_pr_revision(
                 sys.stdout, sys.stderr = old_stdout, old_stderr
     except OSError as exc:  # noqa: BLE001
         logger.error("  ❌ PR #%d: could not open log file %s: %s", pr_number, log_file, exc)
-        add_label(tracker_repo, pr_number, LABEL_FAILED)
-        remove_label(tracker_repo, pr_number, LABEL_RUNNING)
+        add_label(target_repo, pr_number, LABEL_FAILED)
+        remove_label(target_repo, pr_number, LABEL_RUNNING)
         post_comment(
-            tracker_repo, pr_number,
+            target_repo, pr_number,
             f"❌ PR fix attempt {attempt} failed: could not open log file.\n"
             f"`{exc}`\n\nRemove `agent-failed` to retry.",
         )
@@ -711,12 +713,14 @@ def _watch_prs(
                 logger.info("    [dry-run] Would run PR fix for #%d", pr_number)
                 continue
 
-            _run_pr_revision(pr, tracker_repo, target_repo, model, num_engineers, log_dir, logger)
+            _run_pr_revision(
+                pr, tracker_repo, target_repo, model, num_engineers, log_dir, logger,
+                pr_fix_label=pr_fix_label,
+            )
 
 
 def _parse_target_repo(body: str) -> str | None:
     """Extract '**Target repo:** owner/repo' from issue body."""
-    import re
     m = re.search(r"\*\*Target repo:\*\*\s*([\w.\-]+/[\w.\-]+)", body)
     if m:
         return m.group(1)
