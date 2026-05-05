@@ -44,6 +44,7 @@ FALLBACK_ERRORS = (
     _OAIConnError,
     _OAITimeoutError,
     _OAIServerError,  # covers HTTP 503/502/504 — triggers backend fallback
+    _OAIRateLimit,   # 429 quota exhausted — fall through to next backend
 )
 
 
@@ -100,6 +101,13 @@ def _retry_with_backoff(
         except _retryable_tuple as exc:  # type: ignore[misc]
             last_exc = exc
             retry_after = _get_retry_after(exc)
+            # Fast-fail on permanent quota exhaustion (no point retrying)
+            _err_code = getattr(exc, "code", None) or (
+                getattr(exc, "body", {}) or {}
+            ).get("error", {}).get("code", "")
+            if _err_code == "insufficient_quota":
+                _log.warning("Fast-failing (insufficient_quota): %s", str(exc)[:120])
+                raise
             if retry_after >= _FAST_FAIL_RETRY_AFTER:
                 _log.warning(
                     "Fast-failing (retry_after=%ds >= threshold %ds): %s: %s",
