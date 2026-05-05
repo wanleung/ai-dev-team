@@ -52,7 +52,7 @@ LABEL_COLOURS = {
 
 # ── Lock file prevents overlapping cron runs ─────────────────────────────────
 LOCK_FILE = Path(__file__).parent / ".watcher.lock"
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("watcher")
 
 
 def _gh_headers() -> dict:
@@ -251,12 +251,18 @@ def load_watcher_config(config_path: Path) -> dict:
 
     Returns a config dict with a unified ``watchers`` list.  Per-watcher
     ``settings:`` blocks are stripped from the watcher entry and stored as
-    ``_settings`` so callers can apply per-watcher overrides.
+    ``_settings`` (for both legacy and repos-enabled entries) so callers can
+    apply per-watcher overrides.
     """
     with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
 
     legacy_watchers: list[dict] = list(config.get("watchers") or [])
+    # Apply settings→_settings transformation for legacy watchers too
+    for w in legacy_watchers:
+        per_settings = w.pop("settings", None)
+        if per_settings is not None:
+            w["_settings"] = per_settings
     seen: dict[str, int] = {}  # tracker_repo → index in merged list
 
     for i, w in enumerate(legacy_watchers):
@@ -323,6 +329,9 @@ def cmd_repo_enable(base_dir: Path, name: str) -> None:
 
 def cmd_repo_disable(base_dir: Path, name: str) -> None:
     """Disable a watcher by removing its symlink from repos-enabled/."""
+    if "/" in name or "\\" in name or name.startswith("."):
+        print(f"Error: invalid repo name '{name}'", file=sys.stderr)
+        sys.exit(1)
     link = base_dir / "repos-enabled" / f"{name}.yaml"
     if not link.exists() and not link.is_symlink():
         print(f"Error: '{name}' is not currently enabled.", file=sys.stderr)

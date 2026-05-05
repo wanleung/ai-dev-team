@@ -462,3 +462,29 @@ def test_repo_enable_rejects_path_traversal(tmp_path):
         cmd_repo_enable(tmp_path, "../evil")
     with pytest.raises(SystemExit):
         cmd_repo_enable(tmp_path, ".hidden")
+
+
+def test_repo_disable_rejects_path_traversal(tmp_path):
+    """cmd_repo_disable rejects names with path separators or leading dots."""
+    with pytest.raises(SystemExit):
+        cmd_repo_disable(tmp_path, "../evil")
+    with pytest.raises(SystemExit):
+        cmd_repo_disable(tmp_path, ".hidden")
+
+
+def test_legacy_watcher_settings_stored_as_underscore(tmp_path):
+    """Legacy watchers: entries with settings: get settings→_settings transformation."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, """
+        watchers:
+          - tracker_repo: owner/legacy
+            feature_label: feature-request
+            enabled: true
+            settings:
+              model: gpt-4.1-mini
+              num_engineers: 1
+    """)
+    result = load_watcher_config(cfg)
+    w = result["watchers"][0]
+    assert w["_settings"]["model"] == "gpt-4.1-mini"
+    assert "settings" not in w
