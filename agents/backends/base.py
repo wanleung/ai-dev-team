@@ -315,6 +315,10 @@ class OpenAICompatibleBackend(LLMBackend):
                 if usage:
                     get_ledger().record(effective_run_id, current_stage.get(), self.model,
                                         usage.prompt_tokens, usage.completion_tokens)
+                else:
+                    # fallback for backends that don't return usage in tool-call path
+                    pt, ct = estimate_tokens(messages, response.choices[0].message.content or "")
+                    get_ledger().record(effective_run_id, current_stage.get(), self.model, pt, ct)
             msg = response.choices[0].message
             if not msg.tool_calls:
                 return self._post_process(msg.content or "")
@@ -365,4 +369,8 @@ class OpenAICompatibleBackend(LLMBackend):
             if usage:
                 get_ledger().record(effective_run_id, current_stage.get(), self.model,
                                     usage.prompt_tokens, usage.completion_tokens)
+            else:
+                # fallback for backends that don't return usage in tool-call path
+                pt, ct = estimate_tokens(messages, response.choices[0].message.content or "")
+                get_ledger().record(effective_run_id, current_stage.get(), self.model, pt, ct)
         return self._post_process(response.choices[0].message.content or "")
