@@ -652,14 +652,11 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
 # ── Watcher loop ──────────────────────────────────────────────────────────────
 
 def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
-    with open(config_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    config = load_watcher_config(config_path)
 
-    settings   = config.get("settings", {})
-    max_parallel = settings.get("max_parallel", 3)
-    log_dir    = Path(config_path.parent / settings.get("log_dir", "logs/watcher"))
-    model      = settings.get("model", "gpt-4.1")
-    num_engineers = settings.get("num_engineers", 2)
+    global_settings = config.get("settings", {})
+    max_parallel  = global_settings.get("max_parallel", 3)
+    log_dir       = Path(config_path.parent / global_settings.get("log_dir", "logs/watcher"))
 
     watchers = config.get("watchers", [])
     logger.info("Loaded %d watcher(s) from %s", len(watchers), config_path)
@@ -684,7 +681,9 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
     
     # Process any resume triggers (issues answered by human)
     if not dry_run:
-        resumed_tasks = _process_resume_queue(workspace_dir, tracker_repos, default_targets, model, num_engineers, log_dir, dry_run, logger)
+        _global_model = global_settings.get("model", "gpt-4.1")
+        _global_num_engineers = global_settings.get("num_engineers", 2)
+        resumed_tasks = _process_resume_queue(workspace_dir, tracker_repos, default_targets, _global_model, _global_num_engineers, log_dir, dry_run, logger)
         tasks.extend(resumed_tasks)
     
     for w in watchers:
@@ -692,6 +691,11 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
             continue
         tracker_repo    = w["tracker_repo"]
         default_target  = w.get("default_target") or None
+
+        # Apply per-watcher settings overrides on top of global settings
+        _w_settings   = {**global_settings, **w.get("_settings", {})}
+        model         = _w_settings.get("model", "gpt-4.1")
+        num_engineers = _w_settings.get("num_engineers", 2)
 
         # Read label → pipeline mapping for this watcher entry. New format:
         #   labels:
@@ -731,6 +735,8 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
                         default_target=default_target,
                         label=pipeline_name,
                         parallel_issues=w.get("parallel_issues", 1),
+                        model=model,
+                        num_engineers=num_engineers,
                     ))
                     logger.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
         except Exception as exc:  # noqa: BLE001
@@ -771,7 +777,7 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
                 fut = ex.submit(
                     _run_with_global_cap,
                     t["issue"], t["tracker_repo"], t["default_target"],
-                    t["label"], model, num_engineers, log_dir, dry_run, logger,
+                    t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
                 )
                 futures_to_task[fut] = t
 
@@ -868,8 +874,7 @@ def main() -> None:
         print(f"Config not found: {config_path}")
         sys.exit(1)
 
-    with open(config_path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    raw = load_watcher_config(config_path)
     log_dir = Path(config_path.parent / raw.get("settings", {}).get("log_dir", "logs/watcher"))
     logger = _setup_logging(log_dir)
 

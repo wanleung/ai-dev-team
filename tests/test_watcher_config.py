@@ -192,3 +192,58 @@ def test_missing_tracker_repo_in_enabled_is_skipped(tmp_path, caplog):
         result = load_watcher_config(cfg)
     assert "no tracker_repo" in caplog.text
     assert result["watchers"] == []
+
+
+def test_watch_uses_per_watcher_model(tmp_path, monkeypatch):
+    """watch() dispatches with per-watcher model override from _settings."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, """
+        settings:
+          model: gpt-4.1
+          num_engineers: 2
+          max_parallel: 1
+          log_dir: logs/watcher
+    """)
+
+    avail = tmp_path / "repos-available"
+    avail.mkdir()
+    _write(avail / "cheap-repo.yaml", """
+        tracker_repo: owner/cheap-repo
+        feature_label: feature-request
+        enabled: true
+        settings:
+          model: gpt-4.1-mini
+          num_engineers: 1
+    """)
+    enabled = tmp_path / "repos-enabled"
+    enabled.mkdir()
+    os.symlink(avail / "cheap-repo.yaml", enabled / "cheap-repo.yaml")
+
+    dispatched = []
+
+    def fake_get_open_issues(repo, label):
+        if label == "feature-request":
+            return [{"number": 1, "title": "T", "body": "", "labels": [{"name": "feature-request"}]}]
+        return []
+
+    def fake_dispatch(**kwargs):
+        dispatched.append(kwargs)
+
+    monkeypatch.setattr("watcher.get_open_issues", fake_get_open_issues)
+    monkeypatch.setattr("watcher._dispatch", fake_dispatch)
+    monkeypatch.setattr("watcher.ensure_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.add_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.check_waiting_issues", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher._process_resume_queue", lambda *a, **kw: [])
+    monkeypatch.setattr("watcher._load_pipeline_config", lambda: {})
+    (tmp_path / "logs" / "watcher").mkdir(parents=True, exist_ok=True)
+
+    import logging
+    logger = logging.getLogger("test")
+    logger.addHandler(logging.NullHandler())
+
+    watcher.watch(cfg, dry_run=False, logger=logger)
+
+    assert len(dispatched) == 1
+    assert dispatched[0]["model"] == "gpt-4.1-mini"
+    assert dispatched[0]["num_engineers"] == 1
