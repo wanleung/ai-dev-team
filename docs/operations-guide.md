@@ -762,3 +762,42 @@ settings:                  # optional — overrides global settings for this rep
 
 **`repos-enabled/`** is gitignored — each deployment manages its own symlinks.
 **`repos-available/`** is committed — it's the source of truth for all available configs.
+
+---
+
+## 9. PR Watcher
+
+The watcher can also monitor open pull requests for failures and automatically
+run `run_revision()` to push fixes.
+
+### Enable per repo
+
+In `repos-available/<repo>.yaml`, add under `settings:`:
+
+```yaml
+settings:
+  watch_prs: true              # enable PR watching for this repo
+  pr_fix_label: "ai-fix"      # label on PR that triggers a fix run
+  pr_failure_pattern: "❌|FAILED|tests? failed"  # regex matched against comments
+  max_pr_retries: 3           # stop after this many fix attempts
+  watch_draft_prs: false      # set true to also watch draft PRs
+```
+
+### How it works
+
+On each watcher cycle, for repos with `watch_prs: true`, the watcher:
+
+1. Fetches all open PRs in the target repo
+2. For each PR, checks:
+   - Does it have the `pr_fix_label` (e.g. `ai-fix`)? **OR**
+   - Does any comment body match `pr_failure_pattern`?
+3. Skips PRs that have `agent-running`, `agent-failed`, or have exhausted `max_pr_retries`
+4. Runs `run_revision()` — re-runs engineer → reviewer → QA, pushes commits to the PR branch
+5. Labels the PR `agent-complete` on success, or `agent-failed` if retries are exhausted
+
+### Retry tracking
+
+Each fix attempt adds an `ai-pr-fix-N` label to the PR. When N reaches `max_pr_retries`,
+the watcher stops and adds `agent-failed`.
+
+To reset and retry: remove all `ai-pr-fix-N` labels and `agent-failed` from the PR.

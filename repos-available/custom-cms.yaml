@@ -6,3 +6,12 @@ labels:
   ai-fix: ai-fix
   ai-docs: ai-docs
 enabled: true
+
+settings:
+  watch_prs: true
+  pr_fix_label: "ai-fix"
+  max_pr_retries: 3
+  pipeline:
+    chaining:
+      on_test_failure: "ai-fix"
+      on_review_issues: "ai-fix"
