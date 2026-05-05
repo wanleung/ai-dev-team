@@ -50,7 +50,7 @@ class AnthropicBackend(LLMBackend):
         """Return False — Anthropic backend does not support tool calling."""
         return False
 
-    def call(self, messages: list[dict]) -> str:
+    def call(self, messages: list[dict], run_id: str | None = None) -> str:
         """Call the Anthropic API with the given messages.
 
         Extracts the system prompt from the first "system" role message (if present)
@@ -94,6 +94,7 @@ class AnthropicBackend(LLMBackend):
         messages: list[dict],
         tools: "ToolRegistry",
         max_turns: int = 8,
+        run_id: str | None = None,
     ) -> str:
         """Not implemented — Anthropic backend does not support tool calling.
 

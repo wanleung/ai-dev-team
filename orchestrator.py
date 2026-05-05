@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -48,6 +49,7 @@ from memory_store import MemoryStore
 from skills_loader import SkillContext, SkillLoader
 from test_fix_loop import TestFixLoopMixin
 from tools import builtin_tools, CombinedToolRegistry, MCPToolRegistry
+from agents.token_ledger import TokenLedger, current_stage, get_ledger, set_ledger
 
 log = logging.getLogger(__name__)
 
@@ -334,6 +336,9 @@ class PipelineResult:
     Also computed automatically by the watcher from chaining rules in config.yaml."""
     progress_comment_id: Optional[int] = None
     """GitHub comment ID of the progress tracker comment, for resuming from checkpoints."""
+    run_id: str = ""
+    total_cost_usd: float = 0.0
+    token_usage: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -381,6 +386,9 @@ class PipelineResult:
             "last_verdict": self.last_verdict,
             "next_label": self.next_label,
             "progress_comment_id": self.progress_comment_id,
+            "run_id": self.run_id,
+            "total_cost_usd": self.total_cost_usd,
+            "token_usage": self.token_usage,
         }
 
     @classmethod
@@ -399,7 +407,8 @@ class PipelineResult:
                     "prd_revision_count", "design_revision_count",
                     "prd_reviewer_draft", "design_reviewer_draft",
                     "design_output", "last_verdict", "next_label",
-                    "progress_comment_id"]:
+                    "progress_comment_id",
+                    "run_id", "total_cost_usd", "token_usage"]:
             setattr(r, key, data.get(key, getattr(r, key)))
         return r
 
@@ -537,6 +546,7 @@ class Orchestrator(TestFixLoopMixin):
         pipeline_yaml_stages: "list | None" = None,
         progress_tracker_mode: str = "summary",
         tdd_commit_tests: bool = False,
+        cost_tracking: dict | None = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -729,6 +739,11 @@ class Orchestrator(TestFixLoopMixin):
         self._pipeline_yaml_stages: "list | None" = pipeline_yaml_stages
         self.progress_tracker_mode: str = progress_tracker_mode
         self.tdd_commit_tests: bool = tdd_commit_tests
+        self._cost_tracking: dict = cost_tracking or {}
+        ct = self._cost_tracking
+        if ct.get("enabled", False):
+            ledger = TokenLedger(pricing=ct.get("pricing", {}))
+            set_ledger(ledger)
 
     # ── Backend factory helpers ───────────────────────────────────────────────
 
@@ -961,6 +976,7 @@ class Orchestrator(TestFixLoopMixin):
             pipeline_yaml_stages=pipeline_yaml_stages,
             progress_tracker_mode=pipeline.get("progress_tracker", "summary"),
             tdd_commit_tests=pipeline.get("tdd_commit_tests", False),
+            cost_tracking=cfg.get("cost_tracking", {}),
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
@@ -1504,10 +1520,14 @@ class Orchestrator(TestFixLoopMixin):
             result.last_verdict = ""
             for inner_name in loop_stage.loop_stages:
                 inner = registry[inner_name]
-                self._run_stage(
-                    inner.label, inner.description, result,
-                    lambda s=inner: s.fn(result)
-                )
+                _inner_token = current_stage.set(inner_name)
+                try:
+                    self._run_stage(
+                        inner.label, inner.description, result,
+                        lambda s=inner: s.fn(result)
+                    )
+                finally:
+                    current_stage.reset(_inner_token)
                 if result.errors:
                     return False
 
@@ -1798,6 +1818,14 @@ class Orchestrator(TestFixLoopMixin):
             A PipelineResult with all artifacts.
         """
         start_time = time.time()
+        run_id = str(uuid.uuid4())
+        ct = self._cost_tracking
+        if ct.get("enabled", False):
+            active_repo = str(
+                self.target_github.repo if self.target_github else
+                (self.github.repo if self.github else "local")
+            )
+            get_ledger().start_run(run_id, "", active_repo)  # project_name updated in _finish
 
         # ── Detect target project repo (multi-repo support) ───────────────────
         target_repo_override = parse_target_repo(trigger_issue_body or "")
@@ -1884,6 +1912,10 @@ class Orchestrator(TestFixLoopMixin):
         else:
             result = PipelineResult(requirement=requirement)
 
+        # Set run_id on result (new run or restored checkpoint)
+        if not result.run_id:
+            result.run_id = run_id
+
         # Pre-set issue_number if provided by caller (allows pause before PM creates it)
         if issue_number is not None and not result.issue_number:
             result.issue_number = issue_number
@@ -1955,22 +1987,26 @@ class Orchestrator(TestFixLoopMixin):
 
             self._tracker.mark_in_progress(stage.checkpoint_key)
 
-            if stage.loop_stages:
-                # Loop block from pipeline.yaml
-                ok = self._run_loop_stage(stage, result)
-                if not ok:
-                    self._tracker.mark_failed(stage.checkpoint_key)
-                    result.progress_comment_id = self._tracker.comment_id
-                    self._save_checkpoint(result)
-                    return self._finish(result, start_time)
-            else:
-                self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result))
+            _stage_token = current_stage.set(stage.checkpoint_key)
+            try:
+                if stage.loop_stages:
+                    # Loop block from pipeline.yaml
+                    ok = self._run_loop_stage(stage, result)
+                    if not ok:
+                        self._tracker.mark_failed(stage.checkpoint_key)
+                        result.progress_comment_id = self._tracker.comment_id
+                        self._save_checkpoint(result)
+                        return self._finish(result, start_time)
+                else:
+                    self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result))
 
-                if result.errors:
-                    self._tracker.mark_failed(stage.checkpoint_key, result.errors[-1])
-                    result.progress_comment_id = self._tracker.comment_id
-                    self._save_checkpoint(result)
-                    return self._finish(result, start_time)
+                    if result.errors:
+                        self._tracker.mark_failed(stage.checkpoint_key, result.errors[-1])
+                        result.progress_comment_id = self._tracker.comment_id
+                        self._save_checkpoint(result)
+                        return self._finish(result, start_time)
+            finally:
+                current_stage.reset(_stage_token)
 
             # Backward-compat: senior_engineer stage also marks old "engineer" key
             if stage.name == "senior_engineer":
@@ -3264,6 +3300,31 @@ class Orchestrator(TestFixLoopMixin):
                 console.print(f"  [yellow]⚠️  Memory bank update failed: {exc}[/yellow]")
 
         # Summary table
+        ct = self._cost_tracking
+        if ct.get("enabled", False) and result.run_id:
+            ledger = get_ledger()
+            # Update project name now that it's known
+            if result.run_id in ledger._runs:
+                ledger._runs[result.run_id]["project_name"] = result.project_name or ""
+            ledger.finish_run(result.run_id)
+            # Flush to SQLite
+            db_path = ct.get("db_path", "./token_usage.db")
+            try:
+                ledger.flush_to_db(db_path)
+            except Exception as exc:
+                console.print(f"  [yellow]⚠️  Token DB flush failed: {exc}[/yellow]")
+            # Store results
+            s = ledger.summary(result.run_id)
+            result.total_cost_usd = s["total_cost_usd"]
+            result.token_usage = s
+            # Post to GitHub issue if configured
+            if ct.get("post_to_github", False) and self.github and result.issue_number:
+                try:
+                    comment = ledger.format_github_comment(result.run_id)
+                    self.github.add_issue_comment(result.issue_number, comment)
+                except Exception as exc:
+                    console.print(f"  [yellow]⚠️  Token comment failed: {exc}[/yellow]")
+
         table = Table(title="Pipeline Summary", show_header=True, header_style="bold magenta")
         table.add_column("Stage", style="cyan")
         table.add_column("Output")
@@ -3297,6 +3358,8 @@ class Orchestrator(TestFixLoopMixin):
         if result.pr_url:
             table.add_row("Pull Request", result.pr_url)
         table.add_row("Duration", f"{result.duration_seconds:.1f}s")
+        if result.total_cost_usd > 0:
+            table.add_row("Est. cost", f"${result.total_cost_usd:.4f} USD")
         if result.errors:
             table.add_row("[red]Errors[/red]", "\n".join(result.errors))
 

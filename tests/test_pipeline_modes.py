@@ -198,6 +198,7 @@ def _make_minimal_orch(mode: str = "standard", stage_skips: dict | None = None):
     o.num_junior_engineers = 1
     o.junior_quality_gate = False
     o._save_files_locally = MagicMock()
+    o.tdd_commit_tests = False  # token-counter feature
     return o
 
 
@@ -387,6 +388,8 @@ def _make_full_orch(mode: str = "standard"):
     o.repo_auto_indexer = None
     o._github_token = None
     o.progress_tracker_mode = "off"
+    o._cost_tracking = {}  # token-counter feature; disabled in tests
+    o.tdd_commit_tests = False  # token-counter feature helper attr
 
     # Minimal result fixture
     def fake_load_checkpoint(req):

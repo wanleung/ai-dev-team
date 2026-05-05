@@ -1,4 +1,5 @@
 openai>=1.30.0
+tiktoken>=0.7.0
 requests>=2.31.0
 pyyaml>=6.0.1
 rich>=13.7.0
