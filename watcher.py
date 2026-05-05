@@ -579,69 +579,80 @@ def _run_pr_revision(
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
 
+    log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"pr-revision-{pr_number}-attempt{attempt}.log"
 
     logger.info("  🔄 PR #%d: starting fix attempt %d", pr_number, attempt)
 
     # Mark as running and record attempt number
-    ensure_label(tracker_repo, "agent-running", LABEL_COLOURS.get(LABEL_RUNNING, "0075ca"))
+    ensure_label(tracker_repo, LABEL_RUNNING, LABEL_COLOURS[LABEL_RUNNING])
     ensure_label(tracker_repo, attempt_label, "c5def5")
     add_label(tracker_repo, pr_number, LABEL_RUNNING)
     add_label(tracker_repo, pr_number, attempt_label)
 
-    with open(log_file, "w", encoding="utf-8") as fh:
-        old_stdout, old_stderr = sys.stdout, sys.stderr
-        sys.stdout = sys.stderr = fh
-        try:
-            from orchestrator import Orchestrator
+    try:
+        with open(log_file, "w", encoding="utf-8") as fh:
+            old_stdout, old_stderr = sys.stdout, sys.stderr
+            sys.stdout = sys.stderr = fh
+            try:
+                from orchestrator import Orchestrator
 
-            orch = Orchestrator(
-                model=effective_model,
-                model_overrides=model_overrides,
-                github_token=token,
-                github_repo=tracker_repo,
-                target_repo=target_repo,
-                num_engineers=num_engineers,
-                use_github=True,
-                ollama_url=ollama_url,
-                nvidia_nim_api_key=nvidia_nim_api_key,
-                nvidia_nim_base_url=nvidia_nim_base_url,
-                retry_delay=retry_delay,
-                max_api_retries=max_api_retries,
-                inter_call_delay=inter_call_delay,
-            )
+                orch = Orchestrator(
+                    model=effective_model,
+                    model_overrides=model_overrides,
+                    github_token=token,
+                    github_repo=tracker_repo,
+                    target_repo=target_repo,
+                    num_engineers=num_engineers,
+                    use_github=True,
+                    ollama_url=ollama_url,
+                    nvidia_nim_api_key=nvidia_nim_api_key,
+                    nvidia_nim_base_url=nvidia_nim_base_url,
+                    retry_delay=retry_delay,
+                    max_api_retries=max_api_retries,
+                    inter_call_delay=inter_call_delay,
+                )
 
-            result = orch.run_revision(pr_number)
-            status = result.get("status", "ok")
+                result = orch.run_revision(pr_number)
+                status = result.get("status", "ok")
 
-            if status in ("max_revisions_reached", "error"):
+                if status in ("max_revisions_reached", "error"):
+                    add_label(tracker_repo, pr_number, LABEL_FAILED)
+                    remove_label(tracker_repo, pr_number, LABEL_RUNNING)
+                    post_comment(
+                        tracker_repo, pr_number,
+                        f"❌ PR fix attempt {attempt} could not complete "
+                        f"(status: `{status}`). Log: `{log_file}`\n\n"
+                        "Remove `agent-failed` to retry manually.",
+                    )
+                    logger.info("  ❌ PR #%d fix attempt %d: %s", pr_number, attempt, status)
+                else:
+                    add_label(tracker_repo, pr_number, LABEL_COMPLETE)
+                    remove_label(tracker_repo, pr_number, LABEL_RUNNING)
+                    # Remove trigger label so next cycle doesn't re-trigger
+                    remove_label(tracker_repo, pr_number, "ai-fix")
+                    logger.info("  ✅ PR #%d fix attempt %d complete", pr_number, attempt)
+
+            except Exception as exc:  # noqa: BLE001
+                logger.error("  ❌ PR #%d fix attempt %d unhandled error: %s", pr_number, attempt, exc)
                 add_label(tracker_repo, pr_number, LABEL_FAILED)
                 remove_label(tracker_repo, pr_number, LABEL_RUNNING)
                 post_comment(
                     tracker_repo, pr_number,
-                    f"❌ PR fix attempt {attempt} could not complete "
-                    f"(status: `{status}`). Log: `{log_file}`\n\n"
-                    "Remove `agent-failed` to retry manually.",
+                    f"❌ PR fix attempt {attempt} failed with error: `{exc}`\n"
+                    f"Log: `{log_file}`\n\nRemove `agent-failed` to retry.",
                 )
-                logger.info("  ❌ PR #%d fix attempt %d: %s", pr_number, attempt, status)
-            else:
-                add_label(tracker_repo, pr_number, LABEL_COMPLETE)
-                remove_label(tracker_repo, pr_number, LABEL_RUNNING)
-                # Remove trigger label so next cycle doesn't re-trigger
-                remove_label(tracker_repo, pr_number, "ai-fix")
-                logger.info("  ✅ PR #%d fix attempt %d complete", pr_number, attempt)
-
-        except Exception as exc:  # noqa: BLE001
-            logger.error("  ❌ PR #%d fix attempt %d unhandled error: %s", pr_number, attempt, exc)
-            add_label(tracker_repo, pr_number, LABEL_FAILED)
-            remove_label(tracker_repo, pr_number, LABEL_RUNNING)
-            post_comment(
-                tracker_repo, pr_number,
-                f"❌ PR fix attempt {attempt} failed with error: `{exc}`\n"
-                f"Log: `{log_file}`\n\nRemove `agent-failed` to retry.",
-            )
-        finally:
-            sys.stdout, sys.stderr = old_stdout, old_stderr
+            finally:
+                sys.stdout, sys.stderr = old_stdout, old_stderr
+    except OSError as exc:  # noqa: BLE001
+        logger.error("  ❌ PR #%d: could not open log file %s: %s", pr_number, log_file, exc)
+        add_label(tracker_repo, pr_number, LABEL_FAILED)
+        remove_label(tracker_repo, pr_number, LABEL_RUNNING)
+        post_comment(
+            tracker_repo, pr_number,
+            f"❌ PR fix attempt {attempt} failed: could not open log file.\n"
+            f"`{exc}`\n\nRemove `agent-failed` to retry.",
+        )
 
 
 def _parse_target_repo(body: str) -> str | None:
