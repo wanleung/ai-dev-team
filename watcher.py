@@ -680,10 +680,14 @@ def _watch_prs(
         num_engineers = _w_settings.get("num_engineers", 2)
         pr_fix_label = _w_settings.get("pr_fix_label", "ai-fix")
         pr_failure_pattern = _w_settings.get("pr_failure_pattern", r"❌|FAILED|tests? failed|test suite failed")
-        max_pr_retries = int(_w_settings.get("max_pr_retries", 3))
+        try:
+            max_pr_retries = int(_w_settings.get("max_pr_retries", 3))
+        except (ValueError, TypeError):
+            logger.warning("Invalid max_pr_retries for %s; defaulting to 3", tracker_repo)
+            max_pr_retries = 3
         skip_drafts = not _w_settings.get("watch_draft_prs", False)
 
-        logger.info("Checking PRs in %s …", tracker_repo)
+        logger.info("Checking PRs in %s (tracker: %s) …", target_repo, tracker_repo)
         try:
             prs = get_open_prs(target_repo, skip_drafts=skip_drafts)
         except Exception as exc:  # noqa: BLE001
@@ -965,12 +969,19 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
     watchers = config.get("watchers", [])
     logger.info("Loaded %d watcher(s) from %s", len(watchers), config_path)
 
-    # Load pipeline config to get workspace_dir and bot_login
+    # Load pipeline config to get workspace_dir, bot_login, and PR watcher defaults
     pipeline_cfg = _load_pipeline_config()
-    workspace_dir = pipeline_cfg.get("pipeline", {}).get("workspace_dir", "./workspace")
+    pipeline_section = pipeline_cfg.get("pipeline", {})
+    workspace_dir = pipeline_section.get("workspace_dir", "./workspace")
     github_cfg = pipeline_cfg.get("github", {})
     bot_login = github_cfg.get("bot_login", "github-actions[bot]")
     github_token = os.environ.get("GITHUB_TOKEN", "")
+
+    # Merge pipeline PR-watching defaults as lowest-priority base for global_settings
+    _PR_WATCH_KEYS = ("watch_prs", "pr_fix_label", "pr_failure_pattern",
+                      "max_pr_retries", "watch_draft_prs")
+    pr_defaults = {k: pipeline_section[k] for k in _PR_WATCH_KEYS if k in pipeline_section}
+    global_settings = {**pr_defaults, **global_settings}
 
     # Build list of tracker repos for checking waiting issues
     tracker_repos = [w["tracker_repo"] for w in watchers if w.get("enabled", True)]
