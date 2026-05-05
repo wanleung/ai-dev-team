@@ -148,3 +148,9 @@ def test_should_fix_pr_no_trigger():
     pr = {"number": 5, "labels": [{"name": "enhancement"}], "draft": False}
     comments = [{"body": "Looks good!", "user": {"login": "alice"}}]
     assert _should_fix_pr(pr, comments, "ai-fix", r"❌|FAILED", 3) is False
+
+
+def test_pr_attempt_count_tolerates_missing_name_key():
+    """_pr_attempt_count handles label dicts missing 'name' key without crashing."""
+    from watcher import _pr_attempt_count
+    assert _pr_attempt_count([{}, {"label": "ai-pr-fix-1"}]) == 0
