@@ -104,3 +104,17 @@ def test_flush_to_db_idempotent(tmp_path):
 
     # There are exactly 2 recorded events; double-flush must not produce 4
     assert count == 2, f"Expected 2 event rows after double flush, got {count}"
+
+
+def test_estimate_tokens_returns_int():
+    from agents.token_ledger import estimate_tokens
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "What is 2+2?"},
+    ]
+    reply = "4"
+    prompt_est, completion_est = estimate_tokens(messages, reply)
+    assert isinstance(prompt_est, int)
+    assert isinstance(completion_est, int)
+    assert prompt_est > 0
+    assert completion_est == 1  # "4" is one token

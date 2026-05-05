@@ -236,6 +236,25 @@ class TokenLedger:
         return (prompt_tokens * input_price + completion_tokens * output_price) / 1_000_000
 
 
+def estimate_tokens(messages: list[dict], reply: str) -> tuple[int, int]:
+    """Estimate prompt + completion token counts using tiktoken (cl100k_base).
+
+    Used as a fallback when response.usage is not available (streaming calls).
+    Returns (prompt_tokens, completion_tokens).
+    """
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        prompt_text = " ".join(
+            m.get("content", "") or "" for m in messages if isinstance(m.get("content"), str)
+        )
+        return len(enc.encode(prompt_text)), len(enc.encode(reply))
+    except Exception:
+        # Rough fallback if tiktoken is unavailable: ~4 chars per token
+        prompt_text = " ".join(m.get("content", "") or "" for m in messages)
+        return max(1, len(prompt_text) // 4), max(1, len(reply) // 4)
+
+
 # Global ledger instance — replaced by Orchestrator with a configured instance.
 _ledger: TokenLedger = TokenLedger()
 
