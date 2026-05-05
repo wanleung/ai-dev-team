@@ -148,8 +148,26 @@ def test_ollama_stream_thinking_no_content_with_preserve():
     assert "full design here" in result  # reasoning content captured, not lost
 
 
+def test_ollama_stream_thinking_no_content_without_preserve():
+    """When model only emits reasoning_content and no delta.content, preserve_thinking=False
+    should use reasoning as the response (not return empty string).
+    This handles thinking models routed via LiteLLM proxy that only emit reasoning_content."""
+    from agents.backends.ollama import OllamaBackend
 
-def test_ollama_stream_empty_raises_server_error():
+    def _reasoning_chunk(text):
+        delta = MagicMock(content=None)
+        delta.model_extra = {"reasoning_content": text}
+        return MagicMock(choices=[MagicMock(delta=delta)])
+
+    chunks = [_reasoning_chunk("the actual answer is here")]
+    with patch("agents.backends.ollama.OpenAI") as mock_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: iter(chunks)
+        mock_cls.return_value = mock_client
+        b = OllamaBackend(model="ollama/thinker", think=True, preserve_thinking=False, stream=True)
+    result = b.call([{"role": "user", "content": "hi"}])
+    assert result == "the actual answer is here"
+    assert "<think>" not in result
     """When stream returns zero chunks (LiteLLM timed out server-side), raise ConnectionError
     instead of returning empty string — lets FallbackLLMBackend switch backends."""
     from agents.backends.ollama import OllamaBackend
