@@ -245,6 +245,54 @@ def _load_pipeline_config() -> dict:
     return cfg
 
 
+def load_watcher_config(config_path: Path) -> dict:
+    """Load and merge watcher config from repos.yaml + repos-enabled/*.yaml.
+
+    Returns a config dict with a unified ``watchers`` list.  Per-watcher
+    ``settings:`` blocks are stripped from the watcher entry and stored as
+    ``_settings`` so callers can apply per-watcher overrides.
+    """
+    _log = logging.getLogger(__name__)
+
+    with open(config_path, encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+
+    legacy_watchers: list[dict] = list(config.get("watchers") or [])
+    seen: dict[str, int] = {}  # tracker_repo → index in merged list
+
+    for w in legacy_watchers:
+        repo = w.get("tracker_repo", "")
+        if repo:
+            seen[repo] = legacy_watchers.index(w)
+
+    repos_enabled = config_path.parent / "repos-enabled"
+    if repos_enabled.is_dir():
+        for entry in sorted(repos_enabled.iterdir()):
+            if not entry.suffix == ".yaml":
+                continue
+            if not entry.exists():  # broken symlink
+                _log.warning("Broken symlink in repos-enabled/: %s — skipping", entry.name)
+                continue
+            with open(entry, encoding="utf-8") as f:
+                watcher_dict = yaml.safe_load(f) or {}
+            per_settings = watcher_dict.pop("settings", None)
+            if per_settings:
+                watcher_dict["_settings"] = per_settings
+            repo = watcher_dict.get("tracker_repo", "")
+            if repo in seen:
+                _log.warning(
+                    "Duplicate tracker_repo '%s' in repos-enabled/%s — enabled-dir entry wins",
+                    repo, entry.name,
+                )
+                legacy_watchers[seen[repo]] = watcher_dict
+            else:
+                seen[repo] = len(legacy_watchers)
+                legacy_watchers.append(watcher_dict)
+
+    config["watchers"] = legacy_watchers
+    return config
+
+
 def install_llm_pool_from_config(pipeline_cfg: dict) -> None:
     """Install the global LLMPoolManager from ``pipeline_cfg['llm']['pools']``.
 
