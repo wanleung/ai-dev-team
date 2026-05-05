@@ -113,6 +113,28 @@ def get_open_issues(repo: str, label: str | list[str]) -> list[dict]:
     return issues
 
 
+def get_open_prs(repo: str, skip_drafts: bool = True) -> list[dict]:
+    """Return open pull requests for the repo, optionally excluding drafts."""
+    url = f"https://api.github.com/repos/{repo}/pulls"
+    params = {"state": "open", "per_page": 50}
+    resp = requests.get(url, headers=_gh_headers(), params=params, timeout=10)
+    if not resp.ok:
+        raise RuntimeError(f"GitHub API error {resp.status_code}: {resp.text[:200]}")
+    prs = resp.json()
+    if skip_drafts:
+        prs = [pr for pr in prs if not pr.get("draft", False)]
+    return prs
+
+
+def get_pr_comments(repo: str, pr_number: int) -> list[dict]:
+    """Return all conversation comments on a pull request."""
+    url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
+    resp = requests.get(url, headers=_gh_headers(), params={"per_page": 100}, timeout=10)
+    if not resp.ok:
+        raise RuntimeError(f"GitHub API error {resp.status_code}: {resp.text[:200]}")
+    return resp.json()
+
+
 def post_comment(repo: str, issue_number: int, body: str) -> None:
     url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
     requests.post(url, headers=_gh_headers(), json={"body": body}, timeout=10)
