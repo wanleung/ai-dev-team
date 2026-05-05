@@ -295,6 +295,59 @@ def load_watcher_config(config_path: Path) -> dict:
     return config
 
 
+def cmd_repo_enable(base_dir: Path, name: str) -> None:
+    """Enable a watcher by creating a symlink in repos-enabled/."""
+    avail = base_dir / "repos-available" / f"{name}.yaml"
+    if not avail.exists():
+        available = sorted(p.stem for p in (base_dir / "repos-available").glob("*.yaml")) \
+            if (base_dir / "repos-available").is_dir() else []
+        print(f"Error: repos-available/{name}.yaml not found.", file=sys.stderr)
+        if available:
+            print(f"Available: {', '.join(available)}", file=sys.stderr)
+        sys.exit(1)
+
+    enabled_dir = base_dir / "repos-enabled"
+    enabled_dir.mkdir(exist_ok=True)
+    link = enabled_dir / f"{name}.yaml"
+
+    if link.exists() or link.is_symlink():
+        print(f"Error: '{name}' is already enabled. Run 'repo disable {name}' first.", file=sys.stderr)
+        sys.exit(1)
+
+    os.symlink(avail.resolve(), link)
+    print(f"Enabled: {name}")
+
+
+def cmd_repo_disable(base_dir: Path, name: str) -> None:
+    """Disable a watcher by removing its symlink from repos-enabled/."""
+    link = base_dir / "repos-enabled" / f"{name}.yaml"
+    if not link.exists() and not link.is_symlink():
+        print(f"Error: '{name}' is not currently enabled.", file=sys.stderr)
+        sys.exit(1)
+
+    link.unlink()
+    print(f"Disabled: {name}")
+
+
+def cmd_repo_list(base_dir: Path) -> None:
+    """List all repos in repos-available/ with enabled/disabled status."""
+    avail_dir = base_dir / "repos-available"
+    if not avail_dir.is_dir():
+        print("No repos-available/ directory found.")
+        return
+
+    files = sorted(avail_dir.glob("*.yaml"))
+    if not files:
+        print("No repos found in repos-available/")
+        return
+
+    enabled_dir = base_dir / "repos-enabled"
+    for f in files:
+        link = enabled_dir / f.name
+        status = "[enabled] " if (link.exists() or link.is_symlink()) and link.exists() else "[disabled]"
+        print(f"  {status}  {f.stem}")
+
+
 def install_llm_pool_from_config(pipeline_cfg: dict) -> None:
     """Install the global LLMPoolManager from ``pipeline_cfg['llm']['pools']``.
 
@@ -826,6 +879,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", help="(--once mode) tracker repo, e.g. owner/repo")
     parser.add_argument("--issue", type=int, help="(--once mode) issue number")
     parser.add_argument("--label", help="(--once mode) GitHub label that triggered the pipeline")
+
+    sub = parser.add_subparsers(dest="command")
+    repo_p = sub.add_parser("repo", help="Manage repos-available / repos-enabled")
+    repo_sub = repo_p.add_subparsers(dest="repo_command")
+
+    en = repo_sub.add_parser("enable", help="Enable a repo watcher")
+    en.add_argument("name", help="Repo name stem (e.g. mcp-tfl)")
+
+    dis = repo_sub.add_parser("disable", help="Disable a repo watcher")
+    dis.add_argument("name", help="Repo name stem (e.g. mcp-tfl)")
+
+    repo_sub.add_parser("list", help="List all available repos with enabled/disabled status")
+
     return parser
 
 
@@ -860,6 +926,21 @@ def run_once(repo: str, issue: int, label: str, logger: logging.Logger) -> int:
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
+
+    # ── repo sub-commands ────────────────────────────────────────────────
+    if getattr(args, "command", None) == "repo":
+        config_path = Path(args.config).resolve()
+        base_dir = config_path.parent
+        repo_command = getattr(args, "repo_command", None)
+        if repo_command == "enable":
+            cmd_repo_enable(base_dir, args.name)
+        elif repo_command == "disable":
+            cmd_repo_disable(base_dir, args.name)
+        elif repo_command == "list":
+            cmd_repo_list(base_dir)
+        else:
+            print("Usage: watcher.py repo enable|disable|list [name]")
+        return
 
     # --once mode short-circuits everything (no lock file, no polling)
     if args.once:

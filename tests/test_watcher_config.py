@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 import watcher
-from watcher import load_watcher_config
+from watcher import load_watcher_config, cmd_repo_enable, cmd_repo_disable, cmd_repo_list
 
 
 # ── load_watcher_config ───────────────────────────────────────────────────────
@@ -303,3 +303,90 @@ def test_watch_uses_global_model_when_no_per_watcher_settings(tmp_path, monkeypa
     assert len(dispatched) == 1
     assert dispatched[0]["model"] == "gpt-4.1"
     assert dispatched[0]["num_engineers"] == 2
+
+
+# ── repo sub-commands ─────────────────────────────────────────────────────────
+
+def test_repo_enable_creates_symlink(tmp_path):
+    """repo enable <name> creates a symlink repos-enabled/<name>.yaml."""
+    avail = tmp_path / "repos-available"
+    avail.mkdir()
+    _write(avail / "mcp-tfl.yaml", "tracker_repo: owner/mcp-tfl\n")
+
+    cmd_repo_enable(tmp_path, "mcp-tfl")
+
+    link = tmp_path / "repos-enabled" / "mcp-tfl.yaml"
+    assert link.is_symlink()
+    assert link.resolve() == (avail / "mcp-tfl.yaml").resolve()
+
+
+def test_repo_enable_creates_repos_enabled_dir(tmp_path):
+    """repo enable creates repos-enabled/ if it doesn't exist."""
+    avail = tmp_path / "repos-available"
+    avail.mkdir()
+    _write(avail / "my-app.yaml", "tracker_repo: owner/my-app\n")
+
+    assert not (tmp_path / "repos-enabled").exists()
+    cmd_repo_enable(tmp_path, "my-app")
+    assert (tmp_path / "repos-enabled").is_dir()
+
+
+def test_repo_enable_error_not_found(tmp_path):
+    """repo enable <name> raises SystemExit if the file doesn't exist."""
+    (tmp_path / "repos-available").mkdir()
+    with pytest.raises(SystemExit):
+        cmd_repo_enable(tmp_path, "nonexistent")
+
+
+def test_repo_enable_error_already_enabled(tmp_path):
+    """repo enable raises SystemExit if already enabled."""
+    avail = tmp_path / "repos-available"
+    avail.mkdir()
+    _write(avail / "alpha.yaml", "tracker_repo: owner/alpha\n")
+    cmd_repo_enable(tmp_path, "alpha")
+    with pytest.raises(SystemExit):
+        cmd_repo_enable(tmp_path, "alpha")
+
+
+def test_repo_disable_removes_symlink(tmp_path):
+    """repo disable removes the symlink."""
+    avail = tmp_path / "repos-available"
+    avail.mkdir()
+    _write(avail / "beta.yaml", "tracker_repo: owner/beta\n")
+    cmd_repo_enable(tmp_path, "beta")
+    assert (tmp_path / "repos-enabled" / "beta.yaml").exists()
+
+    cmd_repo_disable(tmp_path, "beta")
+    assert not (tmp_path / "repos-enabled" / "beta.yaml").exists()
+    # source file must still be there
+    assert (avail / "beta.yaml").exists()
+
+
+def test_repo_disable_error_not_enabled(tmp_path):
+    """repo disable raises SystemExit if not currently enabled."""
+    (tmp_path / "repos-available").mkdir()
+    (tmp_path / "repos-enabled").mkdir()
+    with pytest.raises(SystemExit):
+        cmd_repo_disable(tmp_path, "unknown")
+
+
+def test_repo_list_output(tmp_path, capsys):
+    """repo list prints [enabled] / [disabled] status."""
+    avail = tmp_path / "repos-available"
+    avail.mkdir()
+    _write(avail / "repo-a.yaml", "tracker_repo: owner/a\n")
+    _write(avail / "repo-b.yaml", "tracker_repo: owner/b\n")
+    cmd_repo_enable(tmp_path, "repo-a")
+
+    cmd_repo_list(tmp_path)
+    out = capsys.readouterr().out
+    assert "repo-a" in out and "enabled" in out
+    assert "repo-b" in out and "disabled" in out
+
+
+def test_repo_list_empty(tmp_path, capsys):
+    """repo list on empty repos-available/ prints a helpful message."""
+    (tmp_path / "repos-available").mkdir()
+    cmd_repo_list(tmp_path)
+    out = capsys.readouterr().out
+    assert "No repos found" in out
