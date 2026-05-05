@@ -289,6 +289,17 @@ pipeline:
     on_review_issues: "ai-fix"
     # Future: on_deploy_failure, on_prd_rejected, etc. can be added here
 
+  # ── PR watching ──────────────────────────────────────────────────────────────
+  # When enabled, the watcher also scans open PRs for failures and auto-fixes them.
+  # Enable per-repo in repos-available/<repo>.yaml under settings:
+  #   settings:
+  #     watch_prs: true
+  watch_prs: false                          # disabled globally; opt-in per repo
+  pr_fix_label: "ai-fix"
+  pr_failure_pattern: "❌|FAILED|tests? failed|test suite failed"
+  max_pr_retries: 3
+  watch_draft_prs: false
+
 # ── Token usage & cost tracking ────────────────────────────────────────────
 # Tracks LLM token consumption per pipeline run for client chargeback.
 # Persisted to a local SQLite database; optionally posted to the GitHub issue.
