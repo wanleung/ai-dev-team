@@ -627,6 +627,8 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
                             tracker_repo=tracker_repo,
                             default_target=default_targets.get(tracker_repo),
                             label="ai-feature",
+                            model=model,
+                            num_engineers=num_engineers,
                         ))
                         logger.info(f"  Queued resumed issue #{issue_number}: {issue.get('title', '')}")
                         task_created = True
@@ -681,9 +683,9 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
     
     # Process any resume triggers (issues answered by human)
     if not dry_run:
-        _global_model = global_settings.get("model", "gpt-4.1")
-        _global_num_engineers = global_settings.get("num_engineers", 2)
-        resumed_tasks = _process_resume_queue(workspace_dir, tracker_repos, default_targets, _global_model, _global_num_engineers, log_dir, dry_run, logger)
+        global_model = global_settings.get("model", "gpt-4.1")
+        global_num_engineers = global_settings.get("num_engineers", 2)
+        resumed_tasks = _process_resume_queue(workspace_dir, tracker_repos, default_targets, global_model, global_num_engineers, log_dir, dry_run, logger)
         tasks.extend(resumed_tasks)
     
     for w in watchers:

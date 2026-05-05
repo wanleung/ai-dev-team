@@ -1,9 +1,11 @@
 """tests/test_watcher_config.py — Tests for load_watcher_config() and repo sub-commands."""
 from __future__ import annotations
 
+import logging
 import os
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -228,17 +230,24 @@ def test_watch_uses_per_watcher_model(tmp_path, monkeypatch):
 
     def fake_dispatch(**kwargs):
         dispatched.append(kwargs)
+        return SimpleNamespace(
+            next_label=None,
+            verdict="success",
+            tests_passed=True,
+            deploy_tests_passed=True,
+        )
 
     monkeypatch.setattr("watcher.get_open_issues", fake_get_open_issues)
     monkeypatch.setattr("watcher._dispatch", fake_dispatch)
     monkeypatch.setattr("watcher.ensure_label", lambda *a, **kw: None)
     monkeypatch.setattr("watcher.add_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.remove_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.post_comment",  lambda *a, **kw: None)
     monkeypatch.setattr("watcher.check_waiting_issues", lambda *a, **kw: None)
     monkeypatch.setattr("watcher._process_resume_queue", lambda *a, **kw: [])
     monkeypatch.setattr("watcher._load_pipeline_config", lambda: {})
     (tmp_path / "logs" / "watcher").mkdir(parents=True, exist_ok=True)
 
-    import logging
     logger = logging.getLogger("test")
     logger.addHandler(logging.NullHandler())
 
@@ -247,3 +256,50 @@ def test_watch_uses_per_watcher_model(tmp_path, monkeypatch):
     assert len(dispatched) == 1
     assert dispatched[0]["model"] == "gpt-4.1-mini"
     assert dispatched[0]["num_engineers"] == 1
+
+
+def test_watch_uses_global_model_when_no_per_watcher_settings(tmp_path, monkeypatch):
+    """watch() uses global model when watcher has no _settings."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, """
+        settings:
+          model: gpt-4.1
+          num_engineers: 2
+          max_parallel: 1
+          log_dir: logs/watcher
+        watchers:
+          - tracker_repo: owner/plain-repo
+            feature_label: feature-request
+            enabled: true
+    """)
+    (tmp_path / "logs" / "watcher").mkdir(parents=True, exist_ok=True)
+
+    dispatched = []
+
+    def fake_get_open_issues(repo, label):
+        if label == "feature-request":
+            return [{"number": 1, "title": "T", "body": "", "labels": [{"name": "feature-request"}]}]
+        return []
+
+    def fake_dispatch(**kwargs):
+        dispatched.append(kwargs)
+        return SimpleNamespace(next_label=None, verdict="success", tests_passed=True, deploy_tests_passed=True)
+
+    monkeypatch.setattr("watcher.get_open_issues", fake_get_open_issues)
+    monkeypatch.setattr("watcher._dispatch", fake_dispatch)
+    monkeypatch.setattr("watcher.ensure_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.add_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.remove_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.post_comment", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.check_waiting_issues", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher._process_resume_queue", lambda *a, **kw: [])
+    monkeypatch.setattr("watcher._load_pipeline_config", lambda: {})
+
+    logger = logging.getLogger("test")
+    logger.addHandler(logging.NullHandler())
+
+    watcher.watch(cfg, dry_run=False, logger=logger)
+
+    assert len(dispatched) == 1
+    assert dispatched[0]["model"] == "gpt-4.1"
+    assert dispatched[0]["num_engineers"] == 2
