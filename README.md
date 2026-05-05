@@ -30,6 +30,9 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **Resilient checkpoints** — atomic writes prevent corruption on Ctrl+C; best-checkpoint-wins logic survives bad config runs
 - 🗺️ **Repo context awareness** — before engineering, the pipeline injects the full repo file tree into PM/Architect prompts (small repos) or auto-indexes the codebase into RAG (large repos), so agents understand what already exists before writing code
 - 🔁 **Pipeline self-chaining** — after a run, agents automatically re-label issues for follow-up pipelines (bug fix, re-review) without human intervention; configurable rules in `config.yaml`
+- 💰 **Token usage & cost tracking** — per-run token counts and USD cost per model; flushed to SQLite; optional GitHub issue comment with per-stage breakdown; configurable pricing table in `config.yaml`
+- ⚡ **Streaming for all backends** — streaming responses from GitHub Models, Anthropic, OpenCode Go, and Ollama; configurable per-agent
+- 🧪 **TDD early-commit** — in TDD pipeline mode, test files can be committed to a branch early so engineers see failing tests before implementing
 
 ---
 
@@ -580,6 +583,9 @@ print(result.qa_plan)           # Full test plan from QA Planner
 print(result.qa_acceptance_criteria)  # ['AC-01', 'AC-02', ...]
 print(result.pr_url)            # GitHub PR URL
 print(result.tests_passed)      # True / False / None
+print(result.run_id)            # UUID for this pipeline run
+print(result.total_cost_usd)    # estimated USD cost (requires cost_tracking.enabled)
+print(result.token_usage)       # dict with by_stage and by_model breakdowns
 ```
 
 ### `orchestrator.py` — PR Revision (`run_revision`)
@@ -669,6 +675,8 @@ pipeline:
   stop_on_review_issues: false
   max_retries: 2
   max_revisions: 3        # max automated PR revision rounds (0 = disabled)
+  mode: "standard"        # "standard" | "tdd" | "blocky"
+  tdd_commit_tests: false # (TDD mode) commit test files to branch before implementation
   # Note: if pipeline.yaml exists in the project root, it overrides pipeline.mode.
 
 skills:
@@ -679,6 +687,27 @@ skills:
 
 mcp:
   servers: []              # see "Using MCP Servers" section below
+
+cost_tracking:
+  enabled: false                  # set true to enable tracking
+  db_path: "./token_usage.db"     # SQLite file path (relative to project root)
+  post_to_github: false           # post usage summary comment to the GitHub issue
+
+  # Pricing per 1M tokens: [input_price_usd, output_price_usd]
+  # Set to [0.00, 0.00] for local/free models (Ollama, etc.)
+  # Unlisted models fall back to "default".
+  pricing:
+    gpt-4.1:           [2.00, 8.00]
+    gpt-4.1-mini:      [0.40, 1.60]
+    gpt-4o:            [2.50, 10.00]
+    qwen3.6-plus:      [0.50, 1.50]
+    qwen3.5-plus:      [0.30, 1.20]
+    thinker:           [0.00, 0.00]
+    thinker-best:      [0.00, 0.00]
+    coder:             [0.00, 0.00]
+    fast:              [0.00, 0.00]
+    chat:              [0.00, 0.00]
+    default:           [2.00, 8.00]   # fallback for any unlisted model
 ```
 
 ---

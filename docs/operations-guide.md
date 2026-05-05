@@ -8,6 +8,7 @@
 4. [RAG MCP — Moving to a New Machine or Rebuilding](#4-rag-mcp--moving-to-a-new-machine-or-rebuilding)
 5. [Reading GitHub Issues, PRs and Comments](#5-reading-github-issues-prs-and-comments)
 6. [Pipeline Self-Chaining (Auto Re-Label)](#6-pipeline-self-chaining-auto-re-label)
+7. [Token Usage & Cost Tracking](#7-token-usage--cost-tracking)
 
 ---
 
@@ -616,3 +617,107 @@ To stop chaining, remove the `ai-fix` label.
 | `orchestrator.py` | Added `next_label: Optional[str]` field to `PipelineResult` |
 | `watcher.py` | `_dispatch()` now returns `PipelineResult`; added `_resolve_next_label()`; `run_pipeline()` applies chaining |
 | `config.yaml` | Added `pipeline.chaining` section with `on_test_failure` and `on_review_issues` rules |
+
+---
+
+## 7. Token Usage & Cost Tracking
+
+Token usage and cost tracking records how many tokens each pipeline stage consumed and estimates the USD cost, then flushes results to a local SQLite database. Optionally it posts a Markdown breakdown table as a comment on the GitHub issue.
+
+### What it does
+
+- Counts input and output tokens for every LLM call, grouped by stage and by model
+- Calculates USD cost using a configurable per-model pricing table (input/output per 1M tokens)
+- Stores every run as a row in `token_usage.db` (SQLite, local to your project)
+- Optionally posts a per-stage cost breakdown table to the GitHub issue when the run finishes
+
+### How to enable
+
+Set `cost_tracking.enabled: true` in `config.yaml` (or `config.local.yaml`):
+
+```yaml
+cost_tracking:
+  enabled: true
+  db_path: "./token_usage.db"     # SQLite file path (relative to project root)
+  post_to_github: false           # set true to post cost comment to the GitHub issue
+
+  # Pricing per 1M tokens: [input_price_usd, output_price_usd]
+  # Set to [0.00, 0.00] for local/free models (Ollama, etc.)
+  # Unlisted models fall back to "default".
+  pricing:
+    gpt-4.1:           [2.00, 8.00]
+    gpt-4.1-mini:      [0.40, 1.60]
+    gpt-4o:            [2.50, 10.00]
+    qwen3.6-plus:      [0.50, 1.50]
+    qwen3.5-plus:      [0.30, 1.20]
+    thinker:           [0.00, 0.00]
+    thinker-best:      [0.00, 0.00]
+    coder:             [0.00, 0.00]
+    fast:              [0.00, 0.00]
+    chat:              [0.00, 0.00]
+    default:           [2.00, 8.00]   # fallback for any unlisted model
+```
+
+Add your own model entries to `pricing:` as needed. Models with `[0.00, 0.00]` (e.g. local Ollama models) are tracked for token counts but report $0.00 cost.
+
+### Reading the SQLite database
+
+The database is written to `db_path` (default `./token_usage.db`). Query it with the standard `sqlite3` CLI:
+
+```bash
+# Show all runs with total cost
+sqlite3 token_usage.db "SELECT run_id, created_at, total_cost_usd FROM runs ORDER BY created_at DESC LIMIT 20;"
+
+# Show per-model breakdown for the most recent run
+sqlite3 token_usage.db "
+  SELECT model, sum(input_tokens) as in_tok, sum(output_tokens) as out_tok, sum(cost_usd) as cost
+  FROM token_usage
+  WHERE run_id = (SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1)
+  GROUP BY model
+  ORDER BY cost DESC;
+"
+
+# Show per-stage breakdown for a specific run
+sqlite3 token_usage.db "
+  SELECT stage, model, input_tokens, output_tokens, cost_usd
+  FROM token_usage
+  WHERE run_id = 'YOUR-RUN-UUID'
+  ORDER BY cost_usd DESC;
+"
+```
+
+### GitHub issue comment format
+
+When `post_to_github: true`, the pipeline posts a comment to the issue after the run completes. The comment contains a Markdown table with one row per stage:
+
+```
+## 💰 Token Usage & Cost — run abc123
+
+| Stage | Model | In (tokens) | Out (tokens) | Cost (USD) |
+|---|---|---|---|---|
+| architect | gpt-4.1 | 4,210 | 1,840 | $0.0242 |
+| engineer | gpt-4.1-mini | 12,500 | 6,100 | $0.0147 |
+| qa_engineer | gpt-4.1-mini | 8,300 | 3,200 | $0.0085 |
+| … | … | … | … | … |
+| **Total** | | **31,400** | **14,200** | **$0.0612** |
+```
+
+### `PipelineResult` fields
+
+The `PipelineResult` object returned by `orch.run()` exposes three new fields when cost tracking is enabled:
+
+| Field | Type | Description |
+|---|---|---|
+| `run_id` | `str` | UUID identifying this pipeline run (also used as the DB key) |
+| `total_cost_usd` | `float` | Estimated total USD cost across all stages |
+| `token_usage` | `dict` | Full breakdown: `by_stage` and `by_model` sub-dicts, each mapping names to `{input_tokens, output_tokens, cost_usd}` |
+
+```python
+result = orch.run("Build a REST API for patient questionnaires")
+
+print(result.run_id)            # e.g. "a3f9c2d1-..."
+print(result.total_cost_usd)    # e.g. 0.0612
+print(result.token_usage)       # {"by_stage": {...}, "by_model": {...}}
+```
+
+These fields are `None` / `0.0` / `{}` when `cost_tracking.enabled` is `false`.
