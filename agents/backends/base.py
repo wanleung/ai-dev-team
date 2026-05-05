@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
 
+from agents.token_ledger import current_stage, estimate_tokens, get_ledger
+
 import httpx
 from openai import (
     APIConnectionError as _OAIConnError,
@@ -128,12 +130,13 @@ class LLMBackend(ABC):
     model: str  # bare model name (without prefix, e.g. "qwen3.6" not "ollama/qwen3.6")
 
     @abstractmethod
-    def call(self, messages: list[dict]) -> str:
+    def call(self, messages: list[dict], run_id: str | None = None) -> str:
         """Send a message list and return the assistant reply.
 
         Args:
             messages: Full message list including system prompt, history, and
                       the new user message. Format: OpenAI chat messages.
+            run_id:   Optional pipeline run ID for token ledger emission.
         """
 
     @abstractmethod
@@ -142,6 +145,7 @@ class LLMBackend(ABC):
         messages: list[dict],
         tools: "ToolRegistry",
         max_turns: int = 8,
+        run_id: str | None = None,
     ) -> str:
         """Send messages, execute any tool calls, and return the final reply.
 
@@ -149,6 +153,7 @@ class LLMBackend(ABC):
             messages: Full message list (system + history + user message).
             tools:    ToolRegistry providing schemas and call() dispatch.
             max_turns: Max tool-call rounds before forcing a text response.
+            run_id:   Optional pipeline run ID for token ledger emission.
         """
 
     def supports_tools(self) -> bool:
@@ -195,11 +200,12 @@ class OpenAICompatibleBackend(LLMBackend):
     def _pre_call(self) -> None:
         pass
 
-    def _stream_call(self, messages: list[dict]) -> str:
+    def _stream_call(self, messages: list[dict], run_id: str | None = None) -> str:
         """Collect a streaming response into a single string.
 
         Args:
             messages: Full message list in OpenAI chat format.
+            run_id:   Optional pipeline run ID for token ledger emission.
 
         Returns:
             Assembled and post-processed assistant reply text.
@@ -232,12 +238,24 @@ class OpenAICompatibleBackend(LLMBackend):
             max_retries=self._max_retries,
             base_delay=self._retry_delay,
         )
+        effective_run_id = run_id if run_id is not None else get_ledger().active_run_id()
+        if effective_run_id is not None:
+            pt, ct = estimate_tokens(messages, reply)
+            get_ledger().record(effective_run_id, current_stage.get(), self.model, pt, ct)
         return self._post_process(reply)
 
-    def call(self, messages: list[dict]) -> str:
+    def call(self, messages: list[dict], run_id: str | None = None) -> str:
+        """Send a message list and return the assistant reply.
+
+        Args:
+            messages: Full message list including system prompt, history, and
+                      the new user message. Format: OpenAI chat messages.
+            run_id:   Optional pipeline run ID for token ledger emission.
+                      Falls back to the ledger's active run ID when omitted.
+        """
         self._pre_call()
         if self._stream:
-            return self._stream_call(messages)
+            return self._stream_call(messages, run_id=run_id)
         if self._inter_call_delay > 0:
             time.sleep(self._inter_call_delay)
         response = _retry_with_backoff(
@@ -250,13 +268,24 @@ class OpenAICompatibleBackend(LLMBackend):
             max_retries=self._max_retries,
             base_delay=self._retry_delay,
         )
-        return self._post_process(response.choices[0].message.content or "")
+        content = response.choices[0].message.content or ""
+        effective_run_id = run_id if run_id is not None else get_ledger().active_run_id()
+        if effective_run_id is not None:
+            usage = getattr(response, "usage", None)
+            if usage:
+                get_ledger().record(effective_run_id, current_stage.get(), self.model,
+                                    usage.prompt_tokens, usage.completion_tokens)
+            else:
+                pt, ct = estimate_tokens(messages, content)
+                get_ledger().record(effective_run_id, current_stage.get(), self.model, pt, ct)
+        return self._post_process(content)
 
     def call_with_tools(
         self,
         messages: list[dict],
         tools: "ToolRegistry",
         max_turns: int = 8,
+        run_id: str | None = None,
     ) -> str:
         messages = list(messages)  # local copy for tool loop
 
@@ -280,6 +309,12 @@ class OpenAICompatibleBackend(LLMBackend):
                 max_retries=self._max_retries,
                 base_delay=self._retry_delay,
             )
+            effective_run_id = run_id if run_id is not None else get_ledger().active_run_id()
+            if effective_run_id is not None:
+                usage = getattr(response, "usage", None)
+                if usage:
+                    get_ledger().record(effective_run_id, current_stage.get(), self.model,
+                                        usage.prompt_tokens, usage.completion_tokens)
             msg = response.choices[0].message
             if not msg.tool_calls:
                 return self._post_process(msg.content or "")
@@ -324,4 +359,10 @@ class OpenAICompatibleBackend(LLMBackend):
             max_retries=self._max_retries,
             base_delay=self._retry_delay,
         )
+        effective_run_id = run_id if run_id is not None else get_ledger().active_run_id()
+        if effective_run_id is not None:
+            usage = getattr(response, "usage", None)
+            if usage:
+                get_ledger().record(effective_run_id, current_stage.get(), self.model,
+                                    usage.prompt_tokens, usage.completion_tokens)
         return self._post_process(response.choices[0].message.content or "")
