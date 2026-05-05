@@ -333,18 +333,23 @@ def cmd_repo_list(base_dir: Path) -> None:
     """List all repos in repos-available/ with enabled/disabled status."""
     avail_dir = base_dir / "repos-available"
     if not avail_dir.is_dir():
-        print("No repos-available/ directory found.")
+        print("No repos-available/ directory found.", file=sys.stderr)
         return
 
     files = sorted(avail_dir.glob("*.yaml"))
     if not files:
-        print("No repos found in repos-available/")
+        print("No repos found in repos-available/", file=sys.stderr)
         return
 
     enabled_dir = base_dir / "repos-enabled"
     for f in files:
         link = enabled_dir / f.name
-        status = "[enabled] " if (link.exists() or link.is_symlink()) and link.exists() else "[disabled]"
+        if link.is_symlink() and not link.resolve().exists():
+            status = "[broken]  "
+        elif link.exists():
+            status = "[enabled] "
+        else:
+            status = "[disabled]"
         print(f"  {status}  {f.stem}")
 
 
@@ -939,7 +944,8 @@ def main() -> None:
         elif repo_command == "list":
             cmd_repo_list(base_dir)
         else:
-            print("Usage: watcher.py repo enable|disable|list [name]")
+            print("Usage: watcher.py repo enable|disable|list [name]", file=sys.stderr)
+            sys.exit(2)
         return
 
     # --once mode short-circuits everything (no lock file, no polling)

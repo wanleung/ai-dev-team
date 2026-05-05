@@ -338,6 +338,12 @@ def test_repo_enable_error_not_found(tmp_path):
         cmd_repo_enable(tmp_path, "nonexistent")
 
 
+def test_repo_enable_error_no_avail_dir(tmp_path):
+    """repo enable raises SystemExit when repos-available/ doesn't exist at all."""
+    with pytest.raises(SystemExit):
+        cmd_repo_enable(tmp_path, "anything")
+
+
 def test_repo_enable_error_already_enabled(tmp_path):
     """repo enable raises SystemExit if already enabled."""
     avail = tmp_path / "repos-available"
@@ -380,13 +386,21 @@ def test_repo_list_output(tmp_path, capsys):
 
     cmd_repo_list(tmp_path)
     out = capsys.readouterr().out
-    assert "repo-a" in out and "enabled" in out
-    assert "repo-b" in out and "disabled" in out
+    lines = out.splitlines()
+    assert any("enabled" in l and "repo-a" in l for l in lines)
+    assert any("disabled" in l and "repo-b" in l for l in lines)
 
 
 def test_repo_list_empty(tmp_path, capsys):
     """repo list on empty repos-available/ prints a helpful message."""
     (tmp_path / "repos-available").mkdir()
     cmd_repo_list(tmp_path)
-    out = capsys.readouterr().out
-    assert "No repos found" in out
+    err = capsys.readouterr().err
+    assert "No repos found" in err
+
+
+def test_repo_list_no_avail_dir(tmp_path, capsys):
+    """repo list when repos-available/ is absent prints a helpful message to stderr."""
+    cmd_repo_list(tmp_path)
+    err = capsys.readouterr().err
+    assert "No repos-available" in err
