@@ -52,6 +52,7 @@ LABEL_COLOURS = {
 
 # ── Lock file prevents overlapping cron runs ─────────────────────────────────
 LOCK_FILE = Path(__file__).parent / ".watcher.lock"
+_log = logging.getLogger("watcher")
 
 
 def _gh_headers() -> dict:
@@ -243,6 +244,125 @@ def _load_pipeline_config() -> dict:
                 else:
                     cfg[section] = val
     return cfg
+
+
+def load_watcher_config(config_path: Path) -> dict:
+    """Load and merge watcher config from repos.yaml + repos-enabled/*.yaml.
+
+    Returns a config dict with a unified ``watchers`` list.  Per-watcher
+    ``settings:`` blocks are stripped from the watcher entry and stored as
+    ``_settings`` (for both legacy and repos-enabled entries) so callers can
+    apply per-watcher overrides.
+    """
+    with open(config_path, encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+
+    legacy_watchers: list[dict] = list(config.get("watchers") or [])
+    # Apply settings→_settings transformation for legacy watchers too
+    for w in legacy_watchers:
+        per_settings = w.pop("settings", None)
+        if per_settings is not None:
+            w["_settings"] = per_settings
+    seen: dict[str, int] = {}  # tracker_repo → index in merged list
+
+    for i, w in enumerate(legacy_watchers):
+        repo = w.get("tracker_repo", "")
+        if repo:
+            seen[repo] = i
+
+    repos_enabled = config_path.parent / "repos-enabled"
+    if repos_enabled.is_dir():
+        for entry in sorted(repos_enabled.iterdir()):
+            if entry.suffix != ".yaml":
+                continue
+            if not entry.exists():  # broken symlink
+                _log.warning("Broken symlink in repos-enabled/: %s — skipping", entry.name)
+                continue
+            with open(entry, encoding="utf-8") as f:
+                watcher_dict = yaml.safe_load(f) or {}
+            per_settings = watcher_dict.pop("settings", None)
+            if per_settings is not None:
+                watcher_dict["_settings"] = per_settings
+            repo = watcher_dict.get("tracker_repo", "")
+            if not repo:
+                _log.warning("repos-enabled/%s has no tracker_repo — skipping", entry.name)
+                continue
+            if repo in seen:
+                _log.warning(
+                    "Duplicate tracker_repo '%s' in repos-enabled/%s — enabled-dir entry wins",
+                    repo, entry.name,
+                )
+                legacy_watchers[seen[repo]] = watcher_dict
+            else:
+                seen[repo] = len(legacy_watchers)
+                legacy_watchers.append(watcher_dict)
+
+    config["watchers"] = legacy_watchers
+    return config
+
+
+def cmd_repo_enable(base_dir: Path, name: str) -> None:
+    """Enable a watcher by creating a symlink in repos-enabled/."""
+    if "/" in name or "\\" in name or name.startswith("."):
+        print(f"Error: invalid repo name '{name}'", file=sys.stderr)
+        sys.exit(1)
+    avail = base_dir / "repos-available" / f"{name}.yaml"
+    if not avail.exists():
+        available = sorted(p.stem for p in (base_dir / "repos-available").glob("*.yaml")) \
+            if (base_dir / "repos-available").is_dir() else []
+        print(f"Error: repos-available/{name}.yaml not found.", file=sys.stderr)
+        if available:
+            print(f"Available: {', '.join(available)}", file=sys.stderr)
+        sys.exit(1)
+
+    enabled_dir = base_dir / "repos-enabled"
+    enabled_dir.mkdir(exist_ok=True)
+    link = enabled_dir / f"{name}.yaml"
+
+    if link.exists() or link.is_symlink():
+        print(f"Error: '{name}' is already enabled. Run 'repo disable {name}' first.", file=sys.stderr)
+        sys.exit(1)
+
+    os.symlink(avail.resolve(), link)
+    print(f"Enabled: {name}")
+
+
+def cmd_repo_disable(base_dir: Path, name: str) -> None:
+    """Disable a watcher by removing its symlink from repos-enabled/."""
+    if "/" in name or "\\" in name or name.startswith("."):
+        print(f"Error: invalid repo name '{name}'", file=sys.stderr)
+        sys.exit(1)
+    link = base_dir / "repos-enabled" / f"{name}.yaml"
+    if not link.exists() and not link.is_symlink():
+        print(f"Error: '{name}' is not currently enabled.", file=sys.stderr)
+        sys.exit(1)
+
+    link.unlink()
+    print(f"Disabled: {name}")
+
+
+def cmd_repo_list(base_dir: Path) -> None:
+    """List all repos in repos-available/ with enabled/disabled status."""
+    avail_dir = base_dir / "repos-available"
+    if not avail_dir.is_dir():
+        print("No repos-available/ directory found.", file=sys.stderr)
+        return
+
+    files = sorted(avail_dir.glob("*.yaml"))
+    if not files:
+        print("No repos found in repos-available/", file=sys.stderr)
+        return
+
+    enabled_dir = base_dir / "repos-enabled"
+    for f in files:
+        link = enabled_dir / f.name
+        if link.is_symlink() and not link.resolve().exists():
+            status = "[broken]  "
+        elif link.exists():
+            status = "[enabled] "
+        else:
+            status = "[disabled]"
+        print(f"  {status}  {f.stem}")
 
 
 def install_llm_pool_from_config(pipeline_cfg: dict) -> None:
@@ -577,6 +697,8 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
                             tracker_repo=tracker_repo,
                             default_target=default_targets.get(tracker_repo),
                             label="ai-feature",
+                            model=model,
+                            num_engineers=num_engineers,
                         ))
                         logger.info(f"  Queued resumed issue #{issue_number}: {issue.get('title', '')}")
                         task_created = True
@@ -602,14 +724,11 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
 # ── Watcher loop ──────────────────────────────────────────────────────────────
 
 def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
-    with open(config_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    config = load_watcher_config(config_path)
 
-    settings   = config.get("settings", {})
-    max_parallel = settings.get("max_parallel", 3)
-    log_dir    = Path(config_path.parent / settings.get("log_dir", "logs/watcher"))
-    model      = settings.get("model", "gpt-4.1")
-    num_engineers = settings.get("num_engineers", 2)
+    global_settings = config.get("settings", {})
+    max_parallel  = global_settings.get("max_parallel", 3)
+    log_dir       = Path(config_path.parent / global_settings.get("log_dir", "logs/watcher"))
 
     watchers = config.get("watchers", [])
     logger.info("Loaded %d watcher(s) from %s", len(watchers), config_path)
@@ -634,7 +753,11 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
     
     # Process any resume triggers (issues answered by human)
     if not dry_run:
-        resumed_tasks = _process_resume_queue(workspace_dir, tracker_repos, default_targets, model, num_engineers, log_dir, dry_run, logger)
+        # resume queue tasks always run with global model/num_engineers; per-watcher
+        # overrides don't apply to resumed tasks (trigger files don't record the watcher).
+        global_model = global_settings.get("model", "gpt-4.1")
+        global_num_engineers = global_settings.get("num_engineers", 2)
+        resumed_tasks = _process_resume_queue(workspace_dir, tracker_repos, default_targets, global_model, global_num_engineers, log_dir, dry_run, logger)
         tasks.extend(resumed_tasks)
     
     for w in watchers:
@@ -642,6 +765,11 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
             continue
         tracker_repo    = w["tracker_repo"]
         default_target  = w.get("default_target") or None
+
+        # Apply per-watcher settings overrides on top of global settings
+        _w_settings   = {**global_settings, **w.get("_settings", {})}
+        model         = _w_settings.get("model", "gpt-4.1")
+        num_engineers = _w_settings.get("num_engineers", 2)
 
         # Read label → pipeline mapping for this watcher entry. New format:
         #   labels:
@@ -672,7 +800,10 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
         logger.info("Checking %s …", tracker_repo)
         try:
             for label_name, label_cfg in labels_cfg.items():
-                pipeline_name = (label_cfg or {}).get("pipeline", label_name)
+                if isinstance(label_cfg, str):
+                    pipeline_name = label_cfg
+                else:
+                    pipeline_name = (label_cfg or {}).get("pipeline", label_name)
                 for issue in get_open_issues(tracker_repo, label_name):
                     add_label(tracker_repo, issue["number"], LABEL_QUEUED)
                     tasks.append(dict(
@@ -681,6 +812,8 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
                         default_target=default_target,
                         label=pipeline_name,
                         parallel_issues=w.get("parallel_issues", 1),
+                        model=model,
+                        num_engineers=num_engineers,
                     ))
                     logger.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
         except Exception as exc:  # noqa: BLE001
@@ -721,7 +854,7 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
                 fut = ex.submit(
                     _run_with_global_cap,
                     t["issue"], t["tracker_repo"], t["default_target"],
-                    t["label"], model, num_engineers, log_dir, dry_run, logger,
+                    t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
                 )
                 futures_to_task[fut] = t
 
@@ -768,6 +901,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", help="(--once mode) tracker repo, e.g. owner/repo")
     parser.add_argument("--issue", type=int, help="(--once mode) issue number")
     parser.add_argument("--label", help="(--once mode) GitHub label that triggered the pipeline")
+
+    sub = parser.add_subparsers(dest="command")
+    repo_p = sub.add_parser("repo", help="Manage repos-available / repos-enabled")
+    repo_sub = repo_p.add_subparsers(dest="repo_command")
+
+    en = repo_sub.add_parser("enable", help="Enable a repo watcher")
+    en.add_argument("name", help="Repo name stem (e.g. mcp-tfl)")
+
+    dis = repo_sub.add_parser("disable", help="Disable a repo watcher")
+    dis.add_argument("name", help="Repo name stem (e.g. mcp-tfl)")
+
+    repo_sub.add_parser("list", help="List all available repos with enabled/disabled status")
+
     return parser
 
 
@@ -803,6 +949,22 @@ def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
 
+    # ── repo sub-commands ────────────────────────────────────────────────
+    if getattr(args, "command", None) == "repo":
+        config_path = Path(args.config).resolve()
+        base_dir = config_path.parent
+        repo_command = getattr(args, "repo_command", None)
+        if repo_command == "enable":
+            cmd_repo_enable(base_dir, args.name)
+        elif repo_command == "disable":
+            cmd_repo_disable(base_dir, args.name)
+        elif repo_command == "list":
+            cmd_repo_list(base_dir)
+        else:
+            print("Usage: watcher.py repo enable|disable|list [name]", file=sys.stderr)
+            sys.exit(2)
+        return
+
     # --once mode short-circuits everything (no lock file, no polling)
     if args.once:
         if not (args.repo and args.issue is not None and args.label):
@@ -818,8 +980,7 @@ def main() -> None:
         print(f"Config not found: {config_path}")
         sys.exit(1)
 
-    with open(config_path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    raw = load_watcher_config(config_path)
     log_dir = Path(config_path.parent / raw.get("settings", {}).get("log_dir", "logs/watcher"))
     logger = _setup_logging(log_dir)
 
