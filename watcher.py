@@ -135,6 +135,53 @@ def get_pr_comments(repo: str, pr_number: int) -> list[dict]:
     return resp.json()
 
 
+def _pr_attempt_count(pr_labels: list[dict]) -> int:
+    """Return the highest N from any 'ai-pr-fix-N' label, or 0 if none."""
+    import re
+    highest = 0
+    for lbl in pr_labels:
+        m = re.match(r"^ai-pr-fix-(\d+)$", lbl.get("name", ""))
+        if m:
+            highest = max(highest, int(m.group(1)))
+    return highest
+
+
+def _should_fix_pr(
+    pr: dict,
+    comments: list[dict],
+    pr_fix_label: str,
+    pr_failure_pattern: str,
+    max_pr_retries: int,
+) -> bool:
+    """Return True if this PR should receive an automated fix run.
+
+    Skips if: agent-running/agent-failed label present, or attempt count
+    has reached max_pr_retries, or neither trigger condition is met.
+    """
+    import re
+    pr_label_names = {lbl["name"] for lbl in pr.get("labels", [])}
+
+    # Skip if already being processed or gave up
+    if pr_label_names & {"agent-running", "agent-failed"}:
+        return False
+
+    # Skip if retry cap reached
+    if _pr_attempt_count(list(pr.get("labels", []))) >= max_pr_retries:
+        return False
+
+    # Trigger 1: explicit fix label on the PR
+    if pr_fix_label in pr_label_names:
+        return True
+
+    # Trigger 2: comment matching failure pattern
+    pattern = re.compile(pr_failure_pattern, re.IGNORECASE)
+    for comment in comments:
+        if pattern.search(comment.get("body", "")):
+            return True
+
+    return False
+
+
 def post_comment(repo: str, issue_number: int, body: str) -> None:
     url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
     requests.post(url, headers=_gh_headers(), json={"body": body}, timeout=10)
