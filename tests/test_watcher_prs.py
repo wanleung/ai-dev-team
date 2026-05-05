@@ -154,3 +154,85 @@ def test_pr_attempt_count_tolerates_missing_name_key():
     """_pr_attempt_count handles label dicts missing 'name' key without crashing."""
     from watcher import _pr_attempt_count
     assert _pr_attempt_count([{}, {"label": "ai-pr-fix-1"}]) == 0
+
+
+# ── _run_pr_revision tests ────────────────────────────────────────────────────
+
+def test_run_pr_revision_success(monkeypatch, tmp_path):
+    """Successful revision adds agent-complete, removes agent-running."""
+    from watcher import _run_pr_revision
+    import types
+
+    pr = {"number": 7, "labels": [{"name": "ai-fix"}], "title": "Fix me"}
+
+    calls = {"add": [], "remove": []}
+
+    def fake_add_label(repo, num, label):
+        calls["add"].append(label)
+
+    def fake_remove_label(repo, num, label):
+        calls["remove"].append(label)
+
+    def fake_post_comment(repo, num, body):
+        pass
+
+    def fake_ensure_label(repo, name, colour):
+        pass
+
+    fake_revision_result = {"status": "ok", "revision": 1}
+
+    class FakeOrch:
+        def __init__(self, **kwargs):
+            pass
+        def run_revision(self, pr_number):
+            return fake_revision_result
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("watcher.add_label", fake_add_label)
+    monkeypatch.setattr("watcher.remove_label", fake_remove_label)
+    monkeypatch.setattr("watcher.post_comment", fake_post_comment)
+    monkeypatch.setattr("watcher.ensure_label", fake_ensure_label)
+
+    import sys
+    fake_orchestrator_mod = types.ModuleType("orchestrator")
+    fake_orchestrator_mod.Orchestrator = FakeOrch
+    monkeypatch.setitem(sys.modules, "orchestrator", fake_orchestrator_mod)
+
+    import logging
+    _run_pr_revision(pr, "owner/tracker", "owner/target", "gpt-4.1", 2, tmp_path, logging.getLogger("test"))
+
+    assert "agent-running" in calls["add"]
+    assert "agent-complete" in calls["add"]
+    assert "agent-running" in calls["remove"]
+
+
+def test_run_pr_revision_max_revisions_reached(monkeypatch, tmp_path):
+    """When orchestrator returns max_revisions_reached, agent-failed is added."""
+    from watcher import _run_pr_revision
+    import types
+
+    pr = {"number": 8, "labels": [{"name": "ai-fix"}], "title": "Stuck"}
+    calls = {"add": [], "remove": []}
+
+    class FakeOrch:
+        def __init__(self, **kwargs):
+            pass
+        def run_revision(self, pr_number):
+            return {"status": "max_revisions_reached"}
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("watcher.add_label", lambda r, n, l: calls["add"].append(l))
+    monkeypatch.setattr("watcher.remove_label", lambda r, n, l: calls["remove"].append(l))
+    monkeypatch.setattr("watcher.post_comment", lambda *a: None)
+    monkeypatch.setattr("watcher.ensure_label", lambda *a: None)
+
+    import sys
+    fake_mod = types.ModuleType("orchestrator")
+    fake_mod.Orchestrator = FakeOrch
+    monkeypatch.setitem(sys.modules, "orchestrator", fake_mod)
+
+    import logging
+    _run_pr_revision(pr, "owner/tracker", "owner/target", "gpt-4.1", 2, tmp_path, logging.getLogger("test"))
+
+    assert "agent-failed" in calls["add"]
+    assert "agent-running" not in calls["add"] or "agent-running" in calls["remove"]
