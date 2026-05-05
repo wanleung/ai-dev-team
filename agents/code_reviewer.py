@@ -43,7 +43,7 @@ class CodeReviewerAgent(BaseAgent):
                 - verdict (str): One of APPROVED / APPROVED WITH MINOR COMMENTS / CHANGES REQUESTED
                 - has_critical_issues (bool): True if changes are required
         """
-        files_to_review = self.truncate_files(files, max_chars=10_000)
+        files_to_review = self.truncate_files(files, max_chars=80_000, max_per_file=8_000)
 
         code_section = "\n\n".join(
             f"### FILE: {path}\n```\n{content}\n```" for path, content in files_to_review.items()
