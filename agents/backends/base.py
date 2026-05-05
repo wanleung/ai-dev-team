@@ -33,6 +33,13 @@ _DEFAULT_BASE_DELAY: float = float(os.environ.get("AGENT_RETRY_BASE_DELAY", "1.0
 # switch to the next backend immediately.  Override via AGENT_FAST_FAIL_RETRY_AFTER.
 _FAST_FAIL_RETRY_AFTER: int = int(os.environ.get("AGENT_FAST_FAIL_RETRY_AFTER", "30"))
 
+# Provider error codes that arrive as HTTP 400 but are actually transient
+# infrastructure failures (not caller errors). These are reclassified as
+# ConnectionError so FallbackLLMBackend can switch to the next backend.
+_TRANSIENT_400_CODES: frozenset[str] = frozenset({
+    "no_db_connection",  # opencode-go service lost its database connection
+})
+
 # Errors that FallbackLLMBackend uses to trigger a switch to the next backend.
 # These are infrastructure/transient failures — not caller errors.
 FALLBACK_ERRORS = (
@@ -96,7 +103,15 @@ def _retry_with_backoff(
     for attempt in range(max_retries + 1):
         try:
             return fn()
-        except _non_retryable:
+        except _non_retryable as exc:
+            # Some providers misuse 400 for transient infrastructure errors.
+            # Reclassify these so FallbackLLMBackend can switch backends.
+            _err_code = getattr(exc, "code", None) or (
+                getattr(exc, "body", {}) or {}
+            ).get("error", {}).get("code", "")
+            if _err_code in _TRANSIENT_400_CODES:
+                _log.warning("Transient 400 (%s) — treating as connection error: %s", _err_code, str(exc)[:120])
+                raise ConnectionError(str(exc)) from exc
             raise
         except _retryable_tuple as exc:  # type: ignore[misc]
             last_exc = exc
