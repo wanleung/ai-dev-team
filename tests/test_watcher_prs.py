@@ -289,11 +289,15 @@ def test_watch_prs_dispatches_when_label_trigger(monkeypatch, tmp_path):
 
     monkeypatch.setattr("watcher.get_open_prs", lambda repo, skip_drafts=True: [pr])
     monkeypatch.setattr("watcher.get_pr_comments", lambda repo, num: [])
-    monkeypatch.setattr("watcher._run_pr_revision", lambda pr, tracker, target, model, num_eng, log_dir, logger: dispatched.append(pr["number"]))
+    monkeypatch.setattr(
+        "watcher._run_pr_revision",
+        lambda pr, tracker, target, model, num_eng, log_dir, logger:
+            dispatched.append((pr["number"], tracker, target, model, num_eng)),
+    )
 
     _watch_prs(watchers, {"model": "gpt-4.1", "num_engineers": 2}, tmp_path, False, logging.getLogger("test"))
 
-    assert 10 in dispatched
+    assert dispatched == [(10, "owner/tracker", "owner/target", "gpt-4.1", 2)]
 
 
 def test_watch_prs_skips_when_disabled(monkeypatch, tmp_path):
