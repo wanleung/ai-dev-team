@@ -386,6 +386,9 @@ class PipelineResult:
             "last_verdict": self.last_verdict,
             "next_label": self.next_label,
             "progress_comment_id": self.progress_comment_id,
+            "run_id": self.run_id,
+            "total_cost_usd": self.total_cost_usd,
+            "token_usage": self.token_usage,
         }
 
     @classmethod
@@ -404,7 +407,8 @@ class PipelineResult:
                     "prd_revision_count", "design_revision_count",
                     "prd_reviewer_draft", "design_reviewer_draft",
                     "design_output", "last_verdict", "next_label",
-                    "progress_comment_id"]:
+                    "progress_comment_id",
+                    "run_id", "total_cost_usd", "token_usage"]:
             setattr(r, key, data.get(key, getattr(r, key)))
         return r
 

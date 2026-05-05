@@ -88,7 +88,7 @@ class OpenCodeGoBackend(LLMBackend):
         """Return True if this backend supports tool/function calling."""
         return self._oai_backend is not None
 
-    def call(self, messages: list[dict]) -> str:
+    def call(self, messages: list[dict], run_id: str | None = None) -> str:
         """Call the backend with a list of messages and return the response text."""
         if self._oai_backend:
             return self._oai_backend.call(messages)
@@ -122,6 +122,7 @@ class OpenCodeGoBackend(LLMBackend):
 
     def call_with_tools(
         self, messages: list[dict], tools: "ToolRegistry", max_turns: int = 8,
+        run_id: str | None = None,
     ) -> str:
         """Call the backend with tool support. Only available for non-MiniMax models."""
         if self._oai_backend:

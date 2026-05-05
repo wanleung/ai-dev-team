@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sqlite3
-import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -227,7 +226,7 @@ class TokenLedger:
         # Try exact match, then longest-prefix match (e.g. "ollama/*"), then default
         prices = self._pricing.get(model) or next(
             (v for k, v in sorted(self._pricing.items(), key=lambda x: len(x[0]), reverse=True)
-             if model.startswith(k.rstrip("/*"))),
+             if model.startswith(k[:-1] if k.endswith("*") else k)),
             None,
         ) or self._pricing.get("default")
         if not prices:
@@ -251,8 +250,10 @@ def estimate_tokens(messages: list[dict], reply: str) -> tuple[int, int]:
         return len(enc.encode(prompt_text)), len(enc.encode(reply))
     except Exception:
         # Rough fallback if tiktoken is unavailable: ~4 chars per token
-        prompt_text = " ".join(m.get("content", "") or "" for m in messages)
-        return max(1, len(prompt_text) // 4), max(1, len(reply) // 4)
+        prompt_text = " ".join(
+            m.get("content", "") or "" for m in messages if isinstance(m.get("content"), str)
+        )
+        return max(0, len(prompt_text) // 4), max(0, len(reply) // 4)
 
 
 # Global ledger instance — replaced by Orchestrator with a configured instance.
