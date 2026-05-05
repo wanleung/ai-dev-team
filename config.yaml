@@ -222,6 +222,15 @@ pipeline:
   # Run: python main.py --config-builder  to launch the browser GUI builder.
   mode: standard
 
+  # ── TDD: early test commit ──────────────────────────────────────────────────
+  # Only applies when mode: tdd (or a custom pipeline containing the qa_write stage).
+  # When true and GitHub is configured, test files are committed to a new branch
+  # and a PR is opened immediately after QA Write — before engineers implement code.
+  # Engineers will then commit their implementation to the same branch.
+  # When false (default), test files are saved locally only and committed later
+  # alongside the implementation.
+  tdd_commit_tests: false
+
   # ── Per-stage skip overrides ────────────────────────────────────────────────
   # Set skip: true for any named stage to remove it from the active pipeline.
   # Stage names: tier_review, junior_engineer, senior_engineer, reviewer,
