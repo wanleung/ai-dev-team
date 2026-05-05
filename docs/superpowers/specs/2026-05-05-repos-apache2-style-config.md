@@ -26,10 +26,12 @@ repos-available/
   custom-cms.yaml
   mybooking.yaml
 repos-enabled/
-  mcp-tfl.yaml          → ../repos-available/mcp-tfl.yaml  (symlink)
-  custom-cms.yaml       → ../repos-available/custom-cms.yaml
+  mcp-tfl.yaml          → /absolute/path/to/repos-available/mcp-tfl.yaml  (absolute symlink)
+  custom-cms.yaml       → /absolute/path/to/repos-available/custom-cms.yaml
 repos.yaml              ← global settings + optional legacy watchers:
 ```
+
+> **Note:** symlinks are created as **absolute** paths (using `avail.resolve()`). Absolute symlinks are more portable across `--config` paths — relative symlinks would break whenever the working directory differs from the project root.
 
 `repos-available/` and `repos-enabled/` live alongside `repos.yaml` (i.e. the project root). Their paths are derived relative to the root config file so `--config /path/to/repos.yaml` still works.
 
@@ -59,7 +61,7 @@ settings:              # optional per-watcher overrides
 ```
 
 **Convention:** file name = repository slug with owner stripped and `/` replaced by `-` (e.g. `wanleung/mcp-tfl` → `mcp-tfl`).  
-The `enable` command derives the slug automatically from the `tracker_repo` field when listing.
+The `enable` command takes the file name stem as an explicit argument (e.g. `repo enable mcp-tfl`). By convention, the stem matches the repo name with owner stripped and `/` replaced by `-`.
 
 ---
 

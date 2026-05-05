@@ -1,0 +1,6 @@
+tracker_repo: wanleung/my-other-app
+default_target: ~
+feature_label: feature-request
+bug_label: bug
+doc_label: documentation
+enabled: false
