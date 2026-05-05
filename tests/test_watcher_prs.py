@@ -204,6 +204,7 @@ def test_run_pr_revision_success(monkeypatch, tmp_path):
     assert "agent-running" in calls["add"]
     assert "agent-complete" in calls["add"]
     assert "agent-running" in calls["remove"]
+    assert "ai-fix" in calls["remove"]  # trigger label removed after success
 
 
 def test_run_pr_revision_max_revisions_reached(monkeypatch, tmp_path):
@@ -235,4 +236,68 @@ def test_run_pr_revision_max_revisions_reached(monkeypatch, tmp_path):
     _run_pr_revision(pr, "owner/tracker", "owner/target", "gpt-4.1", 2, tmp_path, logging.getLogger("test"))
 
     assert "agent-failed" in calls["add"]
-    assert "agent-running" not in calls["add"] or "agent-running" in calls["remove"]
+    assert "agent-running" in calls["remove"]
+
+
+def test_run_pr_revision_error_status(monkeypatch, tmp_path):
+    """When orchestrator returns error status, agent-failed is added."""
+    from watcher import _run_pr_revision
+    import types
+
+    pr = {"number": 9, "labels": [{"name": "ai-fix"}], "title": "Error"}
+    calls = {"add": [], "remove": []}
+
+    class FakeOrch:
+        def __init__(self, **kwargs):
+            pass
+        def run_revision(self, pr_number):
+            return {"status": "error"}
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("watcher.add_label", lambda r, n, l: calls["add"].append(l))
+    monkeypatch.setattr("watcher.remove_label", lambda r, n, l: calls["remove"].append(l))
+    monkeypatch.setattr("watcher.post_comment", lambda *a: None)
+    monkeypatch.setattr("watcher.ensure_label", lambda *a: None)
+
+    import sys
+    fake_mod = types.ModuleType("orchestrator")
+    fake_mod.Orchestrator = FakeOrch
+    monkeypatch.setitem(sys.modules, "orchestrator", fake_mod)
+
+    import logging
+    _run_pr_revision(pr, "owner/tracker", "owner/target", "gpt-4.1", 2, tmp_path, logging.getLogger("test"))
+
+    assert "agent-failed" in calls["add"]
+    assert "agent-running" in calls["remove"]
+
+
+def test_run_pr_revision_exception_path(monkeypatch, tmp_path):
+    """Unhandled exception adds agent-failed and posts comment."""
+    from watcher import _run_pr_revision
+    import types
+
+    pr = {"number": 10, "labels": [], "title": "Crash"}
+    calls = {"add": [], "comments": []}
+
+    class FakeOrch:
+        def __init__(self, **kwargs):
+            pass
+        def run_revision(self, pr_number):
+            raise RuntimeError("kaboom")
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("watcher.add_label", lambda r, n, l: calls["add"].append(l))
+    monkeypatch.setattr("watcher.remove_label", lambda *a: None)
+    monkeypatch.setattr("watcher.post_comment", lambda r, n, b: calls["comments"].append(b))
+    monkeypatch.setattr("watcher.ensure_label", lambda *a: None)
+
+    import sys
+    fake_mod = types.ModuleType("orchestrator")
+    fake_mod.Orchestrator = FakeOrch
+    monkeypatch.setitem(sys.modules, "orchestrator", fake_mod)
+
+    import logging
+    _run_pr_revision(pr, "owner/tracker", "owner/target", "gpt-4.1", 2, tmp_path, logging.getLogger("test"))
+
+    assert "agent-failed" in calls["add"]
+    assert any("kaboom" in c for c in calls["comments"])
