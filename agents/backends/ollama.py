@@ -14,6 +14,7 @@ from agents.backends.base import (
     _DEFAULT_BASE_DELAY,
     _retry_with_backoff,
 )
+from agents.token_ledger import current_stage, estimate_tokens, get_ledger
 
 _ollama_timeout = float(os.environ.get("OLLAMA_TIMEOUT", "0")) or None
 
@@ -69,7 +70,7 @@ class OllamaBackend(OpenAICompatibleBackend):
             return {"extra_body": {"think": False}}
         return {}
 
-    def _stream_call(self, messages: list[dict]) -> str:
+    def _stream_call(self, messages: list[dict], run_id: str | None = None) -> str:
         """Collect a streaming Ollama response, including thinking content when requested.
 
         Ollama thinking models stream reasoning via ``delta.model_extra['reasoning_content']``
@@ -79,6 +80,10 @@ class OllamaBackend(OpenAICompatibleBackend):
         When ``preserve_thinking=True``: assembles ``<think>reasoning</think>\\nresponse``.
         When ``preserve_thinking=False``: collects only ``delta.content`` (actual response);
             any residual ``<think>`` tags are stripped by ``_post_process``.
+
+        Args:
+            messages: Full message list in OpenAI chat format.
+            run_id:   Optional pipeline run ID for token ledger emission.
         """
         if self._inter_call_delay > 0:
             time.sleep(self._inter_call_delay)
@@ -111,7 +116,7 @@ class OllamaBackend(OpenAICompatibleBackend):
                 return f"<think>{thinking}</think>\n{content}"
             return content
 
-        reply = _retry_with_backoff(
+        full_content = _retry_with_backoff(
             lambda: _collect(
                 self._client.chat.completions.create(
                     model=self.model,
@@ -124,7 +129,12 @@ class OllamaBackend(OpenAICompatibleBackend):
             max_retries=self._max_retries,
             base_delay=self._retry_delay,
         )
-        return self._post_process(reply)
+        result = self._post_process(full_content)
+        effective_run_id = run_id if run_id is not None else get_ledger().active_run_id()
+        if effective_run_id is not None:
+            pt, ct = estimate_tokens(messages, full_content)
+            get_ledger().record(effective_run_id, current_stage.get(), self.model, pt, ct)
+        return result
 
     def _post_process(self, text: str) -> str:
         """Strip <think>…</think> blocks unless preserve_thinking is enabled.

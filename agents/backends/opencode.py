@@ -43,7 +43,7 @@ class OpenCodeBackend(LLMBackend):
         """Return False — opencode CLI does not support function calling."""
         return False
 
-    def call(self, messages: list[dict]) -> str:
+    def call(self, messages: list[dict], run_id: str | None = None) -> str:
         """Build a combined prompt from messages and run via opencode CLI.
 
         Args:
@@ -118,6 +118,7 @@ class OpenCodeBackend(LLMBackend):
         messages: list[dict],
         tools: "ToolRegistry",
         max_turns: int = 8,
+        run_id: str | None = None,
     ) -> str:
         """Not supported — raises NotImplementedError.
 

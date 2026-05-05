@@ -46,7 +46,7 @@ class FallbackLLMBackend(LLMBackend):
     def supports_tools(self) -> bool:
         return self._backends[0].supports_tools()
 
-    def call(self, messages: list[dict]) -> str:
+    def call(self, messages: list[dict], run_id: str | None = None) -> str:
         for i, backend in enumerate(self._backends):
             try:
                 return backend.call(messages)
@@ -65,6 +65,7 @@ class FallbackLLMBackend(LLMBackend):
         messages: list[dict],
         tools: "ToolRegistry",
         max_turns: int = 8,
+        run_id: str | None = None,
     ) -> str:
         tool_backends = [b for b in self._backends if b.supports_tools()]
         if not tool_backends:
