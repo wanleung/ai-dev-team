@@ -153,79 +153,83 @@ class TokenLedger:
         return "\n".join(lines)
 
     def flush_to_db(self, db_path: str) -> None:
-        """Persist all run metadata and usage events to a SQLite database."""
-        conn = sqlite3.connect(db_path)
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS runs (
-                run_id TEXT PRIMARY KEY,
-                project_name TEXT,
-                github_repo TEXT,
-                started_at TEXT,
-                finished_at TEXT,
-                total_prompt_tokens INTEGER,
-                total_completion_tokens INTEGER,
-                total_cost_usd REAL
-            );
-            CREATE TABLE IF NOT EXISTS usage_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id TEXT REFERENCES runs(run_id),
-                stage TEXT,
-                model TEXT,
-                prompt_tokens INTEGER,
-                completion_tokens INTEGER,
-                cost_usd REAL,
-                ts TEXT
-            );
-        """)
-        for run_id, meta in self._runs.items():
-            s = self.summary(run_id)
-            conn.execute(
-                """INSERT OR REPLACE INTO runs
-                   (run_id, project_name, github_repo, started_at, finished_at,
-                    total_prompt_tokens, total_completion_tokens, total_cost_usd)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (
-                    run_id,
-                    meta["project_name"],
-                    meta["repo"],
-                    meta["started_at"],
-                    meta["finished_at"],
-                    s["total_prompt_tokens"],
-                    s["total_completion_tokens"],
-                    s["total_cost_usd"],
-                ),
-            )
-            for e in self._events.get(run_id, []):
+        """Persist all run metadata and usage events to a SQLite database.
+
+        Idempotent: calling flush_to_db multiple times will not duplicate rows.
+        Each event is identified by a stable event_id and inserted with
+        INSERT OR IGNORE so re-flushing is safe.
+        """
+        with sqlite3.connect(db_path) as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS runs (
+                    run_id TEXT PRIMARY KEY,
+                    project_name TEXT,
+                    github_repo TEXT,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    total_prompt_tokens INTEGER,
+                    total_completion_tokens INTEGER,
+                    total_cost_usd REAL
+                );
+                CREATE TABLE IF NOT EXISTS usage_events (
+                    event_id TEXT PRIMARY KEY,
+                    run_id TEXT,
+                    stage TEXT,
+                    model TEXT,
+                    prompt_tokens INTEGER,
+                    completion_tokens INTEGER,
+                    cost_usd REAL,
+                    timestamp TEXT
+                );
+            """)
+            for run_id, meta in self._runs.items():
+                s = self.summary(run_id)
                 conn.execute(
-                    """INSERT INTO usage_events
-                       (run_id, stage, model, prompt_tokens, completion_tokens, cost_usd, ts)
-                       VALUES (?,?,?,?,?,?,?)""",
+                    """INSERT OR REPLACE INTO runs
+                       (run_id, project_name, github_repo, started_at, finished_at,
+                        total_prompt_tokens, total_completion_tokens, total_cost_usd)
+                       VALUES (?,?,?,?,?,?,?,?)""",
                     (
-                        e.run_id,
-                        e.stage,
-                        e.model,
-                        e.prompt_tokens,
-                        e.completion_tokens,
-                        e.cost_usd,
-                        e.timestamp.isoformat(),
+                        run_id,
+                        meta["project_name"],
+                        meta["repo"],
+                        meta["started_at"],
+                        meta["finished_at"],
+                        s["total_prompt_tokens"],
+                        s["total_completion_tokens"],
+                        s["total_cost_usd"],
                     ),
                 )
-        conn.commit()
-        conn.close()
+                for e in self._events.get(run_id, []):
+                    ts = e.timestamp.isoformat()
+                    event_id = f"{e.run_id}:{e.stage}:{e.model}:{ts}"
+                    conn.execute(
+                        """INSERT OR IGNORE INTO usage_events
+                           (event_id, run_id, stage, model, prompt_tokens,
+                            completion_tokens, cost_usd, timestamp)
+                           VALUES (?,?,?,?,?,?,?,?)""",
+                        (
+                            event_id,
+                            e.run_id,
+                            e.stage,
+                            e.model,
+                            e.prompt_tokens,
+                            e.completion_tokens,
+                            e.cost_usd,
+                            ts,
+                        ),
+                    )
 
     # ── Internal ────────────────────────────────────────────────────────────
 
     def _calculate_cost(self, model: str, prompt_tokens: int, completion_tokens: int) -> float:
         """Compute cost in USD using pricing table with exact, prefix, and default fallback."""
-        # Try exact match, then prefix match (e.g. "ollama/*"), then default
-        prices = (
-            self._pricing.get(model)
-            or next(
-                (v for k, v in self._pricing.items() if model.startswith(k.rstrip("*").rstrip("/"))),
-                None,
-            )
-            or self._pricing.get("default")
-        )
+        # Try exact match, then longest-prefix match (e.g. "ollama/*"), then default
+        prices = self._pricing.get(model) or next(
+            (v for k, v in sorted(self._pricing.items(), key=lambda x: len(x[0]), reverse=True)
+             if model.startswith(k.rstrip("/*"))),
+            None,
+        ) or self._pricing.get("default")
         if not prices:
             return 0.0
         input_price, output_price = prices[0], prices[1]

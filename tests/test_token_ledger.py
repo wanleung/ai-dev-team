@@ -79,3 +79,28 @@ def test_flush_to_db_creates_rows(tmp_path):
     conn.close()
     assert len(runs) == 1
     assert len(events) == 1
+
+
+def test_flush_to_db_idempotent(tmp_path):
+    """Calling flush_to_db twice must not duplicate event rows."""
+    import sqlite3
+
+    db_path = str(tmp_path / "usage.db")
+    ledger = TokenLedger(pricing=PRICING)
+    ledger.start_run("run-7", "Proj", "org/repo")
+    ledger.record("run-7", "pm", "gpt-4.1", 100, 50)
+    ledger.record("run-7", "architect", "qwen3.6-plus", 200, 80)
+    ledger.finish_run("run-7")
+
+    # Flush twice — second flush must be a no-op for event rows
+    ledger.flush_to_db(db_path)
+    ledger.flush_to_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM usage_events WHERE run_id='run-7'"
+    ).fetchone()[0]
+    conn.close()
+
+    # There are exactly 2 recorded events; double-flush must not produce 4
+    assert count == 2, f"Expected 2 event rows after double flush, got {count}"
