@@ -1,0 +1,247 @@
+"""Token usage tracking and cost accounting for pipeline runs."""
+from __future__ import annotations
+
+import sqlite3
+import uuid
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Optional
+
+# ContextVar that backends read to tag records with the current stage name.
+# Set by Orchestrator._run_stage() before calling each stage fn.
+current_stage: ContextVar[str] = ContextVar("current_stage", default="unknown")
+
+
+@dataclass
+class UsageRecord:
+    run_id: str
+    stage: str
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TokenLedger:
+    """Accumulates LLM token usage across a pipeline run."""
+
+    def __init__(self, pricing: dict[str, list[float]] | None = None) -> None:
+        # pricing: model_name -> [input_price_per_1M, output_price_per_1M]
+        self._pricing: dict[str, list[float]] = pricing or {}
+        self._runs: dict[str, dict] = {}          # run_id -> metadata
+        self._events: dict[str, list[UsageRecord]] = {}  # run_id -> events
+
+    # ── Public API ─────────────────────────────────────────────────────────
+
+    def start_run(self, run_id: str, project_name: str, repo: str) -> None:
+        """Register a new pipeline run and prepare it for recording."""
+        self._runs[run_id] = {
+            "run_id": run_id,
+            "project_name": project_name,
+            "repo": repo,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": None,
+        }
+        self._events[run_id] = []
+
+    def record(
+        self,
+        run_id: str,
+        stage: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> None:
+        """Record a single LLM call's token usage for the given run and stage."""
+        if run_id not in self._runs:
+            return  # tracking disabled or run not started
+        cost = self._calculate_cost(model, prompt_tokens, completion_tokens)
+        self._events[run_id].append(
+            UsageRecord(
+                run_id=run_id,
+                stage=stage,
+                model=model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost,
+            )
+        )
+
+    def finish_run(self, run_id: str) -> None:
+        """Mark a run as finished by recording its completion timestamp."""
+        if run_id in self._runs:
+            self._runs[run_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    def active_run_id(self) -> str | None:
+        """Return the most recently started unfinished run_id, or None."""
+        for run_id, meta in reversed(list(self._runs.items())):
+            if meta.get("finished_at") is None:
+                return run_id
+        return None
+
+    def summary(self, run_id: str) -> dict:
+        """Return a summary dict with totals, per-stage, and per-model breakdowns."""
+        events = self._events.get(run_id, [])
+        total_prompt = sum(e.prompt_tokens for e in events)
+        total_completion = sum(e.completion_tokens for e in events)
+        total_cost = sum(e.cost_usd for e in events)
+
+        # Aggregate by stage
+        by_stage: dict[str, dict] = {}
+        for e in events:
+            s = by_stage.setdefault(
+                e.stage,
+                {
+                    "stage": e.stage,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "cost_usd": 0.0,
+                    "models": set(),
+                },
+            )
+            s["prompt_tokens"] += e.prompt_tokens
+            s["completion_tokens"] += e.completion_tokens
+            s["cost_usd"] += e.cost_usd
+            s["models"].add(e.model)
+        for s in by_stage.values():
+            s["models"] = sorted(s["models"])
+
+        # Aggregate by model
+        by_model: dict[str, dict] = {}
+        for e in events:
+            m = by_model.setdefault(
+                e.model,
+                {"model": e.model, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0},
+            )
+            m["prompt_tokens"] += e.prompt_tokens
+            m["completion_tokens"] += e.completion_tokens
+            m["cost_usd"] += e.cost_usd
+
+        return {
+            "run_id": run_id,
+            "project_name": self._runs.get(run_id, {}).get("project_name", ""),
+            "total_prompt_tokens": total_prompt,
+            "total_completion_tokens": total_completion,
+            "total_cost_usd": total_cost,
+            "by_stage": list(by_stage.values()),
+            "by_model": list(by_model.values()),
+        }
+
+    def format_github_comment(self, run_id: str) -> str:
+        """Format a Markdown table suitable for posting as a GitHub PR comment."""
+        s = self.summary(run_id)
+        project = s["project_name"] or run_id
+        lines = [f"## 💰 Token Usage — {project}", ""]
+        lines.append("| Stage | Model | In (tokens) | Out (tokens) | Cost (USD) |")
+        lines.append("|-------|-------|-------------|--------------|------------|")
+        for row in s["by_stage"]:
+            model_str = ", ".join(row["models"]) if row["models"] else "—"
+            lines.append(
+                f"| {row['stage']} | {model_str} "
+                f"| {row['prompt_tokens']:,} | {row['completion_tokens']:,} "
+                f"| ${row['cost_usd']:.4f} |"
+            )
+        lines.append(
+            f"| **Total** | | **{s['total_prompt_tokens']:,}** "
+            f"| **{s['total_completion_tokens']:,}** "
+            f"| **${s['total_cost_usd']:.4f}** |"
+        )
+        lines.append("")
+        lines.append(f"_Tracked by AI Software House · Run ID: `{run_id}`_")
+        return "\n".join(lines)
+
+    def flush_to_db(self, db_path: str) -> None:
+        """Persist all run metadata and usage events to a SQLite database."""
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS runs (
+                run_id TEXT PRIMARY KEY,
+                project_name TEXT,
+                github_repo TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                total_prompt_tokens INTEGER,
+                total_completion_tokens INTEGER,
+                total_cost_usd REAL
+            );
+            CREATE TABLE IF NOT EXISTS usage_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT REFERENCES runs(run_id),
+                stage TEXT,
+                model TEXT,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                cost_usd REAL,
+                ts TEXT
+            );
+        """)
+        for run_id, meta in self._runs.items():
+            s = self.summary(run_id)
+            conn.execute(
+                """INSERT OR REPLACE INTO runs
+                   (run_id, project_name, github_repo, started_at, finished_at,
+                    total_prompt_tokens, total_completion_tokens, total_cost_usd)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    run_id,
+                    meta["project_name"],
+                    meta["repo"],
+                    meta["started_at"],
+                    meta["finished_at"],
+                    s["total_prompt_tokens"],
+                    s["total_completion_tokens"],
+                    s["total_cost_usd"],
+                ),
+            )
+            for e in self._events.get(run_id, []):
+                conn.execute(
+                    """INSERT INTO usage_events
+                       (run_id, stage, model, prompt_tokens, completion_tokens, cost_usd, ts)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (
+                        e.run_id,
+                        e.stage,
+                        e.model,
+                        e.prompt_tokens,
+                        e.completion_tokens,
+                        e.cost_usd,
+                        e.timestamp.isoformat(),
+                    ),
+                )
+        conn.commit()
+        conn.close()
+
+    # ── Internal ────────────────────────────────────────────────────────────
+
+    def _calculate_cost(self, model: str, prompt_tokens: int, completion_tokens: int) -> float:
+        """Compute cost in USD using pricing table with exact, prefix, and default fallback."""
+        # Try exact match, then prefix match (e.g. "ollama/*"), then default
+        prices = (
+            self._pricing.get(model)
+            or next(
+                (v for k, v in self._pricing.items() if model.startswith(k.rstrip("*").rstrip("/"))),
+                None,
+            )
+            or self._pricing.get("default")
+        )
+        if not prices:
+            return 0.0
+        input_price, output_price = prices[0], prices[1]
+        return (prompt_tokens * input_price + completion_tokens * output_price) / 1_000_000
+
+
+# Global ledger instance — replaced by Orchestrator with a configured instance.
+_ledger: TokenLedger = TokenLedger()
+
+
+def get_ledger() -> TokenLedger:
+    """Return the global TokenLedger instance."""
+    return _ledger
+
+
+def set_ledger(ledger: TokenLedger) -> None:
+    """Replace the global TokenLedger instance (used by Orchestrator at startup)."""
+    global _ledger
+    _ledger = ledger
