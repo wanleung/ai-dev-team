@@ -36,63 +36,20 @@ watchers:
     # Target repo is read from the issue body ("**Target repo:** owner/repo").
   - tracker_repo: wanleung/ai-software-house
     default_target: ~
-    feature_label:
-      - feature-request
-      - ai-build
-      - enhancement
-      - ai-feature
-    bug_label:
-      - bug
-      - ai-fix
-    doc_label: documentation
+    parallel_issues: 2
+    labels:
+      ai-feature: ai-feature      # label → pipeline name (matches pipelines/ai-feature.yaml)
+      enhancement: ai-feature
+      ai-build: ai-feature
+      feature-request: ai-feature
+      ai-fix:     ai-fix
+      bug: ai-fix
+      ai-docs:    ai-docs
+      documentation: ai-docs
     enabled: true
 
-    # ── Watcher 2: Project repo watches itself ─────────────────────────────
-    # Issues filed directly in the target repo trigger the pipeline there.
-  - tracker_repo: wanleung/my-other-app
-    default_target: ~                    # null = same repo as tracker
-    feature_label: feature-request       # single label is fine too
-    bug_label: bug
-    doc_label: documentation
-    enabled: false                       # set to true to activate
-
-    # ── Watcher 3: Separate tracker + fixed target ─────────────────────────
-    # Useful when you have a dedicated planning repo that dispatches to
-    # one specific product repo.
-  # - tracker_repo: wanleung/product-backlog
-  #   default_target: wanleung/product-app
-  #   feature_label:
-  #     - ready-for-dev
-  #     - sprint
-  #   bug_label: bug
-  #   enabled: true
-
-  - tracker_repo: wanleung/mcp-tfl
-    default_target: ~
-    feature_label:
-      - feature-request
-      - ai-build
-      - enhancement
-      - ai-feature
-    bug_label:
-      - bug
-      - ai-fix
-    doc_label: documentation
-    enabled: true
-
-  - tracker_repo: wanleung/mybooking
-    default_target: ~
-    feature_label:
-      - feature-request
-      - ai-build
-      - enhancement
-      - ai-feature
-    bug_label:
-      - bug
-      - ai-fix
-    doc_label: documentation
-    enabled: true
-
+    # Additional watcher entries have been migrated to repos-available/.
+    # Use `python watcher.py repo enable <name>` to activate them.
 
 settings:
   # Maximum parallel pipeline runs (one per issue)
