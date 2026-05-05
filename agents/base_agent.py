@@ -515,12 +515,20 @@ class BaseAgent:
     # ── Utilities ──────────────────────────────────────────────────────────────
 
     @staticmethod
-    def truncate_files(files: dict[str, str], max_chars: int = 12_000) -> dict[str, str]:
+    def truncate_files(
+        files: dict[str, str],
+        max_chars: int = 12_000,
+        max_per_file: int | None = None,
+    ) -> dict[str, str]:
         """Return a subset of files that fits within max_chars total.
 
         Prioritises non-test, non-config files (source code first).
         Truncates individual files that are very long.
         Adds a summary comment when files are dropped.
+
+        Args:
+            max_chars:    Total character budget across all files.
+            max_per_file: Per-file character cap. Defaults to min(3_000, max_chars // 2).
         """
         def priority(path: str) -> int:
             p = path.lower()
@@ -535,10 +543,11 @@ class BaseAgent:
         used = 0
         skipped = []
 
+        _max_per_file = max_per_file if max_per_file is not None else min(3_000, max_chars // 2)
+
         for path, content in sorted_files:
-            max_per_file = min(3_000, max_chars // 2)
-            if len(content) > max_per_file:
-                content = content[:max_per_file] + f"\n... [truncated — {len(content) - max_per_file} chars omitted]"
+            if len(content) > _max_per_file:
+                content = content[:_max_per_file] + f"\n... [truncated — {len(content) - _max_per_file} chars omitted]"
 
             entry_len = len(path) + len(content) + 40
             if used + entry_len <= max_chars:
