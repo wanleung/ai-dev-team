@@ -22,6 +22,7 @@ import glob
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -137,7 +138,6 @@ def get_pr_comments(repo: str, pr_number: int) -> list[dict]:
 
 def _pr_attempt_count(pr_labels: list[dict]) -> int:
     """Return the highest N from any 'ai-pr-fix-N' label, or 0 if none."""
-    import re
     highest = 0
     for lbl in pr_labels:
         m = re.match(r"^ai-pr-fix-(\d+)$", lbl.get("name", ""))
@@ -158,15 +158,15 @@ def _should_fix_pr(
     Skips if: agent-running/agent-failed label present, or attempt count
     has reached max_pr_retries, or neither trigger condition is met.
     """
-    import re
-    pr_label_names = {lbl["name"] for lbl in pr.get("labels", [])}
+    labels = pr.get("labels", [])
+    pr_label_names = {lbl.get("name", "") for lbl in labels}
 
     # Skip if already being processed or gave up
     if pr_label_names & {"agent-running", "agent-failed"}:
         return False
 
     # Skip if retry cap reached
-    if _pr_attempt_count(list(pr.get("labels", []))) >= max_pr_retries:
+    if _pr_attempt_count(labels) >= max_pr_retries:
         return False
 
     # Trigger 1: explicit fix label on the PR
