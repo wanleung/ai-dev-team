@@ -297,6 +297,9 @@ def load_watcher_config(config_path: Path) -> dict:
 
 def cmd_repo_enable(base_dir: Path, name: str) -> None:
     """Enable a watcher by creating a symlink in repos-enabled/."""
+    if "/" in name or "\\" in name or name.startswith("."):
+        print(f"Error: invalid repo name '{name}'", file=sys.stderr)
+        sys.exit(1)
     avail = base_dir / "repos-available" / f"{name}.yaml"
     if not avail.exists():
         available = sorted(p.stem for p in (base_dir / "repos-available").glob("*.yaml")) \
@@ -741,6 +744,8 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
     
     # Process any resume triggers (issues answered by human)
     if not dry_run:
+        # resume queue tasks always run with global model/num_engineers; per-watcher
+        # overrides don't apply to resumed tasks (trigger files don't record the watcher).
         global_model = global_settings.get("model", "gpt-4.1")
         global_num_engineers = global_settings.get("num_engineers", 2)
         resumed_tasks = _process_resume_queue(workspace_dir, tracker_repos, default_targets, global_model, global_num_engineers, log_dir, dry_run, logger)
@@ -786,7 +791,10 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
         logger.info("Checking %s …", tracker_repo)
         try:
             for label_name, label_cfg in labels_cfg.items():
-                pipeline_name = (label_cfg or {}).get("pipeline", label_name)
+                if isinstance(label_cfg, str):
+                    pipeline_name = label_cfg
+                else:
+                    pipeline_name = (label_cfg or {}).get("pipeline", label_name)
                 for issue in get_open_issues(tracker_repo, label_name):
                     add_label(tracker_repo, issue["number"], LABEL_QUEUED)
                     tasks.append(dict(

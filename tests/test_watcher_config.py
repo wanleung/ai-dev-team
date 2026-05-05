@@ -404,3 +404,61 @@ def test_repo_list_no_avail_dir(tmp_path, capsys):
     cmd_repo_list(tmp_path)
     err = capsys.readouterr().err
     assert "No repos-available" in err
+
+
+# ── Issue 1: labels dict string format ───────────────────────────────────────
+
+def test_watch_uses_new_labels_dict_string_format(tmp_path, monkeypatch):
+    """watch() correctly resolves pipeline_name from labels: {label: pipeline} string values."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, """
+        settings:
+          model: gpt-4.1
+          num_engineers: 1
+          max_parallel: 1
+          log_dir: logs/watcher
+        watchers:
+          - tracker_repo: owner/repo
+            labels:
+              enhancement: ai-feature
+              ai-fix: ai-fix
+            enabled: true
+    """)
+    (tmp_path / "logs" / "watcher").mkdir(parents=True, exist_ok=True)
+    dispatched = []
+
+    def fake_get_open_issues(repo, label):
+        if label == "enhancement":
+            return [{"number": 1, "title": "T", "body": "", "labels": [{"name": "enhancement"}]}]
+        return []
+
+    def fake_dispatch(**kwargs):
+        dispatched.append(kwargs)
+        return SimpleNamespace(next_label=None, verdict="success", tests_passed=True, deploy_tests_passed=True)
+
+    monkeypatch.setattr("watcher.get_open_issues", fake_get_open_issues)
+    monkeypatch.setattr("watcher._dispatch", fake_dispatch)
+    monkeypatch.setattr("watcher.ensure_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.add_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.remove_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.post_comment", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.check_waiting_issues", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher._process_resume_queue", lambda *a, **kw: [])
+    monkeypatch.setattr("watcher._load_pipeline_config", lambda: {})
+
+    logger = logging.getLogger("test")
+    logger.addHandler(logging.NullHandler())
+    watcher.watch(cfg, dry_run=False, logger=logger)
+
+    assert len(dispatched) == 1
+    assert dispatched[0]["label"] == "ai-feature"
+
+
+# ── Issue 2: cmd_repo_enable input validation ─────────────────────────────────
+
+def test_repo_enable_rejects_path_traversal(tmp_path):
+    """cmd_repo_enable rejects names with path separators or leading dots."""
+    with pytest.raises(SystemExit):
+        cmd_repo_enable(tmp_path, "../evil")
+    with pytest.raises(SystemExit):
+        cmd_repo_enable(tmp_path, ".hidden")
