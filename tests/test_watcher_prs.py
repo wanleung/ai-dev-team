@@ -150,6 +150,13 @@ def test_should_fix_pr_no_trigger():
     assert _should_fix_pr(pr, comments, "ai-fix", r"❌|FAILED", 3) is False
 
 
+def test_should_fix_pr_skip_agent_complete():
+    """PR with agent-complete label is skipped to avoid re-queueing after success."""
+    from watcher import _should_fix_pr
+    pr = {"number": 5, "labels": [{"name": "ai-fix"}, {"name": "agent-complete"}], "draft": False}
+    assert _should_fix_pr(pr, [], "ai-fix", r"❌|FAILED", 3) is False
+
+
 def test_pr_attempt_count_tolerates_missing_name_key():
     """_pr_attempt_count handles label dicts missing 'name' key without crashing."""
     from watcher import _pr_attempt_count
@@ -184,13 +191,13 @@ def test_run_pr_revision_success(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "orchestrator", fake_mod)
 
     saved_stdout, saved_stderr = sys.stdout, sys.stderr
-    _run_pr_revision(pr, "owner/tracker", "owner/target", "gpt-4.1", 2, tmp_path, logging.getLogger("test"))
+    _run_pr_revision(pr, "owner/tracker", "owner/target", "gpt-4.1", 2, tmp_path, logging.getLogger("test"), pr_fix_label="ai-fix")
 
     assert "agent-running" in calls["add"]
     assert "ai-pr-fix-1" in calls["add"]   # attempt label applied
     assert "agent-complete" in calls["add"]
     assert "agent-running" in calls["remove"]
-    assert "ai-fix" in calls["remove"]     # trigger label removed after success
+    assert "ai-fix" in calls["remove"]     # configured trigger label removed after success
     assert sys.stdout is saved_stdout, "stdout was not restored"
     assert sys.stderr is saved_stderr, "stderr was not restored"
 
@@ -291,13 +298,13 @@ def test_watch_prs_dispatches_when_label_trigger(monkeypatch, tmp_path):
     monkeypatch.setattr("watcher.get_pr_comments", lambda repo, num: [])
     monkeypatch.setattr(
         "watcher._run_pr_revision",
-        lambda pr, tracker, target, model, num_eng, log_dir, logger:
-            dispatched.append((pr["number"], tracker, target, model, num_eng)),
+        lambda pr, tracker, target, model, num_eng, log_dir, logger, pr_fix_label="ai-fix":
+            dispatched.append((pr["number"], tracker, target, model, num_eng, pr_fix_label)),
     )
 
     _watch_prs(watchers, {"model": "gpt-4.1", "num_engineers": 2}, tmp_path, False, logging.getLogger("test"))
 
-    assert dispatched == [(10, "owner/tracker", "owner/target", "gpt-4.1", 2)]
+    assert dispatched == [(10, "owner/tracker", "owner/target", "gpt-4.1", 2, "ai-fix")]
 
 
 def test_watch_prs_skips_when_disabled(monkeypatch, tmp_path):
