@@ -97,10 +97,12 @@ class OllamaBackend(OpenAICompatibleBackend):
                 if not chunk.choices:
                     continue  # final usage/stop chunks have empty choices
                 delta = chunk.choices[0].delta
-                # Reasoning content lives in model_extra for Ollama thinking models
+                # Reasoning content lives in model_extra for Ollama thinking models.
+                # Always collect it (regardless of preserve) so we can detect
+                # thinking-only models (e.g. via LiteLLM proxy that never emits delta.content).
                 extra = getattr(delta, "model_extra", None) or {}
-                rc = extra.get("reasoning_content")
-                if rc and preserve:
+                rc = extra.get("reasoning_content") if isinstance(extra, dict) else None
+                if rc and isinstance(rc, str):
                     reasoning_parts.append(rc)
                 if delta.content:
                     content_parts.append(delta.content)
@@ -111,9 +113,15 @@ class OllamaBackend(OpenAICompatibleBackend):
                 raise ConnectionError(
                     "Ollama stream returned no content (server may have timed out or model is unavailable)"
                 )
-            if preserve and reasoning_parts:
+            if reasoning_parts:
                 thinking = "".join(reasoning_parts)
-                return f"<think>{thinking}</think>\n{content}"
+                if preserve:
+                    return f"<think>{thinking}</think>\n{content}"
+                if not content:
+                    # Thinking model (via LiteLLM proxy) only emitted reasoning_content and
+                    # never produced a separate delta.content chunk.  Use the reasoning as
+                    # the actual response so downstream stages receive useful text.
+                    return thinking
             return content
 
         full_content = _retry_with_backoff(
