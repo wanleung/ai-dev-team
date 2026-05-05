@@ -89,6 +89,8 @@ class OllamaBackend(OpenAICompatibleBackend):
             reasoning_parts: list[str] = []
             content_parts: list[str] = []
             for chunk in stream:
+                if not chunk.choices:
+                    continue  # final usage/stop chunks have empty choices
                 delta = chunk.choices[0].delta
                 # Reasoning content lives in model_extra for Ollama thinking models
                 extra = getattr(delta, "model_extra", None) or {}

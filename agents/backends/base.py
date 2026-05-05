@@ -210,6 +210,8 @@ class OpenAICompatibleBackend(LLMBackend):
         def _collect(stream) -> str:
             collected = ""
             for chunk in stream:
+                if not chunk.choices:
+                    continue  # final usage/stop chunks have empty choices
                 delta = chunk.choices[0].delta.content
                 if delta:
                     collected += delta
