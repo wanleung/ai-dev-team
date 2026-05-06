@@ -1568,14 +1568,22 @@ class Orchestrator(TestFixLoopMixin):
         return content.replace("```", "` ` `")
 
     def _collect_pr_feedback(self, pr_number: int) -> list[dict]:
-        """Return non-bot PR review comments and review bodies as a flat list.
+        """Return non-bot PR review comments, review bodies, and regular PR comments as a flat list.
 
         Each item: {"author": str, "body": str, "location": str}
+
+        Sources:
+          - Inline diff review comments  (/pulls/{n}/comments)
+          - PR review submissions         (/pulls/{n}/reviews)
+          - Regular PR issue comments     (/issues/{n}/comments)  ← test results, human notes
         """
+        # github-actions[bot] posts CI noise; copilot[bot] is a legacy app name (not the PR reviewer).
+        # copilot-pull-request-reviewer posts useful suggestions and is intentionally included.
         bot_logins = {"github-actions[bot]", "copilot[bot]"}
 
         inline = self.target_github.get_pr_review_comments(pr_number)
         reviews = self.target_github.get_pr_reviews(pr_number)
+        issue_comments = self.target_github.get_issue_comments(pr_number)
 
         feedback = []
         for c in inline:
@@ -1598,13 +1606,26 @@ class Orchestrator(TestFixLoopMixin):
                 continue
             feedback.append({"author": login, "body": body, "location": "review"})
 
+        for c in issue_comments:
+            login = c.get("user", {}).get("login", "")
+            if login in bot_logins:
+                continue
+            body = (c.get("body") or "").strip()
+            if not body:
+                continue
+            feedback.append({"author": login, "body": body, "location": "comment"})
+
         return feedback
 
     def _format_feedback(self, feedback: list[dict]) -> str:
         """Format a list of feedback dicts as a markdown bullet list."""
         lines = ["### PR Feedback to Address\n"]
         for item in feedback:
-            location = f" _(at {item['location']})_" if item["location"] != "review" else ""
+            loc = item["location"]
+            if loc in ("review", "comment"):
+                location = f" _(in PR {loc})_"
+            else:
+                location = f" _(at {loc})_"
             lines.append(f"- **{item['author']}**{location}: {item['body']}")
         return "\n".join(lines)
 
