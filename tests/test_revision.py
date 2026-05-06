@@ -53,6 +53,7 @@ def test_collect_pr_feedback_filters_bot(orch):
         {"user": {"login": "bob"}, "body": "Please add tests", "state": "CHANGES_REQUESTED"},
         {"user": {"login": "github-actions[bot]"}, "body": "Bot review", "state": "COMMENTED"},
     ]
+    orch.target_github.get_issue_comments.return_value = []
     feedback = orch._collect_pr_feedback(pr_number=1)
     assert len(feedback) == 2
     assert all(f["author"] != "github-actions[bot]" for f in feedback)
@@ -66,7 +67,35 @@ def test_collect_pr_feedback_empty_when_all_bot(orch):
         {"user": {"login": "github-actions[bot]"}, "body": "Bot", "path": "a.py", "line": 1},
     ]
     orch.target_github.get_pr_reviews.return_value = []
+    orch.target_github.get_issue_comments.return_value = []
     assert orch._collect_pr_feedback(1) == []
+
+
+def test_collect_pr_feedback_includes_regular_comments(orch):
+    """Regular PR issue comments (e.g. test failure reports) should be included."""
+    orch.target_github.get_pr_review_comments.return_value = []
+    orch.target_github.get_pr_reviews.return_value = []
+    orch.target_github.get_issue_comments.return_value = [
+        {"user": {"login": "wanleung"}, "body": "## 🏃 Test Run Results\n\nSome tests failed: TypeError: ..."},
+        {"user": {"login": "github-actions[bot]"}, "body": "CI passed"},
+    ]
+    feedback = orch._collect_pr_feedback(1)
+    assert len(feedback) == 1
+    assert feedback[0]["author"] == "wanleung"
+    assert "Test Run Results" in feedback[0]["body"]
+    assert feedback[0]["location"] == "comment"
+
+
+def test_collect_pr_feedback_includes_copilot_pr_reviewer(orch):
+    """copilot-pull-request-reviewer posts useful suggestions and must NOT be filtered out."""
+    orch.target_github.get_pr_review_comments.return_value = []
+    orch.target_github.get_pr_reviews.return_value = [
+        {"user": {"login": "copilot-pull-request-reviewer"}, "body": "requirements-test.txt has markdown that breaks pip"},
+    ]
+    orch.target_github.get_issue_comments.return_value = []
+    feedback = orch._collect_pr_feedback(1)
+    assert len(feedback) == 1
+    assert feedback[0]["author"] == "copilot-pull-request-reviewer"
 
 
 # ── _format_feedback ──────────────────────────────────────────────────────────
