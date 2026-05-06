@@ -1933,6 +1933,21 @@ class Orchestrator(TestFixLoopMixin):
         else:
             result = PipelineResult(requirement=requirement)
 
+        # ── Extract prior-work context from trigger_issue_body ────────────────
+        # When the watcher appends prior issue comments (PRD, design, reviews,
+        # human feedback) to trigger_issue_body, make them available to agents
+        # as "Prior Work Context".  The context is stored on the orchestrator
+        # instance so _stage_pm (and other stages) can prepend it to their
+        # effective requirement without altering the canonical `requirement`
+        # string (which is used for checkpoint matching).
+        _prior_marker = "\n\n---\n\n## 📜 Prior Work Context\n\n"
+        if trigger_issue_body and _prior_marker in trigger_issue_body:
+            self._issue_prior_context: str = trigger_issue_body[
+                trigger_issue_body.index(_prior_marker) + len("\n\n---\n\n"):
+            ]
+        else:
+            self._issue_prior_context = ""
+
         # Set run_id on result (new run or restored checkpoint)
         if not result.run_id:
             result.run_id = run_id
@@ -2056,7 +2071,9 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_pm(self, result: PipelineResult, requirement: str) -> None:
         ctx = self._build_clarification_context(result.clarification_history, stage="pm")
-        effective_req = f"{ctx}\n\n---\n\n{requirement}" if ctx else requirement
+        prior_ctx = getattr(self, "_issue_prior_context", "")
+        extra = "\n\n".join(filter(None, [ctx, prior_ctx]))
+        effective_req = f"{extra}\n\n---\n\n{requirement}" if extra else requirement
         if self.github:
             pm_result = self.pm.run_with_github(effective_req, self.github)
             result.issue_number = pm_result["issue_number"]
