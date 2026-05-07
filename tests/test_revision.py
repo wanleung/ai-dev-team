@@ -136,7 +136,7 @@ def test_parse_merge_directives_backtick_branch(orch):
 
 
 def test_parse_merge_directives_pr_number(orch):
-    orch.target_github.get_pr.return_value = {"head": {"ref": "feature/agent/1-static-blog-platform"}}
+    orch.target_github.get_pr.return_value = {"head": {"ref": "feature/agent/1-static-blog-platform"}, "base": {"ref": "master"}}
     feedback = [
         {"author": "wanleung", "body": "merge from PR #2 before fixing tests", "location": "comment"},
     ]
@@ -220,6 +220,7 @@ def test_run_revision_incorporates_merge_branch_files(orch):
     and committed to the implementation branch."""
     orch.target_github.get_pr.return_value = {
         "head": {"ref": "feature/impl"},
+        "base": {"ref": "master"},
         "body": "Closes #1",
         "labels": [],
         "title": "Implementation",
@@ -259,6 +260,7 @@ def test_run_revision_merge_branch_does_not_overwrite_existing_files(orch):
     """Merge branch files that already exist in the current PR branch are NOT overwritten."""
     orch.target_github.get_pr.return_value = {
         "head": {"ref": "feature/impl"},
+        "base": {"ref": "master"},
         "body": "Closes #1",
         "labels": [],
         "title": "Implementation",
@@ -306,6 +308,7 @@ def test_run_revision_no_merge_branch_when_no_directive(orch):
     """Without a merge-branch directive, _fetch_branch_files is never called."""
     orch.target_github.get_pr.return_value = {
         "head": {"ref": "feature/impl"},
+        "base": {"ref": "master"},
         "body": "Closes #1",
         "labels": [],
         "title": "Implementation",
@@ -356,6 +359,7 @@ def test_fetch_design_from_issue_returns_empty_string_when_not_found(orch):
 def test_run_revision_exits_when_max_revisions_reached(orch):
     orch.target_github.get_pr.return_value = {
         "head": {"ref": "feature/my-app"},
+        "base": {"ref": "master"},
         "body": "Closes #3",
         "labels": [{"name": "ai-generated"}, {"name": "ai-revision-3"}],
         "title": "My App",
@@ -372,6 +376,7 @@ def test_run_revision_exits_when_max_revisions_reached(orch):
 def test_run_revision_exits_when_no_human_feedback(orch):
     orch.target_github.get_pr.return_value = {
         "head": {"ref": "feature/my-app"},
+        "base": {"ref": "master"},
         "body": "Closes #3",
         "labels": [{"name": "ai-generated"}],
         "title": "My App",
@@ -480,6 +485,7 @@ def _make_revision_mocks(orch, pr_number=42, head_branch="feature/agent/1-fix"):
     orch.target_github.get_pr.return_value = {
         "number": pr_number,
         "head": {"ref": head_branch},
+        "base": {"ref": "master"},
         "body": "",
         "labels": [],
     }
