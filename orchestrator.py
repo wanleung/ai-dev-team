@@ -1881,8 +1881,8 @@ class Orchestrator(TestFixLoopMixin):
         merge_commit_errors: list[str] = []
         for mb, mb_files in merge_branch_files.items():
             for filepath, content in mb_files.items():
-                if filepath in revised_files:
-                    continue  # engineer already committed an updated version
+                if filepath in revised_files or filepath in current_files:
+                    continue  # skip if engineer revised it OR if it already exists in the PR branch
                 try:
                     self.target_github.commit_file(
                         path=filepath,
