@@ -1820,6 +1820,14 @@ class Orchestrator(TestFixLoopMixin):
         new_revision = current_rev + 1
         console.print(f"\n[bold cyan]🔄 Revision {new_revision}/{self.max_revisions}[/bold cyan]")
 
+        merge_hint = ""
+        if merge_branch_files:
+            branch_names = ", ".join(f"`{b}`" for b in merge_branch_files)
+            merge_hint = (
+                f"\n\nFiles from merge branch(es) {branch_names} are included above. "
+                f"Make your revised implementation pass those tests."
+            )
+
         revision_modules = [
             {
                 "name": "Revision",
@@ -1827,6 +1835,7 @@ class Orchestrator(TestFixLoopMixin):
                     f"Revise the existing code to address all PR feedback listed above. "
                     f"Return updated versions of these files: {', '.join(current_files.keys())}. "
                     f"Only change what is necessary to address the feedback."
+                    f"{merge_hint}"
                 ),
             }
         ]
@@ -1884,6 +1893,13 @@ class Orchestrator(TestFixLoopMixin):
                 except RuntimeError as exc:
                     merge_commit_errors.append(f"{filepath}: {exc}")
                     console.print(f"  [yellow]⚠️  Could not commit merge file {filepath}: {exc}[/yellow]")
+
+        if merge_commit_errors:
+            self.target_github.add_pr_comment(
+                pr_number,
+                f"⚠️ Could not commit {len(merge_commit_errors)} merge-branch file(s):\n"
+                + "\n".join(f"- `{e}`" for e in merge_commit_errors),
+            )
 
         console.print(f"  ✅ Committed [bold]{len(revised_files)}[/bold] revised file(s) to [cyan]{head_branch}[/cyan]")
 
