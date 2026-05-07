@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from .base_agent import BaseAgent
+from utils import sanitise as _sanitise_utils
 
 
 @dataclass
@@ -81,10 +82,7 @@ class ConflictResolverAgent(BaseAgent):
 
     def _sanitise(self, text: str) -> str:
         """Remove the GitHub token from *text* so it is safe to log or surface."""
-        token = getattr(self, "_token", None)
-        if token:
-            return text.replace(token, "***")
-        return text
+        return _sanitise_utils(text, getattr(self, "_token", None))
 
     def _resolve(
         self,

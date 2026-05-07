@@ -51,6 +51,7 @@ from skills_loader import SkillContext, SkillLoader
 from test_fix_loop import TestFixLoopMixin
 from tools import builtin_tools, CombinedToolRegistry, MCPToolRegistry
 from agents.token_ledger import TokenLedger, current_stage, get_ledger, set_ledger
+from utils import sanitise as _sanitise
 
 log = logging.getLogger(__name__)
 
@@ -1798,7 +1799,7 @@ class Orchestrator(TestFixLoopMixin):
             conflicting_files = []
             retry_failed_after_resolution = True
         else:
-            console.print(f"  ❌ Conflict resolution failed: {result.reason}")
+            console.print(f"  ❌ Conflict resolution failed: {_sanitise(result.reason or '', getattr(self.target_github, 'token', ''))}")
             conflicting_files = result.failed_files or []
             retry_failed_after_resolution = False
 

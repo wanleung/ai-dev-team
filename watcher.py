@@ -33,6 +33,7 @@ from typing import Optional
 
 import yaml
 import requests
+from utils import sanitise as _sanitise
 
 # ── Labels used to track pipeline state ─────────────────────────────────────
 LABEL_QUEUED   = "agent-queued"
@@ -329,13 +330,14 @@ def run_pipeline(
         return True
 
     except Exception as exc:  # noqa: BLE001
-        logger.error("    ❌ Issue #%d failed: %s", issue_number, exc)
+        _token = os.environ.get("GITHUB_TOKEN", "")
+        logger.error("    ❌ Issue #%d failed: %s", issue_number, _sanitise(str(exc), _token))
         add_label(tracker_repo, issue_number, LABEL_FAILED)
         remove_label(tracker_repo, issue_number, LABEL_RUNNING)
         post_comment(
             tracker_repo,
             issue_number,
-            f"## ❌ Agent Pipeline Failed\n\n```\n{exc}\n```\n\n"
+            f"## ❌ Agent Pipeline Failed\n\n```\n{_sanitise(str(exc), _token)}\n```\n\n"
             f"Log: `{issue_log}`\n\nRemove the `{LABEL_FAILED}` label and re-label "
             f"the issue to retry.",
         )
@@ -694,24 +696,24 @@ def _run_pr_revision(
                     logger.info("  ✅ PR #%d fix attempt %d complete", pr_number, attempt)
 
             except Exception as exc:  # noqa: BLE001
-                logger.error("  ❌ PR #%d fix attempt %d unhandled error: %s", pr_number, attempt, exc)
+                logger.error("  ❌ PR #%d fix attempt %d unhandled error: %s", pr_number, attempt, _sanitise(str(exc), token))
                 add_label(target_repo, pr_number, LABEL_FAILED)
                 remove_label(target_repo, pr_number, LABEL_RUNNING)
                 post_comment(
                     target_repo, pr_number,
-                    f"❌ PR fix attempt {attempt} failed with error: `{exc}`\n"
+                    f"❌ PR fix attempt {attempt} failed with error: `{_sanitise(str(exc), token)}`\n"
                     f"Log: `{log_file}`\n\nRemove `agent-failed` to retry.",
                 )
             finally:
                 sys.stdout, sys.stderr = old_stdout, old_stderr
     except OSError as exc:  # noqa: BLE001
-        logger.error("  ❌ PR #%d: could not open log file %s: %s", pr_number, log_file, exc)
+        logger.error("  ❌ PR #%d: could not open log file %s: %s", pr_number, log_file, _sanitise(str(exc), token))
         add_label(target_repo, pr_number, LABEL_FAILED)
         remove_label(target_repo, pr_number, LABEL_RUNNING)
         post_comment(
             target_repo, pr_number,
             f"❌ PR fix attempt {attempt} failed: could not open log file.\n"
-            f"`{exc}`\n\nRemove `agent-failed` to retry.",
+            f"`{_sanitise(str(exc), token)}`\n\nRemove `agent-failed` to retry.",
         )
 
 
@@ -753,7 +755,7 @@ def _watch_prs(
         try:
             prs = get_open_prs(target_repo, skip_drafts=skip_drafts)
         except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to fetch PRs from %s: %s", target_repo, exc)
+            logger.error("Failed to fetch PRs from %s: %s", target_repo, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
             continue
 
         for pr in prs:
@@ -761,7 +763,7 @@ def _watch_prs(
             try:
                 comments = get_pr_comments(target_repo, pr_number)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Could not fetch comments for PR #%d: %s", pr_number, exc)
+                logger.warning("Could not fetch comments for PR #%d: %s", pr_number, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
                 comments = []
 
             if not _should_fix_pr(pr, comments, pr_fix_label, pr_failure_pattern, max_pr_retries):
@@ -862,7 +864,7 @@ def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_
         try:
             waiting_issues = _get_issues_by_label(tracker_repo, LABEL_WAITING, github_token)
         except Exception as exc:
-            logger.warning(f"[Watcher] Could not list agent-waiting issues for {tracker_repo}: {exc}")
+            logger.warning("[Watcher] Could not list agent-waiting issues for %s: %s", tracker_repo, _sanitise(str(exc), github_token))
             continue
 
         for issue in waiting_issues:
@@ -1129,7 +1131,7 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
                     ))
                     logger.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
         except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to fetch issues from %s: %s", tracker_repo, exc)
+            logger.error("Failed to fetch issues from %s: %s", tracker_repo, _sanitise(str(exc), github_token))
 
     if not tasks:
         logger.info("Nothing to do.")
