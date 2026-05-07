@@ -254,6 +254,53 @@ def test_run_revision_incorporates_merge_branch_files(orch):
     assert "tests/test_app.py" in committed_paths
 
 
+def test_run_revision_merge_branch_does_not_overwrite_existing_files(orch):
+    """Merge branch files that already exist in the current PR branch are NOT overwritten."""
+    orch.target_github.get_pr.return_value = {
+        "head": {"ref": "feature/impl"},
+        "body": "Closes #1",
+        "labels": [],
+        "title": "Implementation",
+    }
+    orch.target_github.get_pr_review_comments.return_value = []
+    orch.target_github.get_pr_reviews.return_value = []
+    orch.target_github.get_issue_comments.return_value = [
+        {"user": {"login": "wanleung"}, "body": "merge-branch: feature/tests"},
+    ]
+    orch.target_github.get_pr_files.return_value = [
+        {"filename": "app/main.py"},
+    ]
+    # Both branches have app/main.py; merge branch also has tests/test_app.py
+    def get_content(path, ref):
+        if ref == "feature/impl":
+            return "# impl main.py"
+        if path == "app/main.py":
+            return "# merge main.py"  # should NOT overwrite
+        return "# test content"
+    orch.target_github.get_file_content.side_effect = get_content
+    orch.target_github.get_full_tree.return_value = [
+        {"path": "app/main.py", "type": "blob", "size": 100},
+        {"path": "tests/test_app.py", "type": "blob", "size": 200},
+    ]
+
+    from unittest.mock import MagicMock
+    orch.engineer.run_all_modules = MagicMock(return_value={
+        "all_files": {"app/main.py": "# fixed main.py"}
+    })
+    orch.reviewer.run = MagicMock(return_value={"verdict": "APPROVED"})
+    orch.qa.run = MagicMock(return_value={"test_files": {}})
+
+    result = orch.run_revision(pr_number=3)
+    assert result["status"] == "ok"
+
+    commit_calls = {c[1]["path"]: c[1]["content"] for c in orch.target_github.commit_file.call_args_list}
+    # tests/test_app.py from merge branch should be committed (new file)
+    assert "tests/test_app.py" in commit_calls
+    # app/main.py from merge branch should NOT overwrite — engineer's version should be used
+    if "app/main.py" in commit_calls:
+        assert commit_calls["app/main.py"] == "# fixed main.py"
+
+
 def test_run_revision_no_merge_branch_when_no_directive(orch):
     """Without a merge-branch directive, _fetch_branch_files is never called."""
     orch.target_github.get_pr.return_value = {
