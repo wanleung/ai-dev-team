@@ -1792,21 +1792,33 @@ class Orchestrator(TestFixLoopMixin):
                         f"✅ Merged `{base_branch}` into `{head_branch}` after resolving conflicts. {_UPDATE_BRANCH_MARKER}",
                     )
                 return {"status": "merged"}
-            # Merge still conflicted after resolution — fall through to failure
-            conflicting_files = result.resolved_files
+            # Merge still conflicted after resolution — we don't know which files
+            # GitHub considers conflicting anymore (the previously resolved files
+            # are already fixed), so report an empty list and ask for manual merge.
+            conflicting_files = []
+            retry_failed_after_resolution = True
         else:
             console.print(f"  ❌ Conflict resolution failed: {result.reason}")
             conflicting_files = result.failed_files or []
+            retry_failed_after_resolution = False
 
-        files_list = "\n".join(f"- `{p}`" for p in conflicting_files) if conflicting_files else "- (unknown)"
         if pr_number is not None:
-            self.target_github.add_pr_comment(
-                pr_number,
-                "⚠️ Could not automatically resolve merge conflicts.\n\n"
-                f"Conflicting files:\n{files_list}\n\n"
-                f"Please resolve these conflicts manually and re-trigger ai-fix.\n\n"
-                f"{_UPDATE_BRANCH_MARKER}",
-            )
+            if retry_failed_after_resolution:
+                self.target_github.add_pr_comment(
+                    pr_number,
+                    "⚠️ Conflicts were resolved locally but the merge still could not complete. "
+                    "Please merge manually.\n\n"
+                    f"{_UPDATE_BRANCH_MARKER}",
+                )
+            else:
+                files_list = "\n".join(f"- `{p}`" for p in conflicting_files) if conflicting_files else "- (unknown)"
+                self.target_github.add_pr_comment(
+                    pr_number,
+                    "⚠️ Could not automatically resolve merge conflicts.\n\n"
+                    f"Conflicting files:\n{files_list}\n\n"
+                    f"Please resolve these conflicts manually and re-trigger ai-fix.\n\n"
+                    f"{_UPDATE_BRANCH_MARKER}",
+                )
         return {"status": "conflict", "conflicting_files": conflicting_files}
 
     def _fetch_design_from_issue(self, issue_number: int) -> str:

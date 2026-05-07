@@ -61,7 +61,6 @@ def test_conflict_resolver_called_on_409(orch, pr_ctx):
 
     # ConflictResolverAgent must have been constructed
     MockResolver.assert_called_once()
-    call_kwargs = MockResolver.call_args
 
     # resolve() must have been called with the correct branches and pr_context
     instance.resolve.assert_called_once_with(
@@ -127,3 +126,64 @@ def test_no_pr_context_returns_false_on_conflict(orch):
     assert result["conflicting_files"] == []
     # Only one merge call (no retry)
     assert orch.target_github.merge_base_into_branch.call_count == 1
+
+
+# ── test_conflict_resolver_uses_override_model ────────────────────────────
+
+def test_conflict_resolver_uses_override_model(orch, pr_ctx):
+    """When conflict_resolver_model is set, that model is used."""
+    orch.conflict_resolver_model = "gpt-4o"
+    orch.target_github.merge_base_into_branch.side_effect = [409, 201]
+
+    resolved_result = ResolveResult(
+        status="resolved",
+        resolved_files=["src/app.py"],
+    )
+
+    with patch(
+        "orchestrator.ConflictResolverAgent", autospec=True
+    ) as MockResolver:
+        instance = MockResolver.return_value
+        instance.resolve.return_value = resolved_result
+
+        orch._update_branch_from_base(
+            head_branch="feature/my-branch",
+            base_branch="main",
+            pr_context=pr_ctx,
+        )
+
+    # ConflictResolverAgent must have been instantiated with model="gpt-4o"
+    MockResolver.assert_called_once()
+    _, init_kwargs = MockResolver.call_args
+    assert init_kwargs.get("model") == "gpt-4o"
+
+
+# ── test_conflict_resolver_falls_back_to_senior_model ─────────────────────
+
+def test_conflict_resolver_falls_back_to_senior_model(orch, pr_ctx):
+    """When conflict_resolver_model is None, senior_model is used."""
+    orch.conflict_resolver_model = None
+    orch.senior_model = "claude-3-opus"
+    orch.target_github.merge_base_into_branch.side_effect = [409, 201]
+
+    resolved_result = ResolveResult(
+        status="resolved",
+        resolved_files=["src/app.py"],
+    )
+
+    with patch(
+        "orchestrator.ConflictResolverAgent", autospec=True
+    ) as MockResolver:
+        instance = MockResolver.return_value
+        instance.resolve.return_value = resolved_result
+
+        orch._update_branch_from_base(
+            head_branch="feature/my-branch",
+            base_branch="main",
+            pr_context=pr_ctx,
+        )
+
+    # ConflictResolverAgent must have been instantiated with model="claude-3-opus"
+    MockResolver.assert_called_once()
+    _, init_kwargs = MockResolver.call_args
+    assert init_kwargs.get("model") == "claude-3-opus"
