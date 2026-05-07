@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 import watcher
-from watcher import _dispatch, watch
+from watcher import _dispatch, watch, _run_pr_revision
 
 
 # ── Shared fixture — prevent _dispatch from reading real config.yaml ──────────
@@ -417,3 +417,79 @@ class TestWatchQueuing:
         calls = mock_run_pipeline.call_args_list
         types = [c.args[3] if c.args else c.kwargs.get("label") for c in calls]
         assert "ai-docs" in types
+
+
+# ── _run_pr_revision: conflict_resolver_model wiring ─────────────────────────
+
+class TestRunPrRevisionConflictResolverModel:
+    """Tests that _run_pr_revision passes conflict_resolver_model to Orchestrator."""
+
+    def _make_pr(self, number: int = 1) -> dict:
+        return {"number": number, "title": "Test PR", "labels": []}
+
+    @patch("watcher.post_comment")
+    @patch("watcher.remove_label")
+    @patch("watcher.add_label")
+    @patch("watcher.ensure_label")
+    def test_conflict_resolver_model_passed_to_orchestrator(
+        self,
+        mock_ensure: MagicMock,
+        mock_add_label: MagicMock,
+        mock_remove_label: MagicMock,
+        mock_post_comment: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """_run_pr_revision passes conflict_resolver_model='gpt-4o' to Orchestrator."""
+        mock_orch_instance = MagicMock()
+        mock_orch_instance.run_revision.return_value = {"status": "ok"}
+        mock_orch_class = MagicMock(return_value=mock_orch_instance)
+
+        with patch.dict("sys.modules", {
+            "orchestrator": MagicMock(Orchestrator=mock_orch_class),
+        }):
+            _run_pr_revision(
+                pr=self._make_pr(42),
+                tracker_repo="owner/tracker",
+                target_repo="owner/target",
+                model="gpt-4.1",
+                num_engineers=1,
+                log_dir=tmp_path / "logs",
+                logger=_make_logger(),
+                conflict_resolver_model="gpt-4o",
+            )
+
+        call_kwargs = mock_orch_class.call_args.kwargs
+        assert call_kwargs.get("conflict_resolver_model") == "gpt-4o"
+
+    @patch("watcher.post_comment")
+    @patch("watcher.remove_label")
+    @patch("watcher.add_label")
+    @patch("watcher.ensure_label")
+    def test_conflict_resolver_model_none_by_default(
+        self,
+        mock_ensure: MagicMock,
+        mock_add_label: MagicMock,
+        mock_remove_label: MagicMock,
+        mock_post_comment: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """_run_pr_revision passes conflict_resolver_model=None when not set."""
+        mock_orch_instance = MagicMock()
+        mock_orch_instance.run_revision.return_value = {"status": "ok"}
+        mock_orch_class = MagicMock(return_value=mock_orch_instance)
+
+        with patch.dict("sys.modules", {
+            "orchestrator": MagicMock(Orchestrator=mock_orch_class),
+        }):
+            _run_pr_revision(
+                pr=self._make_pr(43),
+                tracker_repo="owner/tracker",
+                target_repo="owner/target",
+                model="gpt-4.1",
+                num_engineers=1,
+                log_dir=tmp_path / "logs",
+                logger=_make_logger(),
+            )
+
+        call_kwargs = mock_orch_class.call_args.kwargs
+        assert call_kwargs.get("conflict_resolver_model") is None
