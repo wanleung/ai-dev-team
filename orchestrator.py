@@ -45,6 +45,8 @@ from agents.memory_consolidator import MemoryConsolidatorAgent
 from agents.conflict_resolver import ConflictResolverAgent, PRContext
 from framework_docs import FrameworkDocsLoader
 from github_client import GitHubClient, parse_target_repo
+from config_schema import AppConfig as _AppConfig
+from pydantic import ValidationError as _PydanticValidationError
 from repo_context import RepoContext, RepoContextLoader, RepoAutoIndexer
 from memory_store import MemoryStore
 from skills_loader import SkillContext, SkillLoader
@@ -892,6 +894,11 @@ class Orchestrator(TestFixLoopMixin):
         """Create an Orchestrator from a YAML config file."""
         with open(config_path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
+        # Validate schema — raises pydantic.ValidationError with field-level detail on bad config
+        try:
+            _AppConfig.model_validate(cfg)
+        except _PydanticValidationError as exc:
+            raise ValueError(f"Invalid config.yaml: {exc}") from exc
 
         # Load optional local override config (never committed)
         local_path = Path(config_path).parent / "config.local.yaml"
