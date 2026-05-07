@@ -63,3 +63,7 @@ settings:
 
   # Default LLM model (overridden by config.yaml per-agent settings)
   model: "gpt-4.1"
+
+  # Optional: model used by the conflict resolver agent when fixing merge conflicts.
+  # Falls back to senior_model (if set) or the default model above.
+  # conflict_resolver_model: "gpt-4o"
