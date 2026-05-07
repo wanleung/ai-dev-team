@@ -65,11 +65,20 @@ class GitHubClient:
 
         self.repo = repo
         self.token = token          # raw token needed by ConflictResolverAgent for authenticated clone URLs
-        self.headers = {
+        _headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+        self._session = requests.Session()
+        self._session.headers.update(_headers)
+
+    def __del__(self) -> None:
+        """Close the underlying HTTP session on garbage collection."""
+        try:
+            self._session.close()
+        except Exception:
+            pass
 
     # Transient HTTP status codes that should be retried
     _RETRYABLE = {429, 500, 502, 503, 504}
@@ -80,7 +89,7 @@ class GitHubClient:
         url = f"{self.API_BASE}{path}"
         last_exc: Exception | None = None
         for attempt in range(self._MAX_RETRIES):
-            response = requests.request(method, url, headers=self.headers, **kwargs)
+            response = self._session.request(method, url, **kwargs)
             if response.ok:
                 return response.json() if response.text else {}
             if response.status_code not in self._RETRYABLE or attempt == self._MAX_RETRIES - 1:
@@ -324,7 +333,7 @@ class GitHubClient:
         if commit_message:
             payload["commit_message"] = commit_message
 
-        resp = requests.post(url, headers=self.headers, json=payload)
+        resp = self._session.post(url, json=payload)
         if resp.status_code in (201, 204, 409):
             return resp.status_code
         raise RuntimeError(
