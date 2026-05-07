@@ -16,8 +16,15 @@ source: local
 
 # TDD Skill
 
+## Iron Law
+```
+NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
+```
+If you wrote code before the test, delete it. Start over from the test. Keeping it as "reference" and adapting while writing tests is still testing after — delete means delete.
+
 ## For Engineers
 - **Red→Green→Refactor**: write a failing test first → write minimal code to make it pass → refactor with tests still green
+- **Watch the test fail**: never skip verifying that the test actually fails before implementing; a test that passes immediately tests nothing
 - **Prove-It Pattern (bug fixes)**: write a test that reproduces the bug BEFORE attempting the fix; the test must fail first, confirming the bug exists
 - **Test pyramid**: ~80% unit (pure logic, no I/O, milliseconds), ~15% integration (API/DB boundaries), ~5% E2E (critical flows only)
 - **DAMP over DRY in tests**: each test is self-contained and reads like a spec; repeating setup code is acceptable if it makes each test independently understandable
