@@ -55,6 +55,9 @@ log = logging.getLogger(__name__)
 
 console = Console()
 
+# Marker embedded in bot comments to acknowledge processed update-branch directives
+_UPDATE_BRANCH_MARKER = "<!-- auto-update-branch -->"
+
 
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge override into base, returning a new dict.
@@ -1689,14 +1692,25 @@ class Orchestrator(TestFixLoopMixin):
         return result
 
     def _parse_update_directive(self, feedback: list[dict]) -> bool:
-        """Return True if any feedback item contains an 'update-branch' directive.
+        """Return True if there is a pending (unprocessed) 'update-branch' directive.
 
-        Supported formats (case-insensitive):
+        Scans comments in reverse chronological order (newest first).
+        A directive is considered already processed if a bot acknowledgment comment
+        (containing _UPDATE_BRANCH_MARKER) appears after the most recent user
+        update-branch comment.
+
+        Supported user directive formats (case-insensitive):
             update-branch
             update-branch: true
         """
-        pattern = re.compile(r"update-branch(?::\s*true)?", re.IGNORECASE)
-        return any(pattern.search(item.get("body", "")) for item in feedback)
+        directive_pattern = re.compile(r"update-branch(?::\s*true)?", re.IGNORECASE)
+        for item in reversed(feedback):
+            body = item.get("body", "")
+            if _UPDATE_BRANCH_MARKER in body:
+                return False  # Bot already acknowledged this directive — not pending
+            if directive_pattern.search(body):
+                return True  # Unprocessed user directive found
+        return False  # No directive
 
     def _update_branch_from_base(
         self,
@@ -1716,10 +1730,20 @@ class Orchestrator(TestFixLoopMixin):
 
         if code == 204:
             console.print(f"  ✅ Branch [cyan]{head_branch}[/cyan] is already up to date with [cyan]{base_branch}[/cyan]")
+            if pr_number is not None:
+                self.target_github.add_pr_comment(
+                    pr_number,
+                    f"ℹ️ Branch `{head_branch}` is already up to date with `{base_branch}`. {_UPDATE_BRANCH_MARKER}",
+                )
             return {"status": "up_to_date"}
 
         if code == 201:
             console.print(f"  ✅ Merged [cyan]{base_branch}[/cyan] into [cyan]{head_branch}[/cyan] cleanly")
+            if pr_number is not None:
+                self.target_github.add_pr_comment(
+                    pr_number,
+                    f"✅ Merged `{base_branch}` into `{head_branch}` successfully. {_UPDATE_BRANCH_MARKER}",
+                )
             return {"status": "merged"}
 
         # ── 409: conflict path ────────────────────────────────────────────────
@@ -1757,6 +1781,11 @@ class Orchestrator(TestFixLoopMixin):
         retry_code = self.target_github.merge_base_into_branch(base_branch, head_branch)
         if retry_code in (201, 204):
             console.print(f"  ✅ Merge succeeded after AI conflict resolution")
+            if pr_number is not None:
+                self.target_github.add_pr_comment(
+                    pr_number,
+                    f"✅ Merged `{base_branch}` into `{head_branch}` after resolving conflicts. {_UPDATE_BRANCH_MARKER}",
+                )
             return {"status": "merged"}
 
         # Fallback: post comment and abort
@@ -1766,7 +1795,8 @@ class Orchestrator(TestFixLoopMixin):
                 pr_number,
                 "⚠️ Could not automatically resolve merge conflicts.\n\n"
                 f"Conflicting files:\n{files_list}\n\n"
-                "Please resolve these conflicts manually and re-trigger ai-fix.",
+                f"Please resolve these conflicts manually and re-trigger ai-fix.\n\n"
+                f"{_UPDATE_BRANCH_MARKER}",
             )
         return {"status": "conflict", "conflicting_files": conflicting_files}
 
