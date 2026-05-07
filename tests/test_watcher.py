@@ -270,7 +270,7 @@ class TestWatchQueuing:
         mock_run_pipeline.return_value = True
 
         cfg = _write_config(tmp_path)
-        watch(cfg, dry_run=True, logger=_make_logger())
+        watch(cfg, dry_run=True)
 
         # At least one call with feature pipeline
         calls = mock_run_pipeline.call_args_list
@@ -301,7 +301,7 @@ class TestWatchQueuing:
         mock_run_pipeline.return_value = True
 
         cfg = _write_config(tmp_path)
-        watch(cfg, dry_run=True, logger=_make_logger())
+        watch(cfg, dry_run=True)
 
         calls = mock_run_pipeline.call_args_list
         types = [c.args[3] if c.args else c.kwargs.get("label") for c in calls]
@@ -331,7 +331,7 @@ class TestWatchQueuing:
         mock_run_pipeline.return_value = True
 
         cfg = _write_config(tmp_path)
-        watch(cfg, dry_run=True, logger=_make_logger())
+        watch(cfg, dry_run=True)
 
         calls = mock_run_pipeline.call_args_list
         types = [c.args[3] if c.args else c.kwargs.get("label") for c in calls]
@@ -355,7 +355,7 @@ class TestWatchQueuing:
         mock_run_pipeline.return_value = True
 
         cfg = _write_config(tmp_path, extra_watcher_keys={"enabled": False})
-        watch(cfg, dry_run=True, logger=_make_logger())
+        watch(cfg, dry_run=True)
 
         mock_get_issues.assert_not_called()
         mock_run_pipeline.assert_not_called()
@@ -383,7 +383,7 @@ class TestWatchQueuing:
         del raw["watchers"][0]["doc_label"]
         cfg.write_text(yaml.dump(raw))
 
-        watch(cfg, dry_run=True, logger=_make_logger())
+        watch(cfg, dry_run=True)
 
         # get_open_issues must be called with "documentation" at some point
         all_label_args = [c.args[1] for c in mock_get_issues.call_args_list]
@@ -413,7 +413,7 @@ class TestWatchQueuing:
         mock_run_pipeline.return_value = True
 
         cfg = _write_config(tmp_path, extra_watcher_keys={"doc_label": ["documentation", "docs"]})
-        watch(cfg, dry_run=True, logger=_make_logger())
+        watch(cfg, dry_run=True)
 
         calls = mock_run_pipeline.call_args_list
         types = [c.args[3] if c.args else c.kwargs.get("label") for c in calls]

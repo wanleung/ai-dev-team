@@ -18,6 +18,7 @@ Cron setup (hourly):
 from __future__ import annotations
 
 import argparse
+import contextvars
 import glob
 import json
 import logging
@@ -26,6 +27,8 @@ import re
 import sys
 import threading
 import time
+import uuid
+from logging_setup import configure_logging, bind_run_id, clear_run_id
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -1063,12 +1066,18 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
 
 # ── Watcher loop ──────────────────────────────────────────────────────────────
 
-def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
+def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | None = None) -> None:  # noqa: ARG001 – logger kept for backward compat
     config = load_watcher_config(config_path)
 
     global_settings = config.get("settings", {})
-    max_parallel  = global_settings.get("max_parallel", 3)
     log_dir       = Path(config_path.parent / global_settings.get("log_dir", "logs/watcher"))
+
+    run_id = uuid.uuid4().hex[:8]
+    logger = _setup_logging(log_dir, run_id=run_id)
+    bind_run_id(run_id)
+    logger.info("Watcher starting", extra={"run_id": run_id})
+
+    max_parallel  = global_settings.get("max_parallel", 3)
 
     watchers = config.get("watchers", [])
     logger.info("Loaded %d watcher(s) from %s", len(watchers), config_path)
@@ -1184,77 +1193,73 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to fetch issues from %s: %s", tracker_repo, _sanitise(str(exc), github_token))
 
-    if not tasks:
-        logger.info("Nothing to do.")
-        return
-
-    # Group tasks by tracker_repo so each gets its own thread pool
-    by_repo: dict[str, list[dict]] = {}
-    for t in tasks:
-        by_repo.setdefault(t["tracker_repo"], []).append(t)
-
-    logger.info("Dispatching %d pipeline(s) across %d repo(s)…", len(tasks), len(by_repo))
-
-    # One executor per repo; each repo's parallel_issues bounds its concurrency.
-    # A global semaphore enforces the overall max_parallel cap so the total
-    # number of simultaneous pipelines never exceeds settings.max_parallel
-    # regardless of how many repos are being watched.
-    global_sem = threading.Semaphore(max(1, max_parallel))
-
-    def _run_with_global_cap(*args, **kwargs):
-        global_sem.acquire()
-        try:
-            run_pipeline(*args, **kwargs)
-        finally:
-            global_sem.release()
-
-    repo_executors: list[ThreadPoolExecutor] = []
-    futures_to_task: dict = {}
     try:
-        for repo_name, repo_tasks in by_repo.items():
-            par = max(1, repo_tasks[0].get("parallel_issues", 1))
-            ex = ThreadPoolExecutor(max_workers=par, thread_name_prefix=f"watcher-{repo_name}")
-            repo_executors.append(ex)
-            for t in repo_tasks:
-                fut = ex.submit(
-                    _run_with_global_cap,
-                    t["issue"], t["tracker_repo"], t["default_target"],
-                    t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
-                )
-                futures_to_task[fut] = t
+        if not tasks:
+            logger.info("Nothing to do.")
+            return
 
-        for fut in as_completed(futures_to_task):
-            t = futures_to_task[fut]
+        # Group tasks by tracker_repo so each gets its own thread pool
+        by_repo: dict[str, list[dict]] = {}
+        for t in tasks:
+            by_repo.setdefault(t["tracker_repo"], []).append(t)
+
+        logger.info("Dispatching %d pipeline(s) across %d repo(s)…", len(tasks), len(by_repo))
+
+        # One executor per repo; each repo's parallel_issues bounds its concurrency.
+        # A global semaphore enforces the overall max_parallel cap so the total
+        # number of simultaneous pipelines never exceeds settings.max_parallel
+        # regardless of how many repos are being watched.
+        global_sem = threading.Semaphore(max(1, max_parallel))
+
+        def _run_with_global_cap(*args, **kwargs):
+            global_sem.acquire()
             try:
-                fut.result()
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Unhandled error for issue #%d: %s", t["issue"]["number"], exc)
+                run_pipeline(*args, **kwargs)
+            finally:
+                global_sem.release()
+
+        repo_executors: list[ThreadPoolExecutor] = []
+        futures_to_task: dict = {}
+        try:
+            for repo_name, repo_tasks in by_repo.items():
+                par = max(1, repo_tasks[0].get("parallel_issues", 1))
+                ex = ThreadPoolExecutor(max_workers=par, thread_name_prefix=f"watcher-{repo_name}")
+                repo_executors.append(ex)
+                for t in repo_tasks:
+                    ctx = contextvars.copy_context()
+                    fut = ex.submit(
+                        ctx.run,
+                        _run_with_global_cap,
+                        t["issue"], t["tracker_repo"], t["default_target"],
+                        t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
+                    )
+                    futures_to_task[fut] = t
+
+            for fut in as_completed(futures_to_task):
+                t = futures_to_task[fut]
+                try:
+                    fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Unhandled error for issue #%d: %s", t["issue"]["number"], exc)
+        finally:
+            for ex in repo_executors:
+                ex.shutdown(wait=True)
     finally:
-        for ex in repo_executors:
-            ex.shutdown(wait=True)
+        clear_run_id()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def _setup_logging(log_dir: Path) -> logging.Logger:
+def _setup_logging(log_dir: Path, run_id: str | None = None) -> logging.Logger:
     log_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d")
-    fmt = logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s", "%H:%M:%S")
-
-    logger = logging.getLogger("watcher")
-    logger.setLevel(logging.INFO)
-
-    # Console
-    ch = logging.StreamHandler()
-    ch.setFormatter(fmt)
-    logger.addHandler(ch)
-
-    # Daily rotating file
-    fh = logging.FileHandler(log_dir / f"watcher-{ts}.log", encoding="utf-8")
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
-
-    return logger
+    if run_id is not None:
+        log_file = log_dir / f"run-{run_id}.jsonl"
+    else:
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d")
+        log_file = log_dir / f"watcher-{ts}.log"
+    configure_logging(log_level="INFO", log_file=log_file)
+    return logging.getLogger("watcher")
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -1366,7 +1371,7 @@ def main() -> None:
                 " [DRY RUN]" if args.dry_run else "")
     logger.info("Config: %s", config_path)
     try:
-        watch(config_path, dry_run=args.dry_run, logger=logger)
+        watch(config_path, dry_run=args.dry_run)
     finally:
         LOCK_FILE.unlink(missing_ok=True)
         logger.info("Done.")

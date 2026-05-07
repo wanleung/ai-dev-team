@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from logging_setup import configure_logging
 
 from rich.console import Console
 from rich.panel import Panel
@@ -174,6 +175,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+
+    configure_logging(log_level="INFO")
 
     if args.list_pipelines:
         from pathlib import Path
