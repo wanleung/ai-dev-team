@@ -64,6 +64,7 @@ class GitHubClient:
             raise ValueError(f"repo must be 'owner/repo' format, got: {repo!r}")
 
         self.repo = repo
+        self.token = token          # expose token for downstream use
         self.headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
