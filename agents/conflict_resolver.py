@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from .base_agent import BaseAgent
 
@@ -25,7 +25,7 @@ class PRContext:
 class ResolveResult:
     """Result of a conflict-resolution run."""
 
-    status: str                          # "resolved" | "failed"
+    status: Literal["resolved", "failed"]  # "resolved" | "failed"
     resolved_files: list[str] = field(default_factory=list)
     failed_files: list[str] = field(default_factory=list)
     reason: str = ""
@@ -89,15 +89,22 @@ class ConflictResolverAgent(BaseAgent):
     ) -> ResolveResult:
         """Core resolution logic executed inside the temp directory."""
         # 1. Clone
-        r = self._run(["git", "clone", "--depth=50", repo_url, tmpdir])
+        r = self._run(["git", "clone", "--filter=blob:none", repo_url, tmpdir])
         if r.returncode != 0:
             return ResolveResult(status="failed", reason=f"clone failed: {r.stderr.strip()}")
 
+        self._run(["git", "config", "user.email", "conflict-resolver@bot"], cwd=tmpdir)
+        self._run(["git", "config", "user.name", "Conflict Resolver Bot"], cwd=tmpdir)
+
         # 2. Checkout head branch
-        self._run(["git", "checkout", head_branch], cwd=tmpdir)
+        r = self._run(["git", "checkout", head_branch], cwd=tmpdir)
+        if r.returncode != 0:
+            return ResolveResult(status="failed", reason=f"checkout failed: {r.stderr.strip()}")
 
         # 3. Fetch base and attempt merge
-        self._run(["git", "fetch", "origin", base_branch], cwd=tmpdir)
+        r = self._run(["git", "fetch", "origin", base_branch], cwd=tmpdir)
+        if r.returncode != 0:
+            return ResolveResult(status="failed", reason=f"fetch failed: {r.stderr.strip()}")
         merge_r = self._run(["git", "merge", f"origin/{base_branch}"], cwd=tmpdir)
 
         if merge_r.returncode == 0:
@@ -148,6 +155,7 @@ class ConflictResolverAgent(BaseAgent):
         if push_r.returncode != 0:
             return ResolveResult(
                 status="failed",
+                resolved_files=resolved_files,
                 reason=f"push failed: {push_r.stderr.strip()}",
             )
 
