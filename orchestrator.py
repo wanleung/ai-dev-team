@@ -1823,7 +1823,19 @@ class Orchestrator(TestFixLoopMixin):
                     if original:
                         agent.system_prompt = block_text + "\n\n---\n\n" + original
 
+        # ── 2. Check revision cap ─────────────────────────────────────────────
+        current_rev = self._get_revision_number(labels)
+        if current_rev >= self.max_revisions:
+            self.target_github.add_pr_comment(
+                pr_number,
+                f"⏹ Max revisions reached ({current_rev}/{self.max_revisions}). "
+                "No further automated revisions will be made.",
+            )
+            return {"status": "max_revisions_reached"}
+
         # ── 0. Auto-update branch from master (if configured + requested) ─────
+        # Note: get_issue_comments is also called inside _collect_pr_feedback (step 3).
+        # We fetch here early to detect the update-branch directive before collecting feedback.
         if self._update_branch_enabled:
             pr_issue_comments = self.target_github.get_issue_comments(pr_number)
             update_directive_feedback = [
@@ -1834,16 +1846,6 @@ class Orchestrator(TestFixLoopMixin):
                 update_result = self._update_branch_from_base(head_branch, pr_number=pr_number)
                 if update_result["status"] == "conflict":
                     return update_result
-
-        # ── 2. Check revision cap ─────────────────────────────────────────────
-        current_rev = self._get_revision_number(labels)
-        if current_rev >= self.max_revisions:
-            self.target_github.add_pr_comment(
-                pr_number,
-                f"⏹ Max revisions reached ({current_rev}/{self.max_revisions}). "
-                "No further automated revisions will be made.",
-            )
-            return {"status": "max_revisions_reached"}
 
         # ── 3. Collect human feedback ─────────────────────────────────────────
         feedback = self._collect_pr_feedback(pr_number)
