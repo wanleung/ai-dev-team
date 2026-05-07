@@ -25,8 +25,7 @@ RESOLVED_CONTENT = 'def hello():\n    return "merged"\n'
 @pytest.fixture
 def agent():
     a = ConflictResolverAgent.__new__(ConflictResolverAgent)
-    a._llm = MagicMock()
-    a._llm.complete.return_value = RESOLVED_CONTENT
+    a.call = MagicMock(return_value=RESOLVED_CONTENT)
     return a
 
 
@@ -158,7 +157,7 @@ def test_resolve_push_failure(agent, pr_ctx, tmp_path):
 # ── resolve: LLM fails for one file → failed_files ────────────────────────────
 
 def test_resolve_llm_failure_for_file(agent, pr_ctx, tmp_path):
-    agent._llm.complete.side_effect = RuntimeError("LLM unavailable")
+    agent.call.side_effect = RuntimeError("LLM unavailable")
 
     run_fn, _ = _make_run(["src/hello.py"])
 

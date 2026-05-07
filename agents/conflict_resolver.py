@@ -177,4 +177,4 @@ class ConflictResolverAgent(BaseAgent):
             f"File: {path}\n\n"
             f"{content}"
         )
-        return self._llm.complete(prompt)
+        return self.call(prompt)
