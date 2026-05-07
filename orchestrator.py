@@ -1863,17 +1863,20 @@ class Orchestrator(TestFixLoopMixin):
             )
             return {"status": "max_revisions_reached"}
 
-        # ── 0. Auto-update branch from master (if configured + requested) ─────
+        # ── 0. Auto-update branch from base (if configured + requested) ──────
         # Note: get_issue_comments is also called inside _collect_pr_feedback (step 3).
         # We fetch here early to detect the update-branch directive before collecting feedback.
         if self._update_branch_enabled:
+            pr_base_branch = pr["base"]["ref"]
             pr_issue_comments = self.target_github.get_issue_comments(pr_number)
             update_directive_feedback = [
                 {"body": c.get("body", ""), "author": c.get("user", {}).get("login", "")}
                 for c in pr_issue_comments
             ]
             if self._parse_update_directive(update_directive_feedback):
-                update_result = self._update_branch_from_base(head_branch, pr_number=pr_number)
+                update_result = self._update_branch_from_base(
+                    head_branch, base_branch=pr_base_branch, pr_number=pr_number
+                )
                 if update_result["status"] == "conflict":
                     return update_result
 
