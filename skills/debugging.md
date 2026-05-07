@@ -16,6 +16,12 @@ source: local
 
 # Debugging Skill
 
+## Architectural Problem Rule
+```
+3 OR MORE FAILED FIX ATTEMPTS = WRONG ARCHITECTURE, NOT A HARDER BUG
+```
+If you've tried three fixes and each one reveals a new problem in a different place, stop patching. The pattern is wrong. Discuss with a senior engineer before attempting another fix.
+
 ## For Engineers
 - **Stop-the-Line rule**: when anything unexpected happens — STOP adding features, preserve evidence (error output, logs, repro steps), diagnose before resuming; errors compound
 - **5-step triage in order** (do not skip steps):
