@@ -1757,6 +1757,13 @@ class Orchestrator(TestFixLoopMixin):
         feedback_md = self._format_feedback(feedback)
         console.print(f"  💬 Collected [bold]{len(feedback)}[/bold] feedback item(s) from PR #{pr_number}")
 
+        # ── 3b. Detect merge directives ───────────────────────────────────────
+        merge_branches = self._parse_merge_directives(feedback)
+        if merge_branches:
+            console.print(
+                f"  🔀 Merge directives found: {', '.join(f'[cyan]{b}[/cyan]' for b in merge_branches)}"
+            )
+
         # ── 4. Fetch design from linked issue ─────────────────────────────────
         design = self._fetch_design_from_issue(issue_number) if issue_number else ""
         if not design:
@@ -1773,16 +1780,38 @@ class Orchestrator(TestFixLoopMixin):
 
         console.print(f"  📂 Read [bold]{len(current_files)}[/bold] current file(s) from branch [cyan]{head_branch}[/cyan]")
 
+        # ── 5b. Fetch files from merge branches ───────────────────────────────
+        merge_branch_files: dict[str, dict[str, str]] = {}
+        for mb in merge_branches:
+            mb_files = self._fetch_branch_files(mb)
+            if mb_files:
+                merge_branch_files[mb] = mb_files
+                console.print(
+                    f"  📂 Fetched [bold]{len(mb_files)}[/bold] file(s) from merge branch [cyan]{mb}[/cyan]"
+                )
+
         # ── 6. Build augmented design for engineer ────────────────────────────
         current_files_block = "\n\n".join(
             f"### `{path}`\n```\n{self._safe_fence(content)}\n```"
             for path, content in current_files.items()
         )
+        merge_branch_blocks = ""
+        for mb, mb_files in merge_branch_files.items():
+            mb_block = "\n\n".join(
+                f"### `{path}`\n```\n{self._safe_fence(content)}\n```"
+                for path, content in mb_files.items()
+            )
+            merge_branch_blocks += (
+                f"\n\n---\n\n"
+                f"## Files from Branch `{mb}` (incorporate these — make the implementation pass these tests)\n\n"
+                f"{mb_block}"
+            )
         augmented_design = (
             f"{design}\n\n"
             f"---\n\n"
             f"## Current Code on Branch `{head_branch}`\n\n"
-            f"{current_files_block}\n\n"
+            f"{current_files_block}"
+            f"{merge_branch_blocks}\n\n"
             f"---\n\n"
             f"{feedback_md}"
         )
@@ -1839,6 +1868,23 @@ class Orchestrator(TestFixLoopMixin):
             )
             return {"status": "error", "reason": "commit_failed", "errors": commit_errors}
 
+        # Commit files from merge branches that the engineer did not already update
+        merge_commit_errors: list[str] = []
+        for mb, mb_files in merge_branch_files.items():
+            for filepath, content in mb_files.items():
+                if filepath in revised_files:
+                    continue  # engineer already committed an updated version
+                try:
+                    self.target_github.commit_file(
+                        path=filepath,
+                        content=content,
+                        message=f"feat: incorporate {filepath} from branch {mb}",
+                        branch=head_branch,
+                    )
+                except RuntimeError as exc:
+                    merge_commit_errors.append(f"{filepath}: {exc}")
+                    console.print(f"  [yellow]⚠️  Could not commit merge file {filepath}: {exc}[/yellow]")
+
         console.print(f"  ✅ Committed [bold]{len(revised_files)}[/bold] revised file(s) to [cyan]{head_branch}[/cyan]")
 
         # Code Reviewer
@@ -1867,6 +1913,12 @@ class Orchestrator(TestFixLoopMixin):
             self.target_github.remove_pr_label(pr_number, old_label)
         self.target_github.add_pr_label(pr_number, new_label)
 
+        merge_branch_note = ""
+        if merge_branch_files:
+            names = ", ".join(f"`{b}`" for b in merge_branch_files)
+            total_files = sum(len(v) for v in merge_branch_files.values())
+            merge_branch_note = f"\n**Incorporated branches:** {names} ({total_files} file(s))\n"
+
         summary = (
             f"## ✅ Revision {new_revision} Complete\n\n"
             f"The AI agents have addressed **{len(feedback)} feedback item(s)**:\n\n"
@@ -1877,6 +1929,7 @@ class Orchestrator(TestFixLoopMixin):
             + f"\n\n**Files updated:** {', '.join(f'`{p}`' for p in revised_files)}\n"
             f"**Code review verdict:** {rev_result.get('verdict', 'N/A')}\n"
             f"**Test files updated:** {len(test_files)}"
+            + merge_branch_note
         )
         self.target_github.add_pr_comment(pr_number, summary)
 

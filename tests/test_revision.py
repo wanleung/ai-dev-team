@@ -15,6 +15,10 @@ def orch(tmp_path):
     o.github = MagicMock()
     o.target_github = MagicMock()
     o._github_token = "tok"
+    o.engineer = MagicMock()
+    o.reviewer = MagicMock()
+    o.qa = MagicMock()
+    o.skill_loader = None
     return o
 
 
@@ -206,6 +210,78 @@ def test_fetch_branch_files_skips_unreadable_files(orch):
     result = orch._fetch_branch_files("feature/x")
     assert "src/code.py" in result
     assert "data/image.png" not in result
+
+
+# ── run_revision merge-branch integration ────────────────────────────────────
+
+def test_run_revision_incorporates_merge_branch_files(orch):
+    """When a PR comment contains 'merge-branch: X', files from X are fetched
+    and committed to the implementation branch."""
+    orch.target_github.get_pr.return_value = {
+        "head": {"ref": "feature/impl"},
+        "body": "Closes #1",
+        "labels": [],
+        "title": "Implementation",
+    }
+    orch.target_github.get_pr_review_comments.return_value = []
+    orch.target_github.get_pr_reviews.return_value = []
+    orch.target_github.get_issue_comments.return_value = [
+        {
+            "user": {"login": "wanleung"},
+            "body": "merge-branch: feature/tests",
+        }
+    ]
+    orch.target_github.get_pr_files.return_value = [
+        {"filename": "app/main.py"}
+    ]
+    orch.target_github.get_file_content.side_effect = lambda path, ref: f"# {path} on {ref}"
+    orch.target_github.get_full_tree.return_value = [
+        {"path": "tests/test_app.py", "type": "blob", "size": 300},
+    ]
+
+    from unittest.mock import MagicMock
+    orch.engineer.run_all_modules = MagicMock(return_value={
+        "all_files": {"app/main.py": "# fixed main.py"}
+    })
+    orch.reviewer.run = MagicMock(return_value={"verdict": "APPROVED"})
+    orch.qa.run = MagicMock(return_value={"test_files": {}})
+
+    result = orch.run_revision(pr_number=3)
+
+    assert result["status"] == "ok"
+    # tests/test_app.py from the merge branch should have been committed
+    commit_calls = [call[1] for call in orch.target_github.commit_file.call_args_list]
+    committed_paths = [c["path"] for c in commit_calls]
+    assert "tests/test_app.py" in committed_paths
+
+
+def test_run_revision_no_merge_branch_when_no_directive(orch):
+    """Without a merge-branch directive, _fetch_branch_files is never called."""
+    orch.target_github.get_pr.return_value = {
+        "head": {"ref": "feature/impl"},
+        "body": "Closes #1",
+        "labels": [],
+        "title": "Implementation",
+    }
+    orch.target_github.get_pr_review_comments.return_value = [
+        {"user": {"login": "alice"}, "body": "Fix the import", "path": "app/main.py", "line": 5},
+    ]
+    orch.target_github.get_pr_reviews.return_value = []
+    orch.target_github.get_issue_comments.return_value = []
+    orch.target_github.get_pr_files.return_value = [{"filename": "app/main.py"}]
+    orch.target_github.get_file_content.return_value = "# original"
+
+    from unittest.mock import MagicMock
+    orch.engineer.run_all_modules = MagicMock(return_value={
+        "all_files": {"app/main.py": "# fixed"}
+    })
+    orch.reviewer.run = MagicMock(return_value={"verdict": "APPROVED"})
+    orch.qa.run = MagicMock(return_value={"test_files": {}})
+
+    orch.run_revision(pr_number=3)
+
+    # get_full_tree should never be called if no merge directives
+    orch.target_github.get_full_tree.assert_not_called()
 
 
 # ── _fetch_design_from_issue ──────────────────────────────────────────────────
