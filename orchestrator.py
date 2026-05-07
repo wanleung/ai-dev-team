@@ -42,6 +42,7 @@ from agents.summariser import SummaryAgent
 from agents.memory_bank_updater import MemoryBankUpdaterAgent
 from agents.refactor_agent import RefactorAgent
 from agents.memory_consolidator import MemoryConsolidatorAgent
+from agents.conflict_resolver import ConflictResolverAgent, PRContext
 from framework_docs import FrameworkDocsLoader
 from github_client import GitHubClient, parse_target_repo
 from repo_context import RepoContext, RepoContextLoader, RepoAutoIndexer
@@ -561,6 +562,7 @@ class Orchestrator(TestFixLoopMixin):
         tdd_commit_tests: bool = False,
         cost_tracking: dict | None = None,
         update_branch_enabled: bool = False,
+        conflict_resolver_model: Optional[str] = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -755,6 +757,7 @@ class Orchestrator(TestFixLoopMixin):
         self.tdd_commit_tests: bool = tdd_commit_tests
         self._cost_tracking: dict = cost_tracking or {}
         self._update_branch_enabled: bool = update_branch_enabled
+        self.conflict_resolver_model: Optional[str] = conflict_resolver_model
         ct = self._cost_tracking
         if ct.get("enabled", False):
             ledger = TokenLedger(pricing=ct.get("pricing", {}))
@@ -1717,6 +1720,7 @@ class Orchestrator(TestFixLoopMixin):
         head_branch: str,
         base_branch: str = "master",
         pr_number: int | None = None,
+        pr_context: "PRContext | None" = None,
     ) -> dict:
         """Merge *base_branch* into *head_branch*.
 
@@ -1749,46 +1753,51 @@ class Orchestrator(TestFixLoopMixin):
         # ── 409: conflict path ────────────────────────────────────────────────
         console.print(f"  ⚠️  Merge conflict detected — attempting AI resolution …")
 
-        pr_files = self.target_github.get_pr_files(pr_number) if pr_number else []
-        conflicting_files: list[str] = []
-        for f in pr_files:
-            path = f["filename"]
-            pr_content = self.target_github.get_file_content(path, ref=head_branch)
-            master_content = self.target_github.get_file_content(path, ref=base_branch)
-            if pr_content is None or master_content is None:
-                continue
-            if pr_content == master_content:
-                continue
-
-            # AI resolves the conflict
-            prompt = (
-                f"File: {path}\n\n"
-                f"=== Version on PR branch ({head_branch}) ===\n{pr_content}\n\n"
-                f"=== Version on {base_branch} ===\n{master_content}\n\n"
-                "Produce a single merged version that preserves both sets of changes. "
-                "Output ONLY the file content, no explanation."
-            )
-            resolved = self.engineer.call(prompt)
-            self.target_github.commit_file(
-                path,
-                resolved,
-                head_branch,
-                "chore: resolve merge conflicts with master",
-            )
-            conflicting_files.append(path)
-
-        # Retry merge
-        retry_code = self.target_github.merge_base_into_branch(base_branch, head_branch)
-        if retry_code in (201, 204):
-            console.print(f"  ✅ Merge succeeded after AI conflict resolution")
+        if not pr_context:
+            console.print("  ⚠️  conflict detected but no pr_context — cannot resolve")
             if pr_number is not None:
                 self.target_github.add_pr_comment(
                     pr_number,
-                    f"✅ Merged `{base_branch}` into `{head_branch}` after resolving conflicts. {_UPDATE_BRANCH_MARKER}",
+                    "⚠️ Could not automatically resolve merge conflicts.\n\n"
+                    "- (unknown)\n\n"
+                    f"Please resolve these conflicts manually and re-trigger ai-fix.\n\n"
+                    f"{_UPDATE_BRANCH_MARKER}",
                 )
-            return {"status": "merged"}
+            return {"status": "conflict", "conflicting_files": []}
 
-        # Fallback: post comment and abort
+        model = self.conflict_resolver_model or self.senior_model or self.model
+        resolver = ConflictResolverAgent(model=model, **self.agent_kwargs)
+
+        # Build authenticated HTTPS clone URL from the target GitHub client
+        token = self.target_github.token
+        repo = self.target_github.repo
+        repo_url = f"https://{token}@github.com/{repo}.git"
+
+        result = resolver.resolve(
+            repo_url=repo_url,
+            head_branch=head_branch,
+            base_branch=base_branch,
+            pr_context=pr_context,
+        )
+
+        if result.status == "resolved":
+            console.print(f"  ✅ Conflict resolved: {result.resolved_files}")
+            # Retry merge after conflict resolution
+            retry_code = self.target_github.merge_base_into_branch(base_branch, head_branch)
+            if retry_code in (201, 204):
+                console.print(f"  ✅ Merge succeeded after AI conflict resolution")
+                if pr_number is not None:
+                    self.target_github.add_pr_comment(
+                        pr_number,
+                        f"✅ Merged `{base_branch}` into `{head_branch}` after resolving conflicts. {_UPDATE_BRANCH_MARKER}",
+                    )
+                return {"status": "merged"}
+            # Merge still conflicted after resolution — fall through to failure
+            conflicting_files = result.resolved_files
+        else:
+            console.print(f"  ❌ Conflict resolution failed: {result.reason}")
+            conflicting_files = result.failed_files or []
+
         files_list = "\n".join(f"- `{p}`" for p in conflicting_files) if conflicting_files else "- (unknown)"
         if pr_number is not None:
             self.target_github.add_pr_comment(
@@ -1874,8 +1883,15 @@ class Orchestrator(TestFixLoopMixin):
                 for c in pr_issue_comments
             ]
             if self._parse_update_directive(update_directive_feedback):
+                pr_ctx = PRContext(
+                    pr_title=pr.get("title", ""),
+                    pr_body=pr.get("body", "") or "",
+                    design_doc="",
+                    skills="",
+                )
                 update_result = self._update_branch_from_base(
-                    head_branch, base_branch=pr_base_branch, pr_number=pr_number
+                    head_branch, base_branch=pr_base_branch, pr_number=pr_number,
+                    pr_context=pr_ctx,
                 )
                 if update_result["status"] == "conflict":
                     return update_result

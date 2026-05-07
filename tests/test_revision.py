@@ -4,6 +4,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 import pytest
 
+from agents.conflict_resolver import PRContext, ResolveResult
 from orchestrator import Orchestrator
 
 
@@ -14,12 +15,18 @@ def orch(tmp_path):
     o.max_revisions = 3
     o.github = MagicMock()
     o.target_github = MagicMock()
+    o.target_github.token = "ghp_test"
+    o.target_github.repo = "owner/repo"
     o._github_token = "tok"
     o.engineer = MagicMock()
     o.reviewer = MagicMock()
     o.qa = MagicMock()
     o.skill_loader = None
     o._update_branch_enabled = False
+    o.model = "gpt-4.1"
+    o.senior_model = None
+    o.conflict_resolver_model = None
+    o.agent_kwargs = {"github_token": "tok"}
     return o
 
 
@@ -428,38 +435,49 @@ def test_update_branch_clean_merge(orch):
 
 
 def test_update_branch_conflict_ai_resolves(orch):
-    """409 → AI resolves files → retry returns 201 → status 'merged'."""
+    """409 → ConflictResolverAgent resolves files → retry returns 201 → status 'merged'."""
     orch.target_github.merge_base_into_branch.side_effect = [409, 201]
-    orch.target_github.get_pr_files.return_value = [{"filename": "app/main.py"}]
-    orch.target_github.get_file_content.side_effect = [
-        "PR version of main.py",   # PR branch fetch
-        "master version of main.py",  # master fetch
-    ]
-    orch.engineer.call.return_value = "merged content of main.py"
 
-    result = orch._update_branch_from_base("feature/agent/1-my-pr", pr_number=42)
+    pr_ctx = PRContext(pr_title="My PR", pr_body="body", design_doc="", skills="")
+    resolved_result = ResolveResult(status="resolved", resolved_files=["app/main.py"])
+
+    with patch("orchestrator.ConflictResolverAgent") as MockResolver:
+        instance = MockResolver.return_value
+        instance.resolve.return_value = resolved_result
+
+        result = orch._update_branch_from_base(
+            "feature/agent/1-my-pr", pr_number=42, pr_context=pr_ctx
+        )
 
     assert result["status"] == "merged"
-    orch.target_github.commit_file.assert_called_once_with(
-        "app/main.py",
-        "merged content of main.py",
-        "feature/agent/1-my-pr",
-        "chore: resolve merge conflicts with master",
+    # ConflictResolverAgent was constructed with correct model + kwargs
+    MockResolver.assert_called_once()
+    # resolve() was invoked with the right branches and pr_context
+    instance.resolve.assert_called_once_with(
+        repo_url="https://ghp_test@github.com/owner/repo.git",
+        head_branch="feature/agent/1-my-pr",
+        base_branch="master",
+        pr_context=pr_ctx,
     )
+    # Retry merge was attempted after resolution
     assert orch.target_github.merge_base_into_branch.call_count == 2
 
 
 def test_update_branch_conflict_fallback(orch):
-    """409 → AI resolves → retry still 409 → posts PR comment, returns 'conflict'."""
-    orch.target_github.merge_base_into_branch.return_value = 409
-    orch.target_github.get_pr_files.return_value = [{"filename": "src/utils.py"}]
-    orch.target_github.get_file_content.side_effect = [
-        "PR version",
-        "master version",
-    ]
-    orch.engineer.call.return_value = "resolved utils.py"
+    """409 → ConflictResolverAgent resolves → retry still 409 → posts PR comment, returns 'conflict'."""
+    orch.target_github.merge_base_into_branch.side_effect = [409, 409]
 
-    result = orch._update_branch_from_base("feature/agent/1-my-pr", pr_number=42)
+    pr_ctx = PRContext(pr_title="My PR", pr_body="body", design_doc="", skills="")
+    # Resolver reports success but the retry merge still fails
+    resolved_result = ResolveResult(status="resolved", resolved_files=["src/utils.py"])
+
+    with patch("orchestrator.ConflictResolverAgent") as MockResolver:
+        instance = MockResolver.return_value
+        instance.resolve.return_value = resolved_result
+
+        result = orch._update_branch_from_base(
+            "feature/agent/1-my-pr", pr_number=42, pr_context=pr_ctx
+        )
 
     assert result["status"] == "conflict"
     assert "src/utils.py" in result["conflicting_files"]
@@ -542,10 +560,16 @@ def test_run_revision_aborts_on_conflict(orch):
     orch.target_github.get_issue_comments.return_value = [
         {"body": "update-branch", "user": {"login": "alice"}}
     ]
-    # With no PR files, conflicting_files will be [] and retry still 409
+    # First merge → 409 conflict; ConflictResolverAgent resolves (empty files); retry → still 409
     orch.target_github.merge_base_into_branch.side_effect = [409, 409]
 
-    result = orch.run_revision(42)
+    resolved_result = ResolveResult(status="resolved", resolved_files=[])
+
+    with patch("orchestrator.ConflictResolverAgent") as MockResolver:
+        instance = MockResolver.return_value
+        instance.resolve.return_value = resolved_result
+
+        result = orch.run_revision(42)
 
     assert result["status"] == "conflict"
     orch.target_github.add_pr_comment.assert_called_once()
@@ -648,18 +672,20 @@ def test_update_branch_no_marker_comment_without_pr_number(orch):
 
 
 def test_update_branch_posts_marker_after_ai_resolution(orch):
-    """Retry merge (201/204) after AI conflict resolution → posts marker."""
+    """Retry merge (201/204) after ConflictResolverAgent resolution → posts marker."""
     orch.target_github.merge_base_into_branch.side_effect = [409, 201]  # conflict, then success
-    orch.target_github.get_pr_files.return_value = [{"filename": "src/main.py"}]
-    orch.target_github.get_file_content.side_effect = [
-        "# PR version\nprint('hello')",  # head_branch
-        "# master version\nprint('world')",  # base_branch
-    ]
-    orch.engineer.call.return_value = "# merged version\nprint('hello world')"
-    
-    result = orch._update_branch_from_base("feature-branch", pr_number=42)
+
+    pr_ctx = PRContext(pr_title="My PR", pr_body="body", design_doc="", skills="")
+    resolved_result = ResolveResult(status="resolved", resolved_files=["src/main.py"])
+
+    with patch("orchestrator.ConflictResolverAgent") as MockResolver:
+        instance = MockResolver.return_value
+        instance.resolve.return_value = resolved_result
+
+        result = orch._update_branch_from_base("feature-branch", pr_number=42, pr_context=pr_ctx)
+
     assert result["status"] == "merged"
-    
+
     # Check that marker is posted
     assert orch.target_github.add_pr_comment.call_count == 1
     comment_body = orch.target_github.add_pr_comment.call_args[0][1]
