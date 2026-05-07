@@ -16,6 +16,8 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **Docker smoke tests** — deployment tester generates and runs container health checks
 - **GitHub Actions integration** — label an issue to trigger the full pipeline automatically; 15-minute watcher catches pre-labelled issues too
 - **PR feedback loop** — humans post review comments on AI-generated PRs → Engineer + Code Reviewer + QA automatically re-run, push fixes, and update the PR (up to `max_revisions` rounds)
+- **Auto update-branch** — watcher detects `update-branch` PR comments and automatically merges the base branch into the PR branch, keeping it up to date without human intervention
+- **AI conflict resolution** — when a merge conflict is detected, `ConflictResolverAgent` clones the repo locally, uses real 3-way git conflict markers (`<<<<`/`====`/`>>>>`), and resolves each file with a configurable strong LLM; configurable per-repo via `conflict_resolver_model` in `repos.yaml`
 - **Tool calling built-in** — Code Reviewer runs `ruff`, QA Planner searches GitHub Issues; any agent can call tools via `call_with_tools()`
 - **MCP server support** — connect any MCP-compatible server (stdio or SSE); tools are automatically merged and injected into tool-calling agents
 - 🔍 **RAG knowledge base** — Engineer, Architect, and QA Engineer agents can search an indexed pgvector knowledge base (codebase, past designs, docs) via `search_codebase`, `search_memory`, and `search_docs` tools — powered by Ollama, vLLM, or OpenAI embeddings
@@ -514,6 +516,7 @@ Then fill in `memory-bank/projectbrief.md` and `memory-bank/productContext.md`. 
 | **QA Planner** | Henry | PRD + design + code | Test plan + acceptance criteria | Issue/PR comment |
 | **QA Engineer** | Edward | Code + PRD + test plan | Test files + conftest + requirements-test.txt | PR comment + branch |
 | **Deployment Tester** | Diana | Code + Dockerfile | docker-compose.test.yml + smoke tests + deploy script | PR comment + branch |
+| **Conflict Resolver** | — | PR branch + base branch + PR context | Resolved branch (committed + pushed) | PR comment |
 
 ---
 
@@ -872,6 +875,36 @@ Every hour (or on --once for GitHub Actions):
 | `agent-complete` | ✅ Pipeline finished successfully — no follow-up needed |
 | `agent-failed` | ❌ Pipeline failed — remove label to retry |
 
+### 🔀 PR Auto Update-Branch & Conflict Resolution
+
+The watcher also monitors open pull requests for `update-branch` directives. When a human (or bot) posts a PR comment containing the phrase `update branch` (or similar), the watcher automatically merges the base branch into the PR head branch.
+
+**Flow:**
+
+```
+PR comment detected → "update branch"
+  → watcher calls GitHub merge-base API
+  → If 200/204 (clean merge): posts ✅ comment on PR
+  → If 409 (conflict detected):
+      → ConflictResolverAgent clones repo locally
+      → git merge origin/<base> writes real conflict markers
+      → LLM resolves each conflicting file using PR title/body as context
+      → resolved branch committed + pushed
+      → GitHub merge API retried (now succeeds)
+      → posts ✅ resolved comment on PR
+      → If resolution fails: posts ❌ comment listing unresolved files
+```
+
+**Configure the conflict resolver model** in `repos.yaml`:
+
+```yaml
+watchers:
+  - tracker_repo: wanleung/my-app
+    conflict_resolver_model: "gpt-4o"   # optional; falls back to senior_model then model
+```
+
+> A stronger model (e.g. `gpt-4o`, `claude-3-opus`) is recommended for conflict resolution — the agent must understand the PR's *intent* to resolve ambiguous conflicts correctly.
+
 ### 🔁 Pipeline Self-Chaining
 
 When a run completes with issues (failing tests, reviewer changes requested), the watcher automatically swaps the completion label for a follow-up trigger label — no human needed to re-queue.
@@ -1118,6 +1151,7 @@ ai-software-house/
 │   ├── summariser.py          # Writes compact memory entries after each run
 │   ├── refactor_agent.py      # Analyses and rewrites code in dream mode
 │   └── memory_consolidator.py # Consolidates N run summaries into snapshots
+│   └── conflict_resolver.py   # ConflictResolverAgent — git-clone, 3-way merge, LLM resolution
 │
 ├── roles/                     # Agent skills & guides (system prompts)
 │   ├── product_manager.md
@@ -1132,6 +1166,7 @@ ai-software-house/
 │   ├── summariser.md
 │   ├── refactor_agent.md
 │   └── memory_consolidator.md
+│   └── conflict_resolver.md   # System prompt for ConflictResolverAgent
 │
 ├── tools/                     # Tool calling — Option A (MCP-ready)
 │   ├── registry.py            # ToolRegistry ABC + LocalToolRegistry (@tool decorator)
