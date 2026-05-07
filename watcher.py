@@ -610,6 +610,7 @@ def _run_pr_revision(
     log_dir: Path,
     logger: logging.Logger,
     pr_fix_label: str = "ai-fix",
+    update_branch_enabled: bool = False,
 ) -> None:
     """Instantiate an Orchestrator and run run_revision() for a failing PR.
 
@@ -667,6 +668,7 @@ def _run_pr_revision(
                     retry_delay=retry_delay,
                     max_api_retries=max_api_retries,
                     inter_call_delay=inter_call_delay,
+                    update_branch_enabled=update_branch_enabled,
                 )
 
                 result = orch.run_revision(pr_number)
@@ -735,6 +737,7 @@ def _watch_prs(
         model = _w_settings.get("model", "gpt-4.1")
         num_engineers = _w_settings.get("num_engineers", 2)
         pr_fix_label = _w_settings.get("pr_fix_label", "ai-fix")
+        update_branch_enabled = bool(_w_settings.get("update_branch", False))
         pr_failure_pattern = _w_settings.get("pr_failure_pattern", r"❌|FAILED|tests? failed|test suite failed")
         try:
             max_pr_retries = int(_w_settings.get("max_pr_retries", 3))
@@ -770,6 +773,7 @@ def _watch_prs(
             _run_pr_revision(
                 pr, tracker_repo, target_repo, model, num_engineers, log_dir, logger,
                 pr_fix_label=pr_fix_label,
+                update_branch_enabled=update_branch_enabled,
             )
 
 
