@@ -318,14 +318,12 @@ class GitHubClient:
         Raises:
             RuntimeError — any other unexpected HTTP status.
         """
-        import requests as _requests
-
         url = f"{self.API_BASE}/repos/{self.repo}/merges"
         payload: dict = {"base": head_branch, "head": base_branch}
         if commit_message:
             payload["commit_message"] = commit_message
 
-        resp = _requests.post(url, headers=self.headers, json=payload)
+        resp = requests.post(url, headers=self.headers, json=payload)
         if resp.status_code in (201, 204, 409):
             return resp.status_code
         raise RuntimeError(

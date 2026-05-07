@@ -38,3 +38,14 @@ def test_merge_base_into_branch_conflict(gc):
     with patch("requests.post", return_value=mock_resp):
         result = gc.merge_base_into_branch("master", "feature/agent/1-my-pr")
     assert result == 409
+
+
+def test_merge_base_into_branch_unexpected_error(gc):
+    """Raises RuntimeError when GitHub returns unexpected status."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    mock_resp.text = "Internal Server Error from GitHub"
+    with patch("requests.post", return_value=mock_resp):
+        with pytest.raises(RuntimeError) as exc_info:
+            gc.merge_base_into_branch("master", "feature/agent/1-my-pr")
+        assert "GitHub merges API failed [500]" in str(exc_info.value)
