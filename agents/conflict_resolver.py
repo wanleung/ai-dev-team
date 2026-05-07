@@ -79,6 +79,13 @@ class ConflictResolverAgent(BaseAgent):
             text=True,
         )
 
+    def _sanitise(self, text: str) -> str:
+        """Remove the GitHub token from *text* so it is safe to log or surface."""
+        token = getattr(self, "_token", None)
+        if token:
+            return text.replace(token, "***")
+        return text
+
     def _resolve(
         self,
         tmpdir: str,
@@ -91,7 +98,8 @@ class ConflictResolverAgent(BaseAgent):
         # 1. Clone
         r = self._run(["git", "clone", "--filter=blob:none", repo_url, tmpdir])
         if r.returncode != 0:
-            return ResolveResult(status="failed", reason=f"clone failed: {r.stderr.strip()}")
+            safe_reason = self._sanitise(r.stderr.strip())
+            return ResolveResult(status="failed", reason=f"clone failed: {safe_reason}")
 
         self._run(["git", "config", "user.email", "conflict-resolver@bot"], cwd=tmpdir)
         self._run(["git", "config", "user.name", "Conflict Resolver Bot"], cwd=tmpdir)
@@ -99,12 +107,14 @@ class ConflictResolverAgent(BaseAgent):
         # 2. Checkout head branch
         r = self._run(["git", "checkout", head_branch], cwd=tmpdir)
         if r.returncode != 0:
-            return ResolveResult(status="failed", reason=f"checkout failed: {r.stderr.strip()}")
+            safe_reason = self._sanitise(r.stderr.strip())
+            return ResolveResult(status="failed", reason=f"checkout failed: {safe_reason}")
 
         # 3. Fetch base and attempt merge
         r = self._run(["git", "fetch", "origin", base_branch], cwd=tmpdir)
         if r.returncode != 0:
-            return ResolveResult(status="failed", reason=f"fetch failed: {r.stderr.strip()}")
+            safe_reason = self._sanitise(r.stderr.strip())
+            return ResolveResult(status="failed", reason=f"fetch failed: {safe_reason}")
         merge_r = self._run(["git", "merge", f"origin/{base_branch}"], cwd=tmpdir)
 
         if merge_r.returncode == 0:
@@ -153,10 +163,11 @@ class ConflictResolverAgent(BaseAgent):
         # 7. Push
         push_r = self._run(["git", "push", "origin", head_branch], cwd=tmpdir)
         if push_r.returncode != 0:
+            safe_reason = self._sanitise(push_r.stderr.strip())
             return ResolveResult(
                 status="failed",
                 resolved_files=resolved_files,
-                reason=f"push failed: {push_r.stderr.strip()}",
+                reason=f"push failed: {safe_reason}",
             )
 
         return ResolveResult(status="resolved", resolved_files=resolved_files)

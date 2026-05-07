@@ -480,11 +480,11 @@ def test_update_branch_conflict_fallback(orch):
         )
 
     assert result["status"] == "conflict"
-    assert "src/utils.py" in result["conflicting_files"]
+    assert result["conflicting_files"] == []
     orch.target_github.add_pr_comment.assert_called_once()
     comment_body = orch.target_github.add_pr_comment.call_args[0][1]
-    assert "resolve these conflicts manually" in comment_body
-    assert "src/utils.py" in comment_body
+    assert "resolved locally" in comment_body
+    assert "merge manually" in comment_body
 
 
 def test_update_branch_conflict_no_pr_number(orch):

@@ -113,6 +113,7 @@ class BaseAgent:
     ) -> None:
         self.model = model
         self.system_prompt = self._load_system_prompt(roles_dir)
+        self._token = github_token
         self._retry_delay = retry_delay
         self._max_api_retries = max_api_retries
         self._inter_call_delay = inter_call_delay
