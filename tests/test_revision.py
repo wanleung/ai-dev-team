@@ -565,3 +565,117 @@ def test_run_revision_updates_then_proceeds(orch):
     orch.target_github.merge_base_into_branch.assert_called_once()
     # Engineer was invoked to process the feedback
     orch.engineer.run_all_modules.assert_called_once()
+
+
+# ── _parse_update_directive ───────────────────────────────────────────────
+
+def test_parse_update_directive_no_acknowledgment(orch):
+    """Directive with no prior acknowledgment → pending."""
+    comments = [
+        {"body": "Please review this PR", "author": "alice"},
+        {"body": "update-branch", "author": "alice"},
+    ]
+    assert orch._parse_update_directive(comments) is True
+
+
+def test_parse_update_directive_already_acknowledged(orch):
+    """Directive followed by bot acknowledgment → already processed."""
+    comments = [
+        {"body": "update-branch", "author": "alice"},
+        {"body": "✅ Merged master into branch. <!-- auto-update-branch -->", "author": "bot"},
+    ]
+    assert orch._parse_update_directive(comments) is False
+
+
+def test_parse_update_directive_new_after_acknowledged(orch):
+    """Directive → ack → new directive → pending again."""
+    comments = [
+        {"body": "update-branch", "author": "alice"},
+        {"body": "✅ Merged master. <!-- auto-update-branch -->", "author": "bot"},
+        {"body": "update-branch", "author": "alice"},  # new request
+    ]
+    assert orch._parse_update_directive(comments) is True
+
+
+def test_parse_update_directive_only_ack(orch):
+    """Only acknowledgment, no directive → False."""
+    comments = [
+        {"body": "<!-- auto-update-branch -->", "author": "bot"},
+    ]
+    assert orch._parse_update_directive(comments) is False
+
+
+def test_parse_update_directive_no_comments(orch):
+    """Empty feedback list → False."""
+    assert orch._parse_update_directive([]) is False
+
+
+# ── _update_branch_from_base marker posting ───────────────────────────────
+
+def test_update_branch_posts_marker_on_clean_merge(orch):
+    """201 clean merge → bot posts acknowledgment with marker."""
+    orch.target_github.merge_base_into_branch.return_value = 201
+    result = orch._update_branch_from_base("feature-branch", pr_number=42)
+    assert result["status"] == "merged"
+    orch.target_github.add_pr_comment.assert_called_once()
+    comment_body = orch.target_github.add_pr_comment.call_args[0][1]
+    assert "<!-- auto-update-branch -->" in comment_body
+    assert "✅" in comment_body
+
+
+def test_update_branch_posts_marker_on_up_to_date(orch):
+    """204 up-to-date → bot posts acknowledgment with marker."""
+    orch.target_github.merge_base_into_branch.return_value = 204
+    result = orch._update_branch_from_base("feature-branch", pr_number=42)
+    assert result["status"] == "up_to_date"
+    orch.target_github.add_pr_comment.assert_called_once()
+    comment_body = orch.target_github.add_pr_comment.call_args[0][1]
+    assert "<!-- auto-update-branch -->" in comment_body
+
+
+def test_update_branch_no_marker_comment_without_pr_number(orch):
+    """Without pr_number, no PR comment posted even on success."""
+    orch.target_github.merge_base_into_branch.return_value = 201
+    result = orch._update_branch_from_base("feature-branch", pr_number=None)
+    assert result["status"] == "merged"
+    orch.target_github.add_pr_comment.assert_not_called()
+
+
+def test_update_branch_posts_marker_after_ai_resolution(orch):
+    """Retry merge (201/204) after AI conflict resolution → posts marker."""
+    orch.target_github.merge_base_into_branch.side_effect = [409, 201]  # conflict, then success
+    orch.target_github.get_pr_files.return_value = [{"filename": "src/main.py"}]
+    orch.target_github.get_file_content.side_effect = [
+        "# PR version\nprint('hello')",  # head_branch
+        "# master version\nprint('world')",  # base_branch
+    ]
+    orch.engineer.call.return_value = "# merged version\nprint('hello world')"
+    
+    result = orch._update_branch_from_base("feature-branch", pr_number=42)
+    assert result["status"] == "merged"
+    
+    # Check that marker is posted
+    assert orch.target_github.add_pr_comment.call_count == 1
+    comment_body = orch.target_github.add_pr_comment.call_args[0][1]
+    assert "<!-- auto-update-branch -->" in comment_body
+    assert "after resolving conflicts" in comment_body or "✅" in comment_body
+
+
+def test_update_branch_posts_marker_on_conflict(orch):
+    """Unresolvable conflict (409 → 409) → posts marker with conflict message."""
+    orch.target_github.merge_base_into_branch.side_effect = [409, 409]  # conflict, retry also fails
+    orch.target_github.get_pr_files.return_value = [{"filename": "src/main.py"}]
+    orch.target_github.get_file_content.side_effect = [
+        "# PR version",  # head_branch
+        "# master version",  # base_branch
+    ]
+    orch.engineer.call.return_value = "# attempted merge"
+    
+    result = orch._update_branch_from_base("feature-branch", pr_number=42)
+    assert result["status"] == "conflict"
+    
+    # Check that marker is posted with conflict message
+    assert orch.target_github.add_pr_comment.call_count == 1
+    comment_body = orch.target_github.add_pr_comment.call_args[0][1]
+    assert "<!-- auto-update-branch -->" in comment_body
+    assert "⚠️" in comment_body or "conflict" in comment_body.lower()
