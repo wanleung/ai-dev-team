@@ -1681,11 +1681,9 @@ class Orchestrator(TestFixLoopMixin):
             if entry.get("size", 0) > MAX_FILE_BYTES:
                 continue
             path = entry["path"]
-            try:
-                content = self.target_github.get_file_content(path, ref=branch)
+            content = self.target_github.get_file_content(path, ref=branch)
+            if content is not None:
                 result[path] = content
-            except Exception:
-                continue
         return result
 
     def _fetch_design_from_issue(self, issue_number: int) -> str:
