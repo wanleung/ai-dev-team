@@ -299,6 +299,39 @@ class GitHubClient:
         """Add a general comment to a pull request's conversation."""
         return self.add_issue_comment(pr_number, body)
 
+    def merge_base_into_branch(
+        self,
+        base_branch: str,
+        head_branch: str,
+        commit_message: str = "",
+    ) -> int:
+        """Merge *base_branch* INTO *head_branch* via the GitHub merges API.
+
+        Uses a raw ``requests.post`` (not ``_request``) so callers can inspect
+        the 409 conflict status without catching an exception.
+
+        Returns:
+            201 — merge commit created (clean merge)
+            204 — already up to date (no action needed)
+            409 — merge conflict (caller must resolve)
+
+        Raises:
+            RuntimeError — any other unexpected HTTP status.
+        """
+        import requests as _requests
+
+        url = f"{self.API_BASE}/repos/{self.repo}/merges"
+        payload: dict = {"base": head_branch, "head": base_branch}
+        if commit_message:
+            payload["commit_message"] = commit_message
+
+        resp = _requests.post(url, headers=self.headers, json=payload)
+        if resp.status_code in (201, 204, 409):
+            return resp.status_code
+        raise RuntimeError(
+            f"GitHub merges API failed [{resp.status_code}]: {resp.text[:500]}"
+        )
+
     def get_pr(self, pr_number: int) -> dict:
         """Return pull request metadata."""
         return self._request("GET", f"/repos/{self.repo}/pulls/{pr_number}")

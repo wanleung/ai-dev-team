@@ -1,0 +1,40 @@
+# tests/test_github_client.py
+import pytest
+from unittest.mock import patch, MagicMock
+from github_client import GitHubClient
+
+
+@pytest.fixture
+def gc():
+    return GitHubClient("owner/repo", github_token="tok")
+
+
+def test_merge_base_into_branch_clean(gc):
+    """Returns 201 when GitHub creates a merge commit."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 201
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        result = gc.merge_base_into_branch("master", "feature/agent/1-my-pr")
+    assert result == 201
+    mock_post.assert_called_once()
+    _, kwargs = mock_post.call_args
+    assert kwargs["json"]["base"] == "feature/agent/1-my-pr"
+    assert kwargs["json"]["head"] == "master"
+
+
+def test_merge_base_into_branch_up_to_date(gc):
+    """Returns 204 when GitHub says already up to date."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 204
+    with patch("requests.post", return_value=mock_resp):
+        result = gc.merge_base_into_branch("master", "feature/agent/1-my-pr")
+    assert result == 204
+
+
+def test_merge_base_into_branch_conflict(gc):
+    """Returns 409 when GitHub reports a merge conflict."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 409
+    with patch("requests.post", return_value=mock_resp):
+        result = gc.merge_base_into_branch("master", "feature/agent/1-my-pr")
+    assert result == 409
