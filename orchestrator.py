@@ -1664,6 +1664,30 @@ class Orchestrator(TestFixLoopMixin):
                     seen.append(branch)
         return seen
 
+    def _fetch_branch_files(self, branch: str) -> dict[str, str]:
+        """Fetch all file contents from *branch* using the GitHub tree API.
+
+        Returns a mapping of ``file_path -> file_content`` (UTF-8 strings).
+        Binary files that cannot be decoded are silently skipped.
+        Files larger than 200 KB (``size > 204_800``) are also skipped to
+        avoid blowing up the context window.
+        """
+        MAX_FILE_BYTES = 204_800  # 200 KB
+        tree = self.target_github.get_full_tree(ref=branch)
+        result: dict[str, str] = {}
+        for entry in tree:
+            if entry.get("type") != "blob":
+                continue
+            if entry.get("size", 0) > MAX_FILE_BYTES:
+                continue
+            path = entry["path"]
+            try:
+                content = self.target_github.get_file_content(path, ref=branch)
+                result[path] = content
+            except Exception:
+                continue
+        return result
+
     def _fetch_design_from_issue(self, issue_number: int) -> str:
         """Read issue comments to find the architect's system design post.
 
