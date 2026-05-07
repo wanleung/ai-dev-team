@@ -49,3 +49,8 @@ def test_merge_base_into_branch_unexpected_error(gc):
         with pytest.raises(RuntimeError) as exc_info:
             gc.merge_base_into_branch("master", "feature/agent/1-my-pr")
         assert "GitHub merges API failed [500]" in str(exc_info.value)
+
+
+def test_token_attribute_stored():
+    gc = GitHubClient("owner/repo", github_token="fake-token-abc")
+    assert gc.token == "fake-token-abc"
