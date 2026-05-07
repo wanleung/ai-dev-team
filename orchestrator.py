@@ -79,6 +79,16 @@ def _parse_explicit_skills(text: str) -> list[str]:
     return [s.strip() for s in m.group(1).split(",") if s.strip()]
 
 
+# Regex for detecting merge directives in PR feedback.
+_MERGE_DIRECTIVE_RE = re.compile(
+    r"merge-branch:\s*(\S+)"              # explicit: merge-branch: <branch>
+    r"|merge\s+branch\s+`([^`]+)`"        # backtick: merge branch `<branch>`
+    r"|incorporate.*?branch\s+`([^`]+)`"  # incorporate: from branch `<branch>`
+    r"|merge\s+from\s+PR\s+#(\d+)",       # PR number: merge from PR #N
+    re.IGNORECASE,
+)
+
+
 # Diagnosis system prompt overlay used by the bug-fix pipeline.
 _DIAGNOSIS_PREFIX = """
 You are performing a **bug diagnosis**, not a new system design.
@@ -1628,6 +1638,31 @@ class Orchestrator(TestFixLoopMixin):
                 location = f" _(at {loc})_"
             lines.append(f"- **{item['author']}**{location}: {item['body']}")
         return "\n".join(lines)
+
+    def _parse_merge_directives(self, feedback: list[dict]) -> list[str]:
+        """Scan PR feedback for merge directives and return deduplicated branch names.
+
+        Supports:
+          - ``merge-branch: <branch>``
+          - ``merge branch `<branch>```
+          - ``incorporate ... from branch `<branch>```
+          - ``merge from PR #N``  (resolved to head branch via GitHub API)
+        """
+        seen: list[str] = []
+        for item in feedback:
+            body = item.get("body", "")
+            for m in _MERGE_DIRECTIVE_RE.finditer(body):
+                branch = m.group(1) or m.group(2) or m.group(3)
+                pr_num_str = m.group(4)
+                if pr_num_str and self.target_github:
+                    try:
+                        pr = self.target_github.get_pr(int(pr_num_str))
+                        branch = pr["head"]["ref"]
+                    except Exception:
+                        continue
+                if branch and branch not in seen:
+                    seen.append(branch)
+        return seen
 
     def _fetch_design_from_issue(self, issue_number: int) -> str:
         """Read issue comments to find the architect's system design post.

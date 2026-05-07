@@ -112,6 +112,49 @@ def test_format_feedback_includes_all_items(orch):
     assert "bob" in md
 
 
+# ── _parse_merge_directives ───────────────────────────────────────────────────
+
+def test_parse_merge_directives_explicit_directive(orch):
+    feedback = [
+        {"author": "wanleung", "body": "merge-branch: feature/agent/1-static-blog-platform", "location": "comment"},
+    ]
+    result = orch._parse_merge_directives(feedback)
+    assert result == ["feature/agent/1-static-blog-platform"]
+
+
+def test_parse_merge_directives_backtick_branch(orch):
+    feedback = [
+        {"author": "wanleung", "body": "Please incorporate tests from branch `feature/agent/1-static-blog-platform` before fixing.", "location": "comment"},
+    ]
+    result = orch._parse_merge_directives(feedback)
+    assert result == ["feature/agent/1-static-blog-platform"]
+
+
+def test_parse_merge_directives_pr_number(orch):
+    orch.target_github.get_pr.return_value = {"head": {"ref": "feature/agent/1-static-blog-platform"}}
+    feedback = [
+        {"author": "wanleung", "body": "merge from PR #2 before fixing tests", "location": "comment"},
+    ]
+    result = orch._parse_merge_directives(feedback)
+    orch.target_github.get_pr.assert_called_once_with(2)
+    assert result == ["feature/agent/1-static-blog-platform"]
+
+
+def test_parse_merge_directives_deduplicates(orch):
+    feedback = [
+        {"author": "alice", "body": "merge-branch: feature/tests", "location": "comment"},
+        {"author": "bob", "body": "merge-branch: feature/tests", "location": "comment"},
+    ]
+    assert orch._parse_merge_directives(feedback) == ["feature/tests"]
+
+
+def test_parse_merge_directives_empty_when_no_directives(orch):
+    feedback = [
+        {"author": "alice", "body": "Please fix the import error on line 10", "location": "comment"},
+    ]
+    assert orch._parse_merge_directives(feedback) == []
+
+
 # ── _fetch_design_from_issue ──────────────────────────────────────────────────
 
 def test_fetch_design_from_issue_finds_architect_comment(orch):
