@@ -54,3 +54,9 @@ def test_merge_base_into_branch_unexpected_error(gc):
 def test_token_attribute_stored():
     gc = GitHubClient("owner/repo", github_token="fake-token-abc")
     assert gc.token == "fake-token-abc"
+
+
+def test_token_attribute_stored_from_env(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "env-token-xyz")
+    gc = GitHubClient("owner/repo")          # no github_token arg
+    assert gc.token == "env-token-xyz"
