@@ -557,6 +557,7 @@ class Orchestrator(TestFixLoopMixin):
         progress_tracker_mode: str = "summary",
         tdd_commit_tests: bool = False,
         cost_tracking: dict | None = None,
+        update_branch_enabled: bool = False,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -750,6 +751,7 @@ class Orchestrator(TestFixLoopMixin):
         self.progress_tracker_mode: str = progress_tracker_mode
         self.tdd_commit_tests: bool = tdd_commit_tests
         self._cost_tracking: dict = cost_tracking or {}
+        self._update_branch_enabled: bool = update_branch_enabled
         ct = self._cost_tracking
         if ct.get("enabled", False):
             ledger = TokenLedger(pricing=ct.get("pricing", {}))
@@ -1685,6 +1687,87 @@ class Orchestrator(TestFixLoopMixin):
             if content is not None:
                 result[path] = content
         return result
+
+    def _parse_update_directive(self, feedback: list[dict]) -> bool:
+        """Return True if any feedback item contains an 'update-branch' directive.
+
+        Supported formats (case-insensitive):
+            update-branch
+            update-branch: true
+        """
+        pattern = re.compile(r"update-branch(?::\s*true)?", re.IGNORECASE)
+        return any(pattern.search(item.get("body", "")) for item in feedback)
+
+    def _update_branch_from_base(
+        self,
+        head_branch: str,
+        base_branch: str = "master",
+        pr_number: int | None = None,
+    ) -> dict:
+        """Merge *base_branch* into *head_branch*.
+
+        Returns a status dict:
+            {"status": "up_to_date"}  — 204, nothing to do
+            {"status": "merged"}      — 201, clean or AI-resolved merge
+            {"status": "conflict", "conflicting_files": [...]}
+                                      — could not resolve, PR comment posted
+        """
+        code = self.target_github.merge_base_into_branch(base_branch, head_branch)
+
+        if code == 204:
+            console.print(f"  ✅ Branch [cyan]{head_branch}[/cyan] is already up to date with [cyan]{base_branch}[/cyan]")
+            return {"status": "up_to_date"}
+
+        if code == 201:
+            console.print(f"  ✅ Merged [cyan]{base_branch}[/cyan] into [cyan]{head_branch}[/cyan] cleanly")
+            return {"status": "merged"}
+
+        # ── 409: conflict path ────────────────────────────────────────────────
+        console.print(f"  ⚠️  Merge conflict detected — attempting AI resolution …")
+
+        pr_files = self.target_github.get_pr_files(pr_number) if pr_number else []
+        conflicting_files: list[str] = []
+        for f in pr_files:
+            path = f["filename"]
+            pr_content = self.target_github.get_file_content(path, ref=head_branch)
+            master_content = self.target_github.get_file_content(path, ref=base_branch)
+            if pr_content is None or master_content is None:
+                continue
+            if pr_content == master_content:
+                continue
+
+            # AI resolves the conflict
+            prompt = (
+                f"File: {path}\n\n"
+                f"=== Version on PR branch ({head_branch}) ===\n{pr_content}\n\n"
+                f"=== Version on {base_branch} ===\n{master_content}\n\n"
+                "Produce a single merged version that preserves both sets of changes. "
+                "Output ONLY the file content, no explanation."
+            )
+            resolved = self.engineer.call(prompt)
+            self.target_github.commit_file(
+                path,
+                resolved,
+                head_branch,
+                "chore: resolve merge conflicts with master",
+            )
+            conflicting_files.append(path)
+
+        # Retry merge
+        retry_code = self.target_github.merge_base_into_branch(base_branch, head_branch)
+        if retry_code in (201, 204):
+            console.print(f"  ✅ Merge succeeded after AI conflict resolution")
+            return {"status": "merged"}
+
+        # Fallback: post comment and abort
+        files_list = "\n".join(f"- `{p}`" for p in conflicting_files) if conflicting_files else "- (unknown)"
+        self.target_github.add_pr_comment(
+            pr_number,
+            "⚠️ Could not automatically resolve merge conflicts.\n\n"
+            f"Conflicting files:\n{files_list}\n\n"
+            "Please resolve these conflicts manually and re-trigger ai-fix.",
+        )
+        return {"status": "conflict", "conflicting_files": conflicting_files}
 
     def _fetch_design_from_issue(self, issue_number: int) -> str:
         """Read issue comments to find the architect's system design post.

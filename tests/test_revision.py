@@ -19,6 +19,7 @@ def orch(tmp_path):
     o.reviewer = MagicMock()
     o.qa = MagicMock()
     o.skill_loader = None
+    o._update_branch_enabled = False
     return o
 
 
@@ -382,3 +383,82 @@ def test_run_revision_exits_when_no_human_feedback(orch):
     orch.target_github.get_pr_files.assert_not_called()
     orch.target_github.commit_file.assert_not_called()
     orch.target_github.add_pr_comment.assert_not_called()
+
+# ── _parse_update_directive ───────────────────────────────────────────────────
+
+def test_parse_update_directive_detects_update_branch(orch):
+    feedback = [
+        {"body": "Looks good overall", "author": "alice"},
+        {"body": "update-branch", "author": "alice"},
+    ]
+    assert orch._parse_update_directive(feedback) is True
+
+
+def test_parse_update_directive_detects_colon_form(orch):
+    feedback = [{"body": "update-branch: true", "author": "alice"}]
+    assert orch._parse_update_directive(feedback) is True
+
+
+def test_parse_update_directive_no_match(orch):
+    feedback = [{"body": "Please fix the tests", "author": "alice"}]
+    assert orch._parse_update_directive(feedback) is False
+
+
+# ── _update_branch_from_base ──────────────────────────────────────────────────
+
+def test_update_branch_already_up_to_date(orch):
+    """merge returns 204 → status 'up_to_date', no commit."""
+    orch.target_github.merge_base_into_branch.return_value = 204
+    result = orch._update_branch_from_base("feature/agent/1-my-pr")
+    assert result["status"] == "up_to_date"
+    orch.target_github.commit_file.assert_not_called()
+
+
+def test_update_branch_clean_merge(orch):
+    """merge returns 201 → status 'merged', no conflict resolution needed."""
+    orch.target_github.merge_base_into_branch.return_value = 201
+    result = orch._update_branch_from_base("feature/agent/1-my-pr")
+    assert result["status"] == "merged"
+    orch.target_github.commit_file.assert_not_called()
+
+
+def test_update_branch_conflict_ai_resolves(orch):
+    """409 → AI resolves files → retry returns 201 → status 'merged'."""
+    orch.target_github.merge_base_into_branch.side_effect = [409, 201]
+    orch.target_github.get_pr_files.return_value = [{"filename": "app/main.py"}]
+    orch.target_github.get_file_content.side_effect = [
+        "PR version of main.py",   # PR branch fetch
+        "master version of main.py",  # master fetch
+    ]
+    orch.engineer.call.return_value = "merged content of main.py"
+
+    result = orch._update_branch_from_base("feature/agent/1-my-pr", pr_number=42)
+
+    assert result["status"] == "merged"
+    orch.target_github.commit_file.assert_called_once_with(
+        "app/main.py",
+        "merged content of main.py",
+        "feature/agent/1-my-pr",
+        "chore: resolve merge conflicts with master",
+    )
+    assert orch.target_github.merge_base_into_branch.call_count == 2
+
+
+def test_update_branch_conflict_fallback(orch):
+    """409 → AI resolves → retry still 409 → posts PR comment, returns 'conflict'."""
+    orch.target_github.merge_base_into_branch.return_value = 409
+    orch.target_github.get_pr_files.return_value = [{"filename": "src/utils.py"}]
+    orch.target_github.get_file_content.side_effect = [
+        "PR version",
+        "master version",
+    ]
+    orch.engineer.call.return_value = "resolved utils.py"
+
+    result = orch._update_branch_from_base("feature/agent/1-my-pr", pr_number=42)
+
+    assert result["status"] == "conflict"
+    assert "src/utils.py" in result["conflicting_files"]
+    orch.target_github.add_pr_comment.assert_called_once()
+    comment_body = orch.target_github.add_pr_comment.call_args[0][1]
+    assert "resolve these conflicts manually" in comment_body
+    assert "src/utils.py" in comment_body
