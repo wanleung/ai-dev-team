@@ -192,6 +192,22 @@ def test_fetch_branch_files_skips_large_files(orch):
     assert "src/small.py" in result
 
 
+def test_fetch_branch_files_skips_unreadable_files(orch):
+    """Files that return None from get_file_content (binary/unreadable) are silently skipped."""
+    orch.target_github.get_full_tree.return_value = [
+        {"type": "blob", "path": "src/code.py", "size": 500},
+        {"type": "blob", "path": "data/image.png", "size": 10000},
+    ]
+    def _content(path, ref):
+        if path == "data/image.png":
+            return None  # binary/unreadable
+        return "# code content"
+    orch.target_github.get_file_content.side_effect = _content
+    result = orch._fetch_branch_files("feature/x")
+    assert "src/code.py" in result
+    assert "data/image.png" not in result
+
+
 # ── _fetch_design_from_issue ──────────────────────────────────────────────────
 
 def test_fetch_design_from_issue_finds_architect_comment(orch):
