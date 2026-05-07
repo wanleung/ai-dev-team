@@ -298,7 +298,7 @@ def test_watch_prs_dispatches_when_label_trigger(monkeypatch, tmp_path):
     monkeypatch.setattr("watcher.get_pr_comments", lambda repo, num: [])
     monkeypatch.setattr(
         "watcher._run_pr_revision",
-        lambda pr, tracker, target, model, num_eng, log_dir, logger, pr_fix_label="ai-fix":
+        lambda pr, tracker, target, model, num_eng, log_dir, logger, pr_fix_label="ai-fix", update_branch_enabled=False:
             dispatched.append((pr["number"], tracker, target, model, num_eng, pr_fix_label)),
     )
 

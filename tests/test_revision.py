@@ -471,3 +471,75 @@ def test_update_branch_conflict_no_pr_number(orch):
     assert result["status"] == "conflict"
     orch.target_github.get_pr_files.assert_not_called()
     orch.target_github.add_pr_comment.assert_not_called()
+
+
+# ── run_revision step 0: auto-update branch ───────────────────────────────────
+
+def _make_revision_mocks(orch, pr_number=42, head_branch="feature/agent/1-fix"):
+    """Set up minimal mocks for run_revision() to reach step 3 without errors."""
+    orch.target_github.get_pr.return_value = {
+        "number": pr_number,
+        "head": {"ref": head_branch},
+        "body": "",
+        "labels": [],
+    }
+    orch.target_github.get_issue_comments.return_value = []
+    orch.target_github.get_pr_review_comments.return_value = []
+    orch.target_github.get_pr_reviews.return_value = []
+    orch.target_github.get_pr_files.return_value = []
+    orch.target_github.get_file_content.return_value = None
+    orch.engineer.run_all_modules.return_value = MagicMock(
+        all_files={}, structured_files={}, modules={}
+    )
+    orch.reviewer.run.return_value = MagicMock(issues=[], structured_files={})
+    orch.qa.run.return_value = MagicMock(issues=[], structured_files={})
+    orch._fetch_design_from_issue = MagicMock(return_value="")
+    orch._get_revision_number = MagicMock(return_value=0)
+    orch._format_feedback = MagicMock(return_value="feedback md")
+    orch._extract_issue_number = MagicMock(return_value=None)
+    orch._parse_merge_directives = MagicMock(return_value=[])
+
+
+def test_run_revision_skips_update_when_disabled(orch):
+    """update_branch_enabled=False → merge_base_into_branch never called."""
+    orch._update_branch_enabled = False
+    _make_revision_mocks(orch)
+    orch.target_github.get_issue_comments.return_value = [
+        {"body": "update-branch", "user": {"login": "alice"}}
+    ]
+    # Provide at least one feedback item so run_revision doesn't return early
+    orch.target_github.get_pr_review_comments.return_value = [
+        {"body": "Fix the tests", "user": {"login": "alice"}, "path": "x.py", "line": 1}
+    ]
+    orch.run_revision(42)
+    orch.target_github.merge_base_into_branch.assert_not_called()
+
+
+def test_run_revision_skips_update_when_no_directive(orch):
+    """Enabled but no 'update-branch' comment → merge_base_into_branch never called."""
+    orch._update_branch_enabled = True
+    _make_revision_mocks(orch)
+    orch.target_github.get_issue_comments.return_value = [
+        {"body": "Please fix the null pointer", "user": {"login": "alice"}}
+    ]
+    orch.target_github.get_pr_review_comments.return_value = [
+        {"body": "Fix the tests", "user": {"login": "alice"}, "path": "x.py", "line": 1}
+    ]
+    orch.run_revision(42)
+    orch.target_github.merge_base_into_branch.assert_not_called()
+
+
+def test_run_revision_aborts_on_conflict(orch):
+    """update-branch directive + enabled + conflict → run_revision returns conflict status."""
+    orch._update_branch_enabled = True
+    _make_revision_mocks(orch)
+    orch.target_github.get_issue_comments.return_value = [
+        {"body": "update-branch", "user": {"login": "alice"}}
+    ]
+    # With no PR files, conflicting_files will be [] and retry still 409
+    orch.target_github.merge_base_into_branch.side_effect = [409, 409]
+
+    result = orch.run_revision(42)
+
+    assert result["status"] == "conflict"
+    orch.target_github.add_pr_comment.assert_called_once()

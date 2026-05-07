@@ -1823,6 +1823,18 @@ class Orchestrator(TestFixLoopMixin):
                     if original:
                         agent.system_prompt = block_text + "\n\n---\n\n" + original
 
+        # ── 0. Auto-update branch from master (if configured + requested) ─────
+        if self._update_branch_enabled:
+            pr_issue_comments = self.target_github.get_issue_comments(pr_number)
+            update_directive_feedback = [
+                {"body": c.get("body", ""), "author": c.get("user", {}).get("login", "")}
+                for c in pr_issue_comments
+            ]
+            if self._parse_update_directive(update_directive_feedback):
+                update_result = self._update_branch_from_base(head_branch, pr_number=pr_number)
+                if update_result["status"] == "conflict":
+                    return update_result
+
         # ── 2. Check revision cap ─────────────────────────────────────────────
         current_rev = self._get_revision_number(labels)
         if current_rev >= self.max_revisions:
