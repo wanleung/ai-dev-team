@@ -10,6 +10,7 @@ import logging
 
 import pytest
 import yaml
+import requests
 
 import watcher
 from watcher import _dispatch, watch, _run_pr_revision
@@ -493,3 +494,43 @@ class TestRunPrRevisionConflictResolverModel:
 
         call_kwargs = mock_orch_class.call_args.kwargs
         assert call_kwargs.get("conflict_resolver_model") is None
+
+# ── Tenacity retry tests ──────────────────────────────────────────────────────
+
+def test_ensure_label_retries_on_429(monkeypatch):
+    """ensure_label retries when GitHub returns 429."""
+    call_count = {"n": 0}
+
+    def fake_get(url, **kwargs):
+        call_count["n"] += 1
+        resp = MagicMock()
+        if call_count["n"] < 3:
+            resp.ok = False
+            resp.status_code = 429
+            resp.raise_for_status.side_effect = requests.HTTPError(response=resp)
+        else:
+            resp.ok = True
+            resp.status_code = 200
+            resp.json.return_value = []
+            resp.raise_for_status.return_value = None
+        return resp
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    with patch("watcher.requests.get", side_effect=fake_get), \
+         patch("watcher.requests.post", return_value=MagicMock(ok=True, raise_for_status=lambda: None)), \
+         patch("tenacity.nap.time.sleep"):
+        watcher.ensure_label("owner/repo", "ai-feature", "0075ca")
+
+    assert call_count["n"] == 3   # failed twice, succeeded on 3rd
+
+
+def test_post_comment_raises_on_503(monkeypatch):
+    """post_comment raises HTTPError on 503 (no retry — non-idempotent POST)."""
+    resp = MagicMock()
+    resp.status_code = 503
+    resp.raise_for_status.side_effect = requests.HTTPError(response=resp)
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    with patch("watcher.requests.post", return_value=resp):
+        with pytest.raises(requests.HTTPError):
+            watcher.post_comment("owner/repo", 42, "hello")
