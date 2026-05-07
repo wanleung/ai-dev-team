@@ -64,7 +64,7 @@ class GitHubClient:
             raise ValueError(f"repo must be 'owner/repo' format, got: {repo!r}")
 
         self.repo = repo
-        self.token = token          # expose token for downstream use
+        self.token = token          # raw token needed by ConflictResolverAgent for authenticated clone URLs
         self.headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -484,4 +484,4 @@ class GitHubClient:
             return []
 
     def __repr__(self) -> str:
-        return f"GitHubClient(repo={self.repo!r})"
+        return f"GitHubClient(repo={self.repo!r}, token='***')"
