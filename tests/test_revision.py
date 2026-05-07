@@ -155,6 +155,43 @@ def test_parse_merge_directives_empty_when_no_directives(orch):
     assert orch._parse_merge_directives(feedback) == []
 
 
+# ── _fetch_branch_files ───────────────────────────────────────────────────────
+
+def test_fetch_branch_files_returns_file_map(orch):
+    orch.target_github.get_full_tree.return_value = [
+        {"type": "blob", "path": "tests/test_blog.py", "size": 1024},
+        {"type": "blob", "path": "src/blog.py", "size": 512},
+    ]
+    orch.target_github.get_file_content.side_effect = lambda path, ref: f"content of {path}"
+    result = orch._fetch_branch_files("feature/agent/1-static-blog-platform")
+    assert result == {
+        "tests/test_blog.py": "content of tests/test_blog.py",
+        "src/blog.py": "content of src/blog.py",
+    }
+    orch.target_github.get_full_tree.assert_called_once_with(ref="feature/agent/1-static-blog-platform")
+
+
+def test_fetch_branch_files_skips_trees(orch):
+    orch.target_github.get_full_tree.return_value = [
+        {"type": "tree", "path": "src", "size": 0},
+        {"type": "blob", "path": "src/main.py", "size": 100},
+    ]
+    orch.target_github.get_file_content.return_value = "print('hello')"
+    result = orch._fetch_branch_files("main")
+    assert list(result.keys()) == ["src/main.py"]
+
+
+def test_fetch_branch_files_skips_large_files(orch):
+    orch.target_github.get_full_tree.return_value = [
+        {"type": "blob", "path": "data/huge.json", "size": 300_000},
+        {"type": "blob", "path": "src/small.py", "size": 100},
+    ]
+    orch.target_github.get_file_content.return_value = "small content"
+    result = orch._fetch_branch_files("feature/x")
+    assert "data/huge.json" not in result
+    assert "src/small.py" in result
+
+
 # ── _fetch_design_from_issue ──────────────────────────────────────────────────
 
 def test_fetch_design_from_issue_finds_architect_comment(orch):
