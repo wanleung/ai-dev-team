@@ -15,6 +15,7 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 import requests
+from utils import sanitise
 
 
 def parse_target_repo(text: str) -> Optional[str]:
@@ -93,16 +94,20 @@ class GitHubClient:
             if response.ok:
                 return response.json() if response.text else {}
             if response.status_code not in self._RETRYABLE or attempt == self._MAX_RETRIES - 1:
-                raise RuntimeError(
-                    f"GitHub API {method} {url} failed [{response.status_code}]: {response.text[:500]}"
-                )
+                raise RuntimeError(sanitise(
+                    f"GitHub API {method} {url} failed [{response.status_code}]: {response.text[:500]}",
+                    self.token,
+                ))
             wait = self._RETRY_BASE * (2 ** attempt)
             log.warning(
                 "GitHub API %s %s returned %s (attempt %d/%d) — retrying in %.0fs",
                 method, url, response.status_code, attempt + 1, self._MAX_RETRIES, wait,
             )
             time.sleep(wait)
-        raise RuntimeError(f"GitHub API {method} {url} failed after {self._MAX_RETRIES} attempts")
+        raise RuntimeError(sanitise(
+            f"GitHub API {method} {url} failed after {self._MAX_RETRIES} attempts",
+            self.token,
+        ))
 
     # ── Issues ──────────────────────────────────────────────────────────────
 

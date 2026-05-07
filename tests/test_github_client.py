@@ -62,6 +62,22 @@ def test_token_attribute_stored_from_env(monkeypatch):
     assert gc.token == "env-token-xyz"
 
 
+def test_request_error_redacts_token():
+    """RuntimeError from _request() must not contain the raw token."""
+    gc = GitHubClient("owner/repo", github_token="supersecret")
+    mock_resp = MagicMock()
+    mock_resp.ok = False
+    mock_resp.status_code = 401  # not in _RETRYABLE, raises immediately
+    mock_resp.text = "https://x-access-token:supersecret@github.com/owner/repo: error"
+
+    gc._session = MagicMock()
+    gc._session.request.return_value = mock_resp
+    with pytest.raises(RuntimeError) as exc_info:
+        gc._request("GET", "/repos/owner/repo")
+    assert "supersecret" not in str(exc_info.value)
+    assert "***" in str(exc_info.value)
+
+
 # ── Session tests (QW-1) ──────────────────────────────────────────────────────
 
 def test_session_created_on_init():
