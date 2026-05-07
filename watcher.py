@@ -41,6 +41,8 @@ from tenacity import (
     before_sleep_log,
 )
 from utils import sanitise as _sanitise
+from config_schema import load_repo_entry
+from pydantic import ValidationError as _ValidationError
 
 # ── Labels used to track pipeline state ─────────────────────────────────────
 LABEL_QUEUED   = "agent-queued"
@@ -1070,6 +1072,21 @@ def watch(config_path: Path, dry_run: bool, logger: logging.Logger) -> None:
 
     watchers = config.get("watchers", [])
     logger.info("Loaded %d watcher(s) from %s", len(watchers), config_path)
+
+    # Validate each watcher entry; skip invalid entries with a warning
+    validated_watchers: list[dict] = []
+    for entry in watchers:
+        try:
+            load_repo_entry(entry)   # validate; raises ValidationError on bad entry
+            validated_watchers.append(entry)
+        except _ValidationError as exc:
+            name = entry.get("tracker_repo", "?") if isinstance(entry, dict) else repr(entry)
+            logger.warning(
+                "Skipping invalid watcher entry %r: %s",
+                name,
+                exc,
+            )
+    watchers = validated_watchers
 
     # Load pipeline config to get workspace_dir, bot_login, and PR watcher defaults
     pipeline_cfg = _load_pipeline_config()
