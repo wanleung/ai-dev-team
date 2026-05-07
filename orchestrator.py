@@ -1761,12 +1761,13 @@ class Orchestrator(TestFixLoopMixin):
 
         # Fallback: post comment and abort
         files_list = "\n".join(f"- `{p}`" for p in conflicting_files) if conflicting_files else "- (unknown)"
-        self.target_github.add_pr_comment(
-            pr_number,
-            "⚠️ Could not automatically resolve merge conflicts.\n\n"
-            f"Conflicting files:\n{files_list}\n\n"
-            "Please resolve these conflicts manually and re-trigger ai-fix.",
-        )
+        if pr_number is not None:
+            self.target_github.add_pr_comment(
+                pr_number,
+                "⚠️ Could not automatically resolve merge conflicts.\n\n"
+                f"Conflicting files:\n{files_list}\n\n"
+                "Please resolve these conflicts manually and re-trigger ai-fix.",
+            )
         return {"status": "conflict", "conflicting_files": conflicting_files}
 
     def _fetch_design_from_issue(self, issue_number: int) -> str:

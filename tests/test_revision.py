@@ -462,3 +462,12 @@ def test_update_branch_conflict_fallback(orch):
     comment_body = orch.target_github.add_pr_comment.call_args[0][1]
     assert "resolve these conflicts manually" in comment_body
     assert "src/utils.py" in comment_body
+
+
+def test_update_branch_conflict_no_pr_number(orch):
+    """409 with pr_number=None → no crash, no PR comment, returns conflict."""
+    orch.target_github.merge_base_into_branch.return_value = 409
+    result = orch._update_branch_from_base("feature/agent/1-my-pr", pr_number=None)
+    assert result["status"] == "conflict"
+    orch.target_github.get_pr_files.assert_not_called()
+    orch.target_github.add_pr_comment.assert_not_called()
