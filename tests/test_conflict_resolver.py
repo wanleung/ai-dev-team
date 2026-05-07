@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import pytest
 
 from agents.conflict_resolver import ConflictResolverAgent, PRContext, ResolveResult
 
+
+CONFLICT_FILE = "src/hello.py"
 
 CONFLICT_CONTENT = """\
 <<<<<<< HEAD
@@ -136,7 +138,7 @@ def test_resolve_clone_failure(agent, pr_ctx, tmp_path):
 # ── resolve: push failure ──────────────────────────────────────────────────────
 
 def test_resolve_push_failure(agent, pr_ctx, tmp_path):
-    run_fn, _ = _make_run(["src/hello.py"], push_ok=False)
+    run_fn, _ = _make_run([CONFLICT_FILE], push_ok=False)
 
     with patch("agents.conflict_resolver.subprocess.run", side_effect=run_fn), \
          patch("agents.conflict_resolver.tempfile.mkdtemp", return_value=str(tmp_path)), \
@@ -152,6 +154,7 @@ def test_resolve_push_failure(agent, pr_ctx, tmp_path):
 
     assert result.status == "failed"
     assert "push failed" in result.reason
+    assert result.resolved_files == [CONFLICT_FILE]
 
 
 # ── resolve: LLM fails for one file → failed_files ────────────────────────────
