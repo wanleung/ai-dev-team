@@ -33,6 +33,13 @@ from typing import Optional
 
 import yaml
 import requests
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+)
 from utils import sanitise as _sanitise
 
 # ── Labels used to track pipeline state ─────────────────────────────────────
@@ -57,6 +64,23 @@ LOCK_FILE = Path(__file__).parent / ".watcher.lock"
 _log = logging.getLogger("watcher")
 
 
+def _is_retryable_http_error(exc: BaseException) -> bool:
+    """Return True if exc is an HTTPError with a retryable status code."""
+    if not isinstance(exc, requests.HTTPError):
+        return False
+    resp = getattr(exc, "response", None)
+    return resp is not None and resp.status_code in {429, 500, 502, 503, 504}
+
+
+_retry_github = retry(
+    retry=retry_if_exception(_is_retryable_http_error),
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    stop=stop_after_attempt(5),
+    before_sleep=before_sleep_log(_log, logging.WARNING),
+    reraise=True,
+)
+
+
 def _gh_headers() -> dict:
     token = os.environ.get("GITHUB_TOKEN", "")
     return {
@@ -68,25 +92,35 @@ def _gh_headers() -> dict:
 
 # ── GitHub helpers ────────────────────────────────────────────────────────────
 
+@_retry_github
 def ensure_label(repo: str, name: str, colour: str) -> None:
     """Create a label if it doesn't already exist."""
     url = f"https://api.github.com/repos/{repo}/labels"
     existing = requests.get(url, headers=_gh_headers(), timeout=10)
-    names = {l["name"] for l in existing.json()} if existing.ok else set()
+    existing.raise_for_status()
+    names = {l["name"] for l in existing.json()}
     if name not in names:
-        requests.post(url, headers=_gh_headers(), json={"name": name, "color": colour}, timeout=10)
+        resp = requests.post(url, headers=_gh_headers(), json={"name": name, "color": colour}, timeout=10)
+        resp.raise_for_status()
 
 
+@_retry_github
 def add_label(repo: str, issue_number: int, label: str) -> None:
     url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/labels"
-    requests.post(url, headers=_gh_headers(), json={"labels": [label]}, timeout=10)
+    resp = requests.post(url, headers=_gh_headers(), json={"labels": [label]}, timeout=10)
+    resp.raise_for_status()
 
 
+@_retry_github
 def remove_label(repo: str, issue_number: int, label: str) -> None:
     url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/labels/{label}"
-    requests.delete(url, headers=_gh_headers(), timeout=10)
+    resp = requests.delete(url, headers=_gh_headers(), timeout=10)
+    if resp.status_code == 404:
+        return  # label already absent — idempotent no-op
+    resp.raise_for_status()
 
 
+@_retry_github
 def get_open_issues(repo: str, label: str | list[str]) -> list[dict]:
     """Return open issues with the given label(s) that haven't been processed.
 
@@ -100,8 +134,7 @@ def get_open_issues(repo: str, label: str | list[str]) -> list[dict]:
         url = f"https://api.github.com/repos/{repo}/issues"
         params = {"state": "open", "labels": lbl, "per_page": 50}
         resp = requests.get(url, headers=_gh_headers(), params=params, timeout=10)
-        if not resp.ok:
-            raise RuntimeError(f"GitHub API error {resp.status_code}: {resp.text[:200]}")
+        resp.raise_for_status()
         for issue in resp.json():
             if "pull_request" in issue:
                 continue  # skip PRs
@@ -115,25 +148,25 @@ def get_open_issues(repo: str, label: str | list[str]) -> list[dict]:
     return issues
 
 
+@_retry_github
 def get_open_prs(repo: str, skip_drafts: bool = True) -> list[dict]:
     """Return open pull requests for the repo, optionally excluding drafts."""
     url = f"https://api.github.com/repos/{repo}/pulls"
     params = {"state": "open", "per_page": 50}
     resp = requests.get(url, headers=_gh_headers(), params=params, timeout=10)
-    if not resp.ok:
-        raise RuntimeError(f"GitHub API error {resp.status_code}: {resp.text[:200]}")
+    resp.raise_for_status()
     prs = resp.json()
     if skip_drafts:
         prs = [pr for pr in prs if not pr.get("draft", False)]
     return prs
 
 
+@_retry_github
 def get_pr_comments(repo: str, pr_number: int) -> list[dict]:
     """Return all conversation comments on a pull request."""
     url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
     resp = requests.get(url, headers=_gh_headers(), params={"per_page": 100}, timeout=10)
-    if not resp.ok:
-        raise RuntimeError(f"GitHub API error {resp.status_code}: {resp.text[:200]}")
+    resp.raise_for_status()
     return resp.json()
 
 
@@ -233,7 +266,8 @@ def _collect_issue_prior_context(tracker_gh: "GitHubClient", issue_number: int) 
 
 def post_comment(repo: str, issue_number: int, body: str) -> None:
     url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
-    requests.post(url, headers=_gh_headers(), json={"body": body}, timeout=10)
+    resp = requests.post(url, headers=_gh_headers(), json={"body": body}, timeout=10)
+    resp.raise_for_status()
 
 
 # ── Pipeline dispatch ─────────────────────────────────────────────────────────
