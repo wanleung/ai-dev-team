@@ -239,7 +239,6 @@ def test_run_revision_incorporates_merge_branch_files(orch):
         {"path": "tests/test_app.py", "type": "blob", "size": 300},
     ]
 
-    from unittest.mock import MagicMock
     orch.engineer.run_all_modules = MagicMock(return_value={
         "all_files": {"app/main.py": "# fixed main.py"}
     })
@@ -271,15 +270,15 @@ def test_run_revision_no_merge_branch_when_no_directive(orch):
     orch.target_github.get_pr_files.return_value = [{"filename": "app/main.py"}]
     orch.target_github.get_file_content.return_value = "# original"
 
-    from unittest.mock import MagicMock
     orch.engineer.run_all_modules = MagicMock(return_value={
         "all_files": {"app/main.py": "# fixed"}
     })
     orch.reviewer.run = MagicMock(return_value={"verdict": "APPROVED"})
     orch.qa.run = MagicMock(return_value={"test_files": {}})
 
-    orch.run_revision(pr_number=3)
+    result = orch.run_revision(pr_number=3)
 
+    assert result["status"] == "ok"
     # get_full_tree should never be called if no merge directives
     orch.target_github.get_full_tree.assert_not_called()
 
