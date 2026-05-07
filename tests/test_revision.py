@@ -543,3 +543,25 @@ def test_run_revision_aborts_on_conflict(orch):
 
     assert result["status"] == "conflict"
     orch.target_github.add_pr_comment.assert_called_once()
+    assert orch.target_github.merge_base_into_branch.call_count == 2
+    orch.engineer.run_all_modules.assert_not_called()
+
+
+def test_run_revision_updates_then_proceeds(orch):
+    """update-branch succeeds (201) → run_revision continues and engineer is called."""
+    orch._update_branch_enabled = True
+    _make_revision_mocks(orch)
+    orch.target_github.get_issue_comments.return_value = [
+        {"body": "update-branch", "user": {"login": "alice"}}
+    ]
+    orch.target_github.get_pr_review_comments.return_value = [
+        {"body": "Fix the tests", "user": {"login": "bob"}, "path": "x.py", "line": 1}
+    ]
+    orch.target_github.merge_base_into_branch.return_value = 201
+
+    orch.run_revision(42)
+
+    # Merge was attempted once (clean 201, no retry needed)
+    orch.target_github.merge_base_into_branch.assert_called_once()
+    # Engineer was invoked to process the feedback
+    orch.engineer.run_all_modules.assert_called_once()
