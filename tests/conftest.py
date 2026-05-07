@@ -4,6 +4,7 @@ Provides shared fixtures used across the test suite.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -23,3 +24,30 @@ def _isolate_memory_store(tmp_path: Path, monkeypatch):
         monkeypatch.setattr(_ms.MemoryStore, "__init__", _patched_init)
     except ImportError:
         pass  # memory_store not available in all test environments
+
+
+@pytest.fixture(autouse=True)
+def _clear_structlog_context():
+    """Clear structlog contextvars after each test to prevent run_id leaking between tests."""
+    yield
+    try:
+        import structlog
+        structlog.contextvars.clear_contextvars()
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_handlers():
+    """Restore logging.root handlers and level after each test to prevent accumulation."""
+    original_handlers = logging.root.handlers[:]
+    original_level = logging.root.level
+    yield
+    for h in logging.root.handlers:
+        if h not in original_handlers:
+            try:
+                h.close()
+            except Exception:
+                pass
+    logging.root.handlers = original_handlers
+    logging.root.setLevel(original_level)
