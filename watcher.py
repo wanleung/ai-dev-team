@@ -46,6 +46,7 @@ from tenacity import (
 from utils import sanitise as _sanitise
 from config_schema import load_repo_entry
 from pydantic import ValidationError as _ValidationError
+from watcher_types import GitHubComment, GitHubIssue, GitHubPR, WatcherTask
 
 # ── Labels used to track pipeline state ─────────────────────────────────────
 LABEL_QUEUED   = "agent-queued"
@@ -88,7 +89,7 @@ _retry_github = retry(
 )
 
 
-def _gh_headers() -> dict:
+def _gh_headers() -> dict[str, str]:
     token = os.environ.get("GITHUB_TOKEN", "")
     return {
         "Authorization": f"Bearer {token}",
@@ -145,7 +146,7 @@ def remove_label(repo: str, issue_number: int, label: str) -> None:
 
 
 @_retry_github
-def get_open_issues(repo: str, label: str | list[str]) -> list[dict]:
+def get_open_issues(repo: str, label: str | list[str]) -> list[GitHubIssue]:
     """Return open issues with the given label(s) that haven't been processed.
 
     label may be a single string or a list; issues matching ANY label are returned
@@ -173,7 +174,7 @@ def get_open_issues(repo: str, label: str | list[str]) -> list[dict]:
 
 
 @_retry_github
-def get_open_prs(repo: str, skip_drafts: bool = True) -> list[dict]:
+def get_open_prs(repo: str, skip_drafts: bool = True) -> list[GitHubPR]:
     """Return open pull requests for the repo, optionally excluding drafts."""
     url = f"https://api.github.com/repos/{repo}/pulls"
     params = {"state": "open", "per_page": 50}
@@ -186,7 +187,7 @@ def get_open_prs(repo: str, skip_drafts: bool = True) -> list[dict]:
 
 
 @_retry_github
-def get_pr_comments(repo: str, pr_number: int) -> list[dict]:
+def get_pr_comments(repo: str, pr_number: int) -> list[GitHubComment]:
     """Return all conversation comments on a pull request."""
     url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
     resp = requests.get(url, headers=_gh_headers(), params={"per_page": 100}, timeout=10)
@@ -994,7 +995,7 @@ def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_
             _trigger_resume(issue_number, issue_title, result.requirement, workspace_dir)
 
 
-def _get_issues_by_label(repo: str, label: str, token: str) -> list[dict]:
+def _get_issues_by_label(repo: str, label: str, token: str) -> list[GitHubIssue]:
     """Return all open issues with the given label."""
     headers = {
         "Authorization": f"Bearer {token}",
@@ -1009,7 +1010,7 @@ def _get_issues_by_label(repo: str, label: str, token: str) -> list[dict]:
     return [issue for issue in resp.json() if "pull_request" not in issue]
 
 
-def _get_issue_comments(repo: str, issue_number: int, token: str) -> list[dict]:
+def _get_issue_comments(repo: str, issue_number: int, token: str) -> list[GitHubComment]:
     """Return all comments for an issue."""
     headers = {
         "Authorization": f"Bearer {token}",
@@ -1023,7 +1024,7 @@ def _get_issue_comments(repo: str, issue_number: int, token: str) -> list[dict]:
     return resp.json()
 
 
-def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_targets: dict[str, str], model: str, num_engineers: int, log_dir: Path, dry_run: bool, logger: logging.Logger) -> list[dict]:
+def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_targets: dict[str, str], model: str, num_engineers: int, log_dir: Path, dry_run: bool, logger: logging.Logger) -> list[WatcherTask]:
     """Process any resume triggers left by check_waiting_issues().
     
     Returns a list of task dicts to be dispatched.
