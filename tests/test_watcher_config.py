@@ -488,3 +488,21 @@ def test_legacy_watcher_settings_stored_as_underscore(tmp_path):
     w = result["watchers"][0]
     assert w["_settings"]["model"] == "gpt-4.1-mini"
     assert "settings" not in w
+
+
+def test_pipeline_timeout_default(tmp_path):
+    """load_watcher_config does not inject pipeline_timeout_s when absent from config."""
+    cfg = {"watchers": []}
+    cfg_file = tmp_path / "repos.yaml"
+    cfg_file.write_text(yaml.dump(cfg))
+    result = load_watcher_config(cfg_file)
+    assert "pipeline_timeout_s" not in result.get("settings", {})
+
+
+def test_pipeline_timeout_custom(tmp_path):
+    """load_watcher_config passes through a custom pipeline_timeout_s."""
+    cfg = {"watchers": [], "settings": {"pipeline_timeout_s": 1800}}
+    cfg_file = tmp_path / "repos.yaml"
+    cfg_file.write_text(yaml.dump(cfg))
+    result = load_watcher_config(cfg_file)
+    assert result["settings"]["pipeline_timeout_s"] == 1800

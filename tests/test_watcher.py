@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 import tempfile
 import logging
+import concurrent.futures
 
 import pytest
 import yaml
@@ -753,3 +754,134 @@ def test_process_resume_queue_skips_locked_file(tmp_path, caplog):
         "locked" in r.message.lower() or "skip" in r.message.lower()
         for r in caplog.records
     )
+
+
+def test_watch_timeout_cancels_hung_futures(monkeypatch, tmp_path, caplog):
+    """watch() cancels hung futures and shuts down non-blocking on pipeline_timeout_s exceeded."""
+    # --- Setup: fake config file ---
+    cfg = {
+        "watchers": [{
+            "tracker_repo": "owner/repo",
+            "labels": {"ai-feature": "ai-feature"},
+        }],
+        "settings": {"pipeline_timeout_s": 1},
+    }
+    cfg_file = tmp_path / "repos.yaml"
+    cfg_file.write_text(yaml.dump(cfg))
+
+    # --- Fake future tracking ---
+    cancelled = []
+
+    class FakeFuture:
+        def done(self): return False
+        def cancel(self): cancelled.append(self)
+        def cancelled(self): return self in cancelled
+        def result(self): pass  # Never called — TimeoutError fires first
+
+    fake_fut = FakeFuture()
+
+    # --- Fake executor tracking ---
+    shutdown_calls = []
+
+    class FakeExecutor:
+        def submit(self, *a, **kw): return fake_fut
+        def shutdown(self, wait=True, cancel_futures=False):
+            shutdown_calls.append({"wait": wait, "cancel_futures": cancel_futures})
+
+    # --- Patch watcher internals ---
+    monkeypatch.setattr("watcher._load_pipeline_config", lambda: {})
+    monkeypatch.setattr("watcher._watch_prs", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher._process_resume_queue", lambda *a, **kw: [])
+    monkeypatch.setattr("watcher.ensure_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.get_open_issues",
+                        lambda repo, label: [{"number": 42, "title": "Hang", "body": "",
+                                              "labels": [], "state": "open",
+                                              "pull_request": None, "html_url": ""}])
+    monkeypatch.setattr("watcher.add_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.remove_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.ThreadPoolExecutor",
+                        lambda **kw: FakeExecutor())
+    monkeypatch.setattr("watcher.as_completed",
+                        lambda fs, timeout=None: (_ for _ in ()).throw(
+                            concurrent.futures.TimeoutError()))
+
+    # --- Run watch() ---
+    with caplog.at_level(logging.WARNING, logger="watcher"):
+        watcher.watch(cfg_file, dry_run=False)
+
+    # --- Assert cancellation and non-blocking shutdown ---
+    assert len(cancelled) >= 1, "Expected at least one future to be cancelled"
+    assert shutdown_calls, "Expected executor.shutdown() to be called"
+    assert shutdown_calls[-1]["wait"] is False, "shutdown must be non-blocking"
+    assert shutdown_calls[-1]["cancel_futures"] is True, "shutdown must cancel futures"
+    assert any("Pipeline timeout" in r.message for r in caplog.records), \
+        "Expected a pipeline timeout warning in the logs"
+
+
+def test_watch_timeout_cleans_up_labels_for_cancelled_futures(monkeypatch, tmp_path, caplog):
+    """watch(): futures that are cancelled (never started) get agent-queued removed and agent-failed added."""
+    cfg = {
+        "watchers": [{
+            "tracker_repo": "owner/repo",
+            "labels": {"ai-feature": "ai-feature"},
+        }],
+        "settings": {"pipeline_timeout_s": 1},
+    }
+    cfg_file = tmp_path / "repos.yaml"
+    cfg_file.write_text(yaml.dump(cfg))
+
+    class FakeFuture:
+        def __init__(self, cancelled_after_cancel):
+            self._cancelled = cancelled_after_cancel
+        def done(self): return False
+        def cancel(self): return self._cancelled
+        def cancelled(self): return self._cancelled
+
+    # Two futures: one that was cancelled (never started), one that was running (can't cancel)
+    cancelled_fut = FakeFuture(cancelled_after_cancel=True)
+    running_fut = FakeFuture(cancelled_after_cancel=False)
+
+    class FakeExecutor:
+        def submit(self, *a, **kw):
+            # First call returns cancelled_fut, second returns running_fut
+            if not hasattr(self, '_count'):
+                self._count = 0
+            self._count += 1
+            return cancelled_fut if self._count == 1 else running_fut
+        def shutdown(self, wait=True, cancel_futures=False): pass
+
+    label_calls = []
+
+    monkeypatch.setattr("watcher._load_pipeline_config", lambda: {})
+    monkeypatch.setattr("watcher._watch_prs", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher._process_resume_queue", lambda *a, **kw: [])
+    monkeypatch.setattr("watcher.ensure_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.get_open_issues",
+                        lambda repo, label: [
+                            {"number": 1, "title": "T1", "body": "", "labels": [], "state": "open", "pull_request": None, "html_url": ""},
+                            {"number": 2, "title": "T2", "body": "", "labels": [], "state": "open", "pull_request": None, "html_url": ""},
+                        ])
+    monkeypatch.setattr("watcher.add_label",
+                        lambda repo, num, lbl: label_calls.append(("add", num, lbl)))
+    monkeypatch.setattr("watcher.remove_label",
+                        lambda repo, num, lbl: label_calls.append(("remove", num, lbl)))
+    monkeypatch.setattr("watcher.ThreadPoolExecutor", lambda **kw: FakeExecutor())
+    monkeypatch.setattr("watcher.as_completed",
+                        lambda fs, timeout=None: (_ for _ in ()).throw(
+                            concurrent.futures.TimeoutError()))
+
+    with caplog.at_level(logging.WARNING, logger="watcher"):
+        watcher.watch(cfg_file, dry_run=False)
+
+    # Only the cancelled future (issue #1) should get label cleanup
+    assert ("remove", 1, "agent-queued") in label_calls, \
+        "Expected agent-queued removed for cancelled future"
+    assert ("add", 1, "agent-failed") in label_calls, \
+        "Expected agent-failed added for cancelled future"
+    # Running future (issue #2) should NOT get label cleanup here (run_pipeline handles it)
+    assert ("remove", 2, "agent-queued") not in label_calls, \
+        "Should not clean up labels for still-running future"
+    assert ("add", 2, "agent-failed") not in label_calls, \
+        "Should not add agent-failed for still-running future"
+    assert any("timed out before starting" in r.message for r in caplog.records), \
+        "Expected per-issue timeout warning in logs"
