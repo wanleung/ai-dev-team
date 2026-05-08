@@ -885,3 +885,77 @@ def test_watch_timeout_cleans_up_labels_for_cancelled_futures(monkeypatch, tmp_p
         "Should not add agent-failed for still-running future"
     assert any("timed out before starting" in r.message for r in caplog.records), \
         "Expected per-issue timeout warning in logs"
+
+
+# ── T1: DLQ integration ───────────────────────────────────────────────────────
+
+def test_run_pipeline_enqueues_to_dlq_on_failure(tmp_path, monkeypatch):
+    """When run_pipeline raises, the DLQ receives an entry."""
+    from pathlib import Path
+    from core.dead_letter import FileDeadLetterQueue, DLQEntry
+
+    dlq_path = tmp_path / "dlq"
+    dlq = FileDeadLetterQueue(dlq_path)
+
+    def fake_dispatch(**kwargs):
+        raise RuntimeError("pipeline failed")
+
+    monkeypatch.setattr("watcher._dispatch", fake_dispatch)
+    monkeypatch.setattr("watcher.add_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.remove_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.post_comment", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.ensure_label", lambda *a, **kw: None)
+
+    import watcher as w
+    try:
+        w.run_pipeline(
+            label="feature-request",
+            tracker_repo="owner/repo",
+            target_repo="owner/repo",
+            issue_number=42,
+            model="gpt-4.1",
+            num_engineers=2,
+            log_file=Path(tmp_path / "log.txt"),
+            logger=logging.getLogger("test"),
+            dlq=dlq,
+        )
+    except Exception:
+        pass  # run_pipeline may re-raise; we just check DLQ
+
+    entries = list(dlq.drain())
+    assert len(entries) == 1
+    assert entries[0].issue_number == 42
+    assert entries[0].tracker_repo == "owner/repo"
+
+
+def test_run_pipeline_no_dlq_enqueue_on_success(tmp_path, monkeypatch):
+    """Successful pipeline does not write to DLQ."""
+    from pathlib import Path
+    from core.dead_letter import FileDeadLetterQueue
+    from types import SimpleNamespace
+
+    dlq_path = tmp_path / "dlq"
+    dlq = FileDeadLetterQueue(dlq_path)
+
+    monkeypatch.setattr("watcher._dispatch", lambda **kw: SimpleNamespace(
+        next_label=None, verdict="success", tests_passed=True, deploy_tests_passed=True
+    ))
+    monkeypatch.setattr("watcher.ensure_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.add_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.remove_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.post_comment", lambda *a, **kw: None)
+
+    import watcher as w
+    w.run_pipeline(
+        label="feature-request",
+        tracker_repo="owner/repo",
+        target_repo="owner/repo",
+        issue_number=1,
+        model="gpt-4.1",
+        num_engineers=2,
+        log_file=Path(tmp_path / "log.txt"),
+        logger=logging.getLogger("test"),
+        dlq=dlq,
+    )
+
+    assert list(dlq.drain()) == []

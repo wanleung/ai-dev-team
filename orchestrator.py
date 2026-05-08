@@ -54,6 +54,7 @@ from test_fix_loop import TestFixLoopMixin
 from tools import builtin_tools, CombinedToolRegistry, MCPToolRegistry
 from agents.token_ledger import TokenLedger, current_stage, get_ledger, set_ledger
 from utils import sanitise as _sanitise
+from core.errors import PipelineError as _PipelineError
 
 log = logging.getLogger(__name__)
 
@@ -330,7 +331,7 @@ class PipelineResult:
     pr_url: Optional[str] = None
     branch: Optional[str] = None
     duration_seconds: float = 0.0
-    errors: list[str] = field(default_factory=list)
+    errors: list["_PipelineError"] = field(default_factory=list)
     completed_stages: list[str] = field(default_factory=list)  # stages that finished OK
     # Q&A clarification fields
     pending_clarification: Optional[dict] = None  # set while waiting for human reply
@@ -389,6 +390,7 @@ class PipelineResult:
             "pr_url": self.pr_url,
             "branch": self.branch,
             "completed_stages": self.completed_stages,
+            "errors": [e.to_dict() for e in self.errors],
             "pending_clarification": self.pending_clarification,
             "clarification_history": self.clarification_history,
             "test_retry_count": self.test_retry_count,
@@ -407,6 +409,19 @@ class PipelineResult:
             "total_cost_usd": self.total_cost_usd,
             "token_usage": self.token_usage,
         }
+
+    def add_error(self, error: "str | _PipelineError") -> None:
+        """Add an error. Accepts a bare string (backwards compat) or a PipelineError."""
+        if isinstance(error, str):
+            self.errors.append(
+                _PipelineError(code="UNKNOWN", stage="unknown", message=error, severity="error")
+            )
+        else:
+            self.errors.append(error)
+
+    def has_fatal(self) -> bool:
+        """Return True if any error has severity='fatal'."""
+        return any(e.severity == "fatal" for e in self.errors)
 
     @classmethod
     def from_dict(cls, data: dict) -> "PipelineResult":
@@ -427,6 +442,16 @@ class PipelineResult:
                     "progress_comment_id",
                     "run_id", "total_cost_usd", "token_usage"]:
             setattr(r, key, data.get(key, getattr(r, key)))
+        # Deserialize errors from list of dicts to list of PipelineError instances.
+        # Handle backward compat: old checkpoints may store errors as plain strings.
+        def _to_pipeline_error(item) -> "_PipelineError":
+            if isinstance(item, _PipelineError):
+                return item
+            if isinstance(item, dict):
+                return _PipelineError(**item)
+            return _PipelineError(code="UNKNOWN", stage="unknown", message=str(item), severity="error")
+
+        r.errors = [_to_pipeline_error(item) for item in data.get("errors", [])]
         return r
 
 
@@ -1062,7 +1087,7 @@ class Orchestrator(TestFixLoopMixin):
 
         gh = self.target_github or self.github
         if gh is None:
-            result.errors.append(
+            result.add_error(
                 "doc_generate requires a GitHub connection but none is available "
                 "(hint: do not use --no-github with the ai-docs pipeline)"
             )
@@ -1137,7 +1162,7 @@ class Orchestrator(TestFixLoopMixin):
         try:
             gh.create_branch(branch)
         except Exception as exc:
-            result.errors.append(f"Branch creation failed: {exc}")
+            result.add_error(f"Branch creation failed: {exc}")
             return
         result.branch = branch
 
@@ -1150,7 +1175,7 @@ class Orchestrator(TestFixLoopMixin):
                 gh.commit_file(path=path, content=content, message=commit_msg, branch=branch)
                 committed.append(path)
             except Exception as exc:
-                result.errors.append(f"Failed to commit {path}: {exc}")
+                result.add_error(f"Failed to commit {path}: {exc}")
 
         if not committed:
             return
@@ -1168,7 +1193,7 @@ class Orchestrator(TestFixLoopMixin):
             result.pr_number = pr.get("number")
             result.pr_url = pr.get("html_url")
         except Exception as exc:
-            result.errors.append(f"PR creation failed: {exc}")
+            result.add_error(f"PR creation failed: {exc}")
 
     def _make_stage_registry(self) -> dict[str, "PipelineStage"]:
         """Build the full registry of all known pipeline stages."""
@@ -2329,7 +2354,7 @@ class Orchestrator(TestFixLoopMixin):
                     self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result))
 
                     if result.errors:
-                        self._tracker.mark_failed(stage.checkpoint_key, result.errors[-1])
+                        self._tracker.mark_failed(stage.checkpoint_key, str(result.errors[-1]))
                         result.progress_comment_id = self._tracker.comment_id
                         self._save_checkpoint(result)
                         return self._finish(result, start_time)
@@ -2472,7 +2497,7 @@ class Orchestrator(TestFixLoopMixin):
                 self._pause_for_clarification(result, "pm", exc.questions)
                 return False
             if result.errors:
-                self._tracker.mark_failed("pm", result.errors[-1])
+                self._tracker.mark_failed("pm", str(result.errors[-1]))
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
@@ -2493,7 +2518,7 @@ class Orchestrator(TestFixLoopMixin):
                 lambda: self._stage_pm_reviewer(result, requirement),
             )
             if result.errors:
-                self._tracker.mark_failed("pm_reviewer", result.errors[-1])
+                self._tracker.mark_failed("pm_reviewer", str(result.errors[-1]))
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
@@ -2537,7 +2562,7 @@ class Orchestrator(TestFixLoopMixin):
                 lambda rn=round_num: self._stage_pm_revision(result, requirement, rn),
             )
             if result.errors:
-                self._tracker.mark_failed(key, result.errors[-1])
+                self._tracker.mark_failed(key, str(result.errors[-1]))
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
@@ -2550,7 +2575,7 @@ class Orchestrator(TestFixLoopMixin):
                 lambda: self._stage_pm_reviewer(result, requirement),
             )
             if result.errors:
-                self._tracker.mark_failed(key, result.errors[-1])
+                self._tracker.mark_failed(key, str(result.errors[-1]))
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
@@ -2634,7 +2659,7 @@ class Orchestrator(TestFixLoopMixin):
                 self._pause_for_clarification(result, "architect", exc.questions)
                 return False
             if result.errors:
-                self._tracker.mark_failed("architect", result.errors[-1])
+                self._tracker.mark_failed("architect", str(result.errors[-1]))
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
@@ -2655,7 +2680,7 @@ class Orchestrator(TestFixLoopMixin):
                 lambda: self._stage_architect_reviewer(result),
             )
             if result.errors:
-                self._tracker.mark_failed("architect_reviewer", result.errors[-1])
+                self._tracker.mark_failed("architect_reviewer", str(result.errors[-1]))
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
@@ -2699,7 +2724,7 @@ class Orchestrator(TestFixLoopMixin):
                 lambda rn=round_num: self._stage_arch_revision(result, rn),
             )
             if result.errors:
-                self._tracker.mark_failed(key, result.errors[-1])
+                self._tracker.mark_failed(key, str(result.errors[-1]))
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
@@ -2712,7 +2737,7 @@ class Orchestrator(TestFixLoopMixin):
                 lambda: self._stage_architect_reviewer(result),
             )
             if result.errors:
-                self._tracker.mark_failed(key, result.errors[-1])
+                self._tracker.mark_failed(key, str(result.errors[-1]))
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
@@ -3415,7 +3440,7 @@ class Orchestrator(TestFixLoopMixin):
                 raise  # handled by run() — do not log as error
             except Exception as exc:
                 error_msg = f"{name} failed: {exc}"
-                result.errors.append(error_msg)
+                result.add_error(error_msg)
                 console.print(f"  ❌ [red]{error_msg}[/red]")
 
     def _build_clarification_context(self, history: list[dict], stage: str) -> str:
@@ -3691,7 +3716,7 @@ class Orchestrator(TestFixLoopMixin):
         if result.total_cost_usd > 0:
             table.add_row("Est. cost", f"${result.total_cost_usd:.4f} USD")
         if result.errors:
-            table.add_row("[red]Errors[/red]", "\n".join(result.errors))
+            table.add_row("[red]Errors[/red]", "\n".join(str(e) for e in result.errors))
 
         console.print(table)
         return result

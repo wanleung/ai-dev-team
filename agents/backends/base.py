@@ -13,6 +13,9 @@ if TYPE_CHECKING:
 
 from agents.token_ledger import current_stage, estimate_tokens, get_ledger
 
+from core.circuit_breaker_registry import get_registry as _get_cb_registry
+from core.circuit_breaker import CircuitOpenError as _CircuitOpenError
+
 import httpx
 from openai import (
     APIConnectionError as _OAIConnError,
@@ -52,6 +55,7 @@ FALLBACK_ERRORS = (
     _OAITimeoutError,
     _OAIServerError,  # covers HTTP 503/502/504 — triggers backend fallback
     _OAIRateLimit,   # 429 quota exhausted — fall through to next backend
+    _CircuitOpenError,  # circuit breaker open — switch to next backend
 )
 
 
@@ -248,6 +252,7 @@ class OpenAICompatibleBackend(LLMBackend):
 
         # The entire stream creation AND iteration is retried as a unit.
         # If a mid-stream error occurs, the request restarts from scratch.
+        # TODO(t1): wrap with circuit breaker (tracked: T1-Task7 follow-up)
         reply = _retry_with_backoff(
             lambda: _collect(
                 self._client.chat.completions.create(
@@ -281,15 +286,18 @@ class OpenAICompatibleBackend(LLMBackend):
             return self._stream_call(messages, run_id=run_id)
         if self._inter_call_delay > 0:
             time.sleep(self._inter_call_delay)
-        response = _retry_with_backoff(
-            lambda: self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.3,
-                **self._extra_body(),
-            ),
-            max_retries=self._max_retries,
-            base_delay=self._retry_delay,
+        cb = _get_cb_registry().get_or_create("backend", self.model)
+        response = cb.call(
+            lambda: _retry_with_backoff(
+                lambda: self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                    **self._extra_body(),
+                ),
+                max_retries=self._max_retries,
+                base_delay=self._retry_delay,
+            )
         )
         content = response.choices[0].message.content or ""
         effective_run_id = run_id if run_id is not None else get_ledger().active_run_id()
@@ -320,6 +328,7 @@ class OpenAICompatibleBackend(LLMBackend):
             self._pre_call()
             if self._inter_call_delay > 0:
                 time.sleep(self._inter_call_delay)
+            # TODO(t1): wrap with circuit breaker (tracked: T1-Task7 follow-up)
             response = _retry_with_backoff(
                 lambda: self._client.chat.completions.create(
                     model=self.model,
@@ -376,6 +385,7 @@ class OpenAICompatibleBackend(LLMBackend):
             "content": "Please provide your final response based on the tool results above.",
         })
         self._pre_call()
+        # TODO(t1): wrap with circuit breaker (tracked: T1-Task7 follow-up)
         response = _retry_with_backoff(
             lambda: self._client.chat.completions.create(
                 model=self.model,

@@ -31,7 +31,7 @@ import time
 import uuid
 from logging_setup import configure_logging, bind_run_id, clear_run_id
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -300,47 +300,82 @@ def post_comment(repo: str, issue_number: int, body: str) -> None:
 # ── Pipeline dispatch ─────────────────────────────────────────────────────────
 
 def run_pipeline(
-    issue: dict,
-    tracker_repo: str,
-    default_target: str | None,
-    label: str,
-    model: str,
-    num_engineers: int,
-    log_dir: Path,
-    dry_run: bool,
-    logger: logging.Logger,
+    issue: dict | None = None,
+    tracker_repo: str = "",
+    default_target: str | None = None,
+    label: str = "",
+    model: str = "",
+    num_engineers: int = 1,
+    log_dir: Path | None = None,
+    dry_run: bool = False,
+    logger: logging.Logger | None = None,
+    *,
+    target_repo: str | None = None,
+    issue_number: int | None = None,
+    log_file: Path | None = None,
+    dlq=None,          # DeadLetterQueue | None
 ) -> bool:
-    """Run the appropriate orchestrator for a single issue. Returns True on success."""
-    issue_number = issue["number"]
-    issue_title = issue["title"]
+    """Run the appropriate orchestrator for a single issue. Returns True on success.
 
-    # Resolve target repo from issue body or fall back to default
-    target_repo = _parse_target_repo(issue.get("body") or "") or default_target or tracker_repo
+    Supports two calling conventions:
+
+    *Old style* (used by ``watch()``):
+        ``run_pipeline(issue, tracker_repo, default_target, label, model,
+        num_engineers, log_dir, dry_run, logger)``
+
+    *New style* (used by tests and direct callers):
+        ``run_pipeline(label=..., tracker_repo=..., target_repo=...,
+        issue_number=..., model=..., num_engineers=..., log_file=...,
+        logger=..., dlq=...)``
+    """
+    # ── Resolve parameters from whichever calling convention is used ──────────
+    if issue is not None:
+        _issue_number: int = issue["number"]
+        _issue_title: str = issue.get("title", "")
+        _target_repo: str = (
+            _parse_target_repo(issue.get("body") or "")
+            or default_target
+            or tracker_repo
+        )
+    else:
+        if issue_number is None:
+            raise ValueError("Either 'issue' dict or 'issue_number' must be provided")
+        _issue_number = issue_number
+        _issue_title = f"issue #{issue_number}"
+        _target_repo = target_repo or tracker_repo
+
+    if logger is None:
+        logger = logging.getLogger("watcher")
 
     logger.info(
         "  → Issue #%d: %r | label=%s | target=%s",
-        issue_number, issue_title, label, target_repo,
+        _issue_number, _issue_title, label, _target_repo,
     )
 
     if dry_run:
         logger.info("    [dry-run] Would run pipeline for label=%s", label)
         return True
 
-    # Set up per-issue log file
-    log_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    issue_log = log_dir / f"issue-{issue_number}-{ts}.log"
+    # ── Resolve log file path ─────────────────────────────────────────────────
+    if log_file is not None:
+        issue_log: Path = log_file
+    elif log_dir is not None:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        issue_log = log_dir / f"issue-{_issue_number}-{ts}.log"
+    else:
+        issue_log = Path(f"logs/issue-{_issue_number}.log")
 
     try:
         # Mark as running
-        add_label(tracker_repo, issue_number, LABEL_RUNNING)
-        remove_label(tracker_repo, issue_number, LABEL_QUEUED)
+        add_label(tracker_repo, _issue_number, LABEL_RUNNING)
+        remove_label(tracker_repo, _issue_number, LABEL_QUEUED)
 
         result = _dispatch(
             label=label,
             tracker_repo=tracker_repo,
-            target_repo=target_repo,
-            issue_number=issue_number,
+            target_repo=_target_repo,
+            issue_number=_issue_number,
             model=model,
             num_engineers=num_engineers,
             log_file=issue_log,
@@ -358,18 +393,18 @@ def run_pipeline(
         if next_label:
             # Chain: remove agent-complete, apply the follow-up trigger label so
             # the watcher picks up the issue again on the next cycle.
-            remove_label(tracker_repo, issue_number, LABEL_RUNNING)
+            remove_label(tracker_repo, _issue_number, LABEL_RUNNING)
             # Remove any previous terminal labels so SKIP_LABELS won't block it
             for stale in (LABEL_COMPLETE, LABEL_FAILED):
                 try:
-                    remove_label(tracker_repo, issue_number, stale)
+                    remove_label(tracker_repo, _issue_number, stale)
                 except Exception:  # noqa: BLE001
-                    logger.debug("Could not remove stale label %r from #%d", stale, issue_number, exc_info=True)
+                    logger.debug("Could not remove stale label %r from #%d", stale, _issue_number, exc_info=True)
             ensure_label(tracker_repo, next_label, "c5def5")
-            add_label(tracker_repo, issue_number, next_label)
+            add_label(tracker_repo, _issue_number, next_label)
             post_comment(
                 tracker_repo,
-                issue_number,
+                _issue_number,
                 f"## 🔁 Pipeline Chaining → `{next_label}`\n\n"
                 f"The pipeline completed but follow-up work was detected "
                 f"(verdict: `{result.verdict or 'n/a'}`, "
@@ -381,30 +416,54 @@ def run_pipeline(
             )
             logger.info(
                 "    🔁 Issue #%d chained → label=%s (verdict=%s, tests_passed=%s)",
-                issue_number, next_label, result.verdict, result.tests_passed,
+                _issue_number, next_label, result.verdict, result.tests_passed,
             )
         else:
-            add_label(tracker_repo, issue_number, LABEL_COMPLETE)
-            remove_label(tracker_repo, issue_number, LABEL_RUNNING)
-            logger.info("    ✅ Issue #%d complete", issue_number)
+            add_label(tracker_repo, _issue_number, LABEL_COMPLETE)
+            remove_label(tracker_repo, _issue_number, LABEL_RUNNING)
+            logger.info("    ✅ Issue #%d complete", _issue_number)
 
         return True
 
     except Exception as exc:  # noqa: BLE001
         _token = os.environ.get("GITHUB_TOKEN", "")
-        logger.error("    ❌ Issue #%d failed: %s", issue_number, _sanitise(str(exc), _token), exc_info=True)
+        logger.error("    ❌ Issue #%d failed: %s", _issue_number, _sanitise(str(exc), _token), exc_info=True)
         try:
-            add_label(tracker_repo, issue_number, LABEL_FAILED)
-            remove_label(tracker_repo, issue_number, LABEL_RUNNING)
+            add_label(tracker_repo, _issue_number, LABEL_FAILED)
+            remove_label(tracker_repo, _issue_number, LABEL_RUNNING)
             post_comment(
                 tracker_repo,
-                issue_number,
+                _issue_number,
                 f"## ❌ Agent Pipeline Failed\n\n```\n{_sanitise(str(exc), _token)}\n```\n\n"
                 f"Log: `{issue_log}`\n\nRemove the `{LABEL_FAILED}` label and re-label "
                 f"the issue to retry.",
             )
         except Exception:  # noqa: BLE001
-            logger.debug("Could not update labels/comment for #%d during failure cleanup", issue_number, exc_info=True)
+            logger.debug("Could not update labels/comment for #%d during failure cleanup", _issue_number, exc_info=True)
+        # ── Enqueue to DLQ for later retry ────────────────────────────────────
+        if dlq is not None:
+            from core.dead_letter import DLQEntry
+            from core.errors import PipelineError
+            _dlq_entry = DLQEntry(
+                id=str(uuid.uuid4()),
+                issue_number=_issue_number,
+                tracker_repo=tracker_repo,
+                target_repo=_target_repo,
+                label=label,
+                model=model,
+                num_engineers=num_engineers,
+                failed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                error=PipelineError(
+                    code="AGENT_CRASH",
+                    stage="pipeline",
+                    message=_sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")),
+                    severity="fatal",
+                ).to_dict(),
+            )
+            try:
+                dlq.enqueue(_dlq_entry)
+            except Exception as _dlq_exc:  # noqa: BLE001
+                logger.warning("Could not enqueue to DLQ: %s", _dlq_exc)
         return False
 
 
@@ -1362,6 +1421,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--issue", type=int, help="(--once mode) issue number")
     parser.add_argument("--label", help="(--once mode) GitHub label that triggered the pipeline")
 
+    parser.add_argument(
+        "--retry-dlq",
+        action="store_true",
+        default=False,
+        help="Drain the dead-letter queue and retry failed pipeline tasks.",
+    )
+
     sub = parser.add_subparsers(dest="command")
     repo_p = sub.add_parser("repo", help="Manage repos-available / repos-enabled")
     repo_sub = repo_p.add_subparsers(dest="repo_command")
@@ -1443,6 +1509,46 @@ def main() -> None:
     raw = load_watcher_config(config_path)
     log_dir = Path(config_path.parent / raw.get("settings", {}).get("log_dir", "logs/watcher"))
     logger = _setup_logging(log_dir)
+
+    # ── --retry-dlq: drain dead-letter queue and retry failed tasks ──────────
+    if args.retry_dlq:
+        from core.dead_letter import build_dlq
+        pipeline_cfg = _load_pipeline_config()
+        rel_cfg = pipeline_cfg.get("reliability") or {}
+        dlq_cfg_raw = rel_cfg.get("dead_letter", {})
+        from config_schema import DLQConfig
+        dlq_cfg = DLQConfig.model_validate(dlq_cfg_raw) if dlq_cfg_raw else DLQConfig()
+        dlq = build_dlq(dlq_cfg)
+        retried = 0
+        failed = 0
+        for entry in dlq.drain():
+            logger.info("Retrying DLQ entry: issue #%d (%s)", entry.issue_number, entry.tracker_repo)
+            try:
+                ok = run_pipeline(
+                    label=entry.label,
+                    tracker_repo=entry.tracker_repo,
+                    target_repo=entry.target_repo or entry.tracker_repo,
+                    issue_number=entry.issue_number,
+                    model=entry.model,
+                    num_engineers=entry.num_engineers,
+                    log_file=log_dir / f"dlq_retry_{entry.issue_number}.log",
+                    logger=logger,
+                    # Intentionally no dlq= to prevent re-enqueue loops
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("DLQ retry failed for issue #%d: %s", entry.issue_number, exc)
+                dlq.nack(entry.id)
+                failed += 1
+            else:
+                if ok:
+                    dlq.ack(entry.id)
+                    retried += 1
+                else:
+                    logger.warning("DLQ retry returned failure for issue #%d", entry.issue_number)
+                    dlq.nack(entry.id)
+                    failed += 1
+        logger.info("DLQ drain complete: %d retried, %d failed", retried, failed)
+        sys.exit(0)
 
     if LOCK_FILE.exists():
         age = time.time() - LOCK_FILE.stat().st_mtime

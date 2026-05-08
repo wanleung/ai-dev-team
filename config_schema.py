@@ -6,10 +6,10 @@ Usage:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── config.yaml models ──────────────────────────────────────────────────────
@@ -55,6 +55,108 @@ class OllamaConfig(BaseModel):
     stream: bool = True
 
 
+# ── reliability models ────────────────────────────────────────────────────────
+
+class CircuitBreakerScopeConfig(BaseModel):
+    """Configuration for a single circuit-breaker scope (agent, repo, or backend)."""
+
+    model_config = {"extra": "forbid"}
+
+    threshold: int = 5
+    recovery_timeout_s: int = 60
+
+
+class CircuitBreakerConfig(BaseModel):
+    """Top-level circuit-breaker configuration with per-scope overrides."""
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = False
+    per_agent: CircuitBreakerScopeConfig = Field(
+        default_factory=CircuitBreakerScopeConfig
+    )
+    per_repo: CircuitBreakerScopeConfig = Field(
+        default_factory=lambda: CircuitBreakerScopeConfig(threshold=3, recovery_timeout_s=120)
+    )
+    per_backend: CircuitBreakerScopeConfig = Field(
+        default_factory=lambda: CircuitBreakerScopeConfig(threshold=10, recovery_timeout_s=300)
+    )
+
+
+class DLQFileConfig(BaseModel):
+    """Configuration for the file-backed dead-letter queue."""
+
+    model_config = {"extra": "forbid"}
+
+    path: str = "workspace/dlq"
+
+
+class DLQRedisConfig(BaseModel):
+    """Configuration for the Redis-backed dead-letter queue."""
+
+    model_config = {"extra": "forbid"}
+
+    url: str = "redis://localhost:6379"
+    key: str = "ai-swhouse:dlq"
+    ttl_s: int = 604800
+
+
+class DLQSQSConfig(BaseModel):
+    """Configuration for the AWS SQS-backed dead-letter queue."""
+
+    model_config = {"extra": "forbid"}
+
+    queue_url: str
+    region: str = "eu-west-1"
+
+
+class DLQConfig(BaseModel):
+    """Dead-letter queue configuration — stores failed pipeline jobs for retry."""
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = False
+    backend: Literal["file", "redis", "sqs"] = "file"
+    max_attempts: int = 3
+    file: DLQFileConfig = Field(default_factory=DLQFileConfig)
+    redis: Optional[DLQRedisConfig] = None
+    sqs: Optional[DLQSQSConfig] = None
+
+    @model_validator(mode="after")
+    def _backend_config_present(self) -> "DLQConfig":
+        if self.backend == "redis" and self.redis is None:
+            raise ValueError("backend='redis' requires a 'redis:' config block")
+        if self.backend == "sqs" and self.sqs is None:
+            raise ValueError("backend='sqs' requires a 'sqs:' config block")
+        return self
+
+
+class DegradationConfig(BaseModel):
+    """Graceful-degradation policy — controls how the pipeline behaves under pressure."""
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = False
+    reduce_engineers: bool = True
+    fallback_model: bool = True
+    skip_optional_stages: bool = True
+    optional_stages: List[str] = Field(
+        default_factory=lambda: ["deploy_test", "documentation"]
+    )
+
+
+class ReliabilityConfig(BaseModel):
+    """Container for all reliability sub-configurations."""
+
+    model_config = {"extra": "forbid"}
+
+    circuit_breaker: CircuitBreakerConfig = Field(
+        default_factory=CircuitBreakerConfig
+    )
+    dead_letter: DLQConfig = Field(default_factory=DLQConfig)
+    degradation: DegradationConfig = Field(default_factory=DegradationConfig)
+
+
 class AppConfig(BaseModel):
     model_config = {"extra": "forbid"}   # unknown top-level keys are errors
 
@@ -72,6 +174,7 @@ class AppConfig(BaseModel):
     framework_docs: Optional[Dict[str, Any]] = None
     rag: Optional[Dict[str, Any]] = None
     project: Optional[Dict[str, Any]] = None
+    reliability: Optional[ReliabilityConfig] = None
 
 
 # ── repos.yaml models ────────────────────────────────────────────────────────
