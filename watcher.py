@@ -266,7 +266,8 @@ def _collect_issue_prior_context(tracker_gh: "GitHubClient", issue_number: int) 
     _MAX_CHARS = 12_000
     try:
         comments = tracker_gh.get_issue_comments(issue_number)
-    except Exception:
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not fetch comments for #%d", issue_number, exc_info=True)
         return ""
 
     parts: list[str] = []
@@ -324,16 +325,16 @@ def run_pipeline(
         logger.info("    [dry-run] Would run pipeline for label=%s", label)
         return True
 
-    # Mark as running
-    add_label(tracker_repo, issue_number, LABEL_RUNNING)
-    remove_label(tracker_repo, issue_number, LABEL_QUEUED)
-
     # Set up per-issue log file
     log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     issue_log = log_dir / f"issue-{issue_number}-{ts}.log"
 
     try:
+        # Mark as running
+        add_label(tracker_repo, issue_number, LABEL_RUNNING)
+        remove_label(tracker_repo, issue_number, LABEL_QUEUED)
+
         result = _dispatch(
             label=label,
             tracker_repo=tracker_repo,
@@ -361,8 +362,8 @@ def run_pipeline(
             for stale in (LABEL_COMPLETE, LABEL_FAILED):
                 try:
                     remove_label(tracker_repo, issue_number, stale)
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001
+                    logger.debug("Could not remove stale label %r from #%d", stale, issue_number, exc_info=True)
             ensure_label(tracker_repo, next_label, "c5def5")
             add_label(tracker_repo, issue_number, next_label)
             post_comment(
@@ -390,16 +391,19 @@ def run_pipeline(
 
     except Exception as exc:  # noqa: BLE001
         _token = os.environ.get("GITHUB_TOKEN", "")
-        logger.error("    ❌ Issue #%d failed: %s", issue_number, _sanitise(str(exc), _token))
-        add_label(tracker_repo, issue_number, LABEL_FAILED)
-        remove_label(tracker_repo, issue_number, LABEL_RUNNING)
-        post_comment(
-            tracker_repo,
-            issue_number,
-            f"## ❌ Agent Pipeline Failed\n\n```\n{_sanitise(str(exc), _token)}\n```\n\n"
-            f"Log: `{issue_log}`\n\nRemove the `{LABEL_FAILED}` label and re-label "
-            f"the issue to retry.",
-        )
+        logger.error("    ❌ Issue #%d failed: %s", issue_number, _sanitise(str(exc), _token), exc_info=True)
+        try:
+            add_label(tracker_repo, issue_number, LABEL_FAILED)
+            remove_label(tracker_repo, issue_number, LABEL_RUNNING)
+            post_comment(
+                tracker_repo,
+                issue_number,
+                f"## ❌ Agent Pipeline Failed\n\n```\n{_sanitise(str(exc), _token)}\n```\n\n"
+                f"Log: `{issue_log}`\n\nRemove the `{LABEL_FAILED}` label and re-label "
+                f"the issue to retry.",
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Could not update labels/comment for #%d during failure cleanup", issue_number, exc_info=True)
         return False
 
 
@@ -1078,8 +1082,13 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
                     f"[Watcher] Could not fetch issue #{issue_number} from any repo — "
                     f"keeping trigger for retry"
                 )
-        except Exception as exc:
-            logger.warning(f"[Watcher] Could not process resume trigger {trigger_path}: {_sanitise(str(exc), os.environ.get('GITHUB_TOKEN', ''))}")
+        except (OSError, ValueError, json.JSONDecodeError, KeyError) as exc:
+            _token = os.environ.get("GITHUB_TOKEN", "")
+            logger.warning(
+                "Could not load watcher entry %s: %s",
+                trigger_path, _sanitise(str(exc), _token),
+                exc_info=True,
+            )
     
     return tasks
 
@@ -1211,7 +1220,11 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                     ))
                     logger.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
         except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to fetch issues from %s: %s", tracker_repo, _sanitise(str(exc), github_token))
+            logger.error(
+                "Failed to fetch issues from %s: %s",
+                tracker_repo, _sanitise(str(exc), github_token),
+                exc_info=True,
+            )
 
     try:
         if not tasks:

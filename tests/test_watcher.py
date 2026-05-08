@@ -677,3 +677,29 @@ def test_watcher_task_typeddict_fields():
         "num_engineers": 2,
     }
     assert task["tracker_repo"] == "owner/repo"
+
+
+def test_run_pipeline_handler_logs_exc_info(caplog, monkeypatch, tmp_path):
+    """run_pipeline() outer handler captures traceback via exc_info=True."""
+    import logging
+
+    monkeypatch.setattr(watcher, "add_label", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    issue = {"number": 99, "title": "test issue", "body": ""}
+    with caplog.at_level(logging.ERROR, logger="watcher"):
+        result = watcher.run_pipeline(
+            issue=issue,
+            tracker_repo="owner/repo",
+            default_target=None,
+            label="ai-feature",
+            model="gpt-4.1",
+            num_engineers=2,
+            log_dir=tmp_path,
+            dry_run=False,
+            logger=logging.getLogger("watcher"),
+        )
+
+    assert result is False, "run_pipeline should return False on failure"
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert error_records, "Expected at least one ERROR log"
+    assert error_records[0].exc_info is not None, "exc_info must be set so traceback is captured"
