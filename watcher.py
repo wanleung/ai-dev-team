@@ -70,11 +70,13 @@ _log = logging.getLogger("watcher")
 
 
 def _is_retryable_http_error(exc: BaseException) -> bool:
-    """Return True if exc is an HTTPError with a retryable status code."""
-    if not isinstance(exc, requests.HTTPError):
-        return False
-    resp = getattr(exc, "response", None)
-    return resp is not None and resp.status_code in {429, 500, 502, 503, 504}
+    """Return True if exc is a transient network or HTTP error worth retrying."""
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        resp = getattr(exc, "response", None)
+        return resp is not None and resp.status_code in {429, 500, 502, 503, 504}
+    return False
 
 
 _retry_github = retry(
@@ -99,13 +101,30 @@ def _gh_headers() -> dict:
 
 @_retry_github
 def ensure_label(repo: str, name: str, colour: str) -> None:
-    """Create a label if it doesn't already exist."""
+    """Create a label if it doesn't already exist (idempotent — tolerates 422)."""
     url = f"https://api.github.com/repos/{repo}/labels"
     existing = requests.get(url, headers=_gh_headers(), timeout=10)
     existing.raise_for_status()
-    names = {l["name"] for l in existing.json()}
+    names = {lbl["name"] for lbl in existing.json()}
     if name not in names:
-        resp = requests.post(url, headers=_gh_headers(), json={"name": name, "color": colour}, timeout=10)
+        resp = requests.post(
+            url,
+            headers=_gh_headers(),
+            json={"name": name, "color": colour},
+            timeout=10,
+        )
+        if resp.status_code == 422:
+            # GitHub returns 422 for "already exists" (race) AND for validation errors.
+            # Only treat it as an idempotent no-op when the error code indicates a duplicate.
+            try:
+                body = resp.json() if resp.content else {}
+            except ValueError:
+                body = {}
+            errors = body.get("errors", [])
+            if any(e.get("code") == "already_exists" for e in errors):
+                _log.debug("ensure_label: %s already exists in %s (concurrent create)", name, repo)
+                return
+            resp.raise_for_status()  # real validation failure — propagate
         resp.raise_for_status()
 
 

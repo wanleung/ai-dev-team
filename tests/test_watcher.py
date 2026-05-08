@@ -13,7 +13,7 @@ import yaml
 import requests
 
 import watcher
-from watcher import _dispatch, watch, _run_pr_revision
+from watcher import _dispatch, watch, _run_pr_revision, _is_retryable_http_error, ensure_label
 
 
 # ── Shared fixture — prevent _dispatch from reading real config.yaml ──────────
@@ -534,3 +534,76 @@ def test_post_comment_raises_on_503(monkeypatch):
     with patch("watcher.requests.post", return_value=resp):
         with pytest.raises(requests.HTTPError):
             watcher.post_comment("owner/repo", 42, "hello")
+
+
+# ── HP-1: retry predicate and ensure_label 422 race ──────────────────────────
+
+def test_retryable_on_timeout():
+    exc = requests.Timeout("timed out")
+    assert _is_retryable_http_error(exc) is True
+
+
+def test_retryable_on_connection_error():
+    exc = requests.ConnectionError("connection refused")
+    assert _is_retryable_http_error(exc) is True
+
+
+def test_retryable_on_429():
+    resp = MagicMock()
+    resp.status_code = 429
+    exc = requests.HTTPError(response=resp)
+    assert _is_retryable_http_error(exc) is True
+
+
+def test_not_retryable_on_404():
+    resp = MagicMock()
+    resp.status_code = 404
+    exc = requests.HTTPError(response=resp)
+    assert _is_retryable_http_error(exc) is False
+
+
+def test_ensure_label_idempotent_on_422():
+    """ensure_label must not raise when POST returns 422 with already_exists code."""
+    get_resp = MagicMock()
+    get_resp.raise_for_status = MagicMock()
+    get_resp.json.return_value = []  # label absent in GET
+
+    post_resp = MagicMock()
+    post_resp.status_code = 422
+    post_resp.content = b'{"errors": [{"code": "already_exists"}]}'
+    post_resp.json.return_value = {"errors": [{"code": "already_exists"}]}
+    post_resp.raise_for_status.side_effect = requests.HTTPError(response=post_resp)
+
+    with patch("watcher.requests.get", return_value=get_resp), \
+         patch("watcher.requests.post", return_value=post_resp):
+        ensure_label("owner/repo", "ai-feature", "0075ca")  # must not raise
+
+
+def test_ensure_label_raises_on_422_validation_error():
+    """ensure_label must propagate 422 that is NOT an already_exists race."""
+    get_resp = MagicMock()
+    get_resp.raise_for_status = MagicMock()
+    get_resp.json.return_value = []
+
+    post_resp = MagicMock()
+    post_resp.status_code = 422
+    post_resp.content = b'{"errors": [{"code": "invalid"}]}'
+    post_resp.json.return_value = {"errors": [{"code": "invalid"}]}
+    post_resp.raise_for_status.side_effect = requests.HTTPError(response=post_resp)
+
+    with patch("watcher.requests.get", return_value=get_resp), \
+         patch("watcher.requests.post", return_value=post_resp):
+        with pytest.raises(requests.HTTPError):
+            ensure_label("owner/repo", "ai-feature", "bad-colour")
+
+
+def test_ensure_label_skips_post_when_label_exists():
+    """ensure_label must not POST if the label already exists in the GET response."""
+    get_resp = MagicMock()
+    get_resp.raise_for_status = MagicMock()
+    get_resp.json.return_value = [{"name": "ai-feature"}]  # already present
+
+    with patch("watcher.requests.get", return_value=get_resp) as mock_get, \
+         patch("watcher.requests.post") as mock_post:
+        ensure_label("owner/repo", "ai-feature", "0075ca")
+        mock_post.assert_not_called()
