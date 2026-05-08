@@ -921,7 +921,7 @@ def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_
                     data = json.load(f)
                 result = PipelineResult.from_dict(data)
             except Exception as exc:
-                logger.warning(f"[Watcher] Issue #{issue_number}: could not load checkpoint: {exc}")
+                logger.warning(f"[Watcher] Issue #{issue_number}: could not load checkpoint: {_sanitise(str(exc), github_token)}")
                 continue
 
             if not result.pending_clarification:
@@ -938,7 +938,7 @@ def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_
             try:
                 comments = _get_issue_comments(tracker_repo, issue_number, github_token)
             except Exception as exc:
-                logger.warning(f"[Watcher] Issue #{issue_number}: could not fetch comments: {exc}")
+                logger.warning(f"[Watcher] Issue #{issue_number}: could not fetch comments: {_sanitise(str(exc), github_token)}")
                 continue
 
             answers = extract_answers_from_comments(comments, question_comment_id, bot_login)
@@ -969,7 +969,7 @@ def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_
                 remove_label(tracker_repo, issue_number, LABEL_WAITING)
                 add_label(tracker_repo, issue_number, LABEL_RUNNING)
             except Exception as exc:
-                logger.warning(f"[Watcher] Issue #{issue_number}: could not update labels: {exc}")
+                logger.warning(f"[Watcher] Issue #{issue_number}: could not update labels: {_sanitise(str(exc), github_token)}")
 
             # Trigger re-dispatch by appending to a simple queue file (watcher picks it up next cycle)
             _trigger_resume(issue_number, issue_title, result.requirement, workspace_dir)
@@ -1047,7 +1047,7 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
                         task_created = True
                         break
                 except Exception as exc:
-                    logger.debug(f"Could not fetch issue #{issue_number} from {tracker_repo}: {exc}")
+                    logger.debug("Could not fetch issue #%d from %s: %s", issue_number, tracker_repo, _sanitise(str(exc), token))
                     continue
 
             # Only delete trigger after task successfully created; keep for retry otherwise
@@ -1059,7 +1059,7 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
                     f"keeping trigger for retry"
                 )
         except Exception as exc:
-            logger.warning(f"[Watcher] Could not process resume trigger {trigger_path}: {exc}")
+            logger.warning(f"[Watcher] Could not process resume trigger {trigger_path}: {_sanitise(str(exc), os.environ.get('GITHUB_TOKEN', ''))}")
     
     return tasks
 
@@ -1240,7 +1240,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                 try:
                     fut.result()
                 except Exception as exc:  # noqa: BLE001
-                    logger.error("Unhandled error for issue #%d: %s", t["issue"]["number"], exc)
+                    logger.error("Unhandled error for issue #%d: %s", t["issue"]["number"], _sanitise(str(exc), github_token))
         finally:
             for ex in repo_executors:
                 ex.shutdown(wait=True)
@@ -1311,7 +1311,7 @@ def run_once(repo: str, issue: int, label: str, logger: logging.Logger) -> int:
         logger.info("✅ Issue #%d complete", issue)
         return 0
     except Exception as exc:  # noqa: BLE001
-        logger.error("❌ Issue #%d failed: %s", issue, exc)
+        logger.error("❌ Issue #%d failed: %s", issue, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
         return 1
 
 

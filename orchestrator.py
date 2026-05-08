@@ -895,17 +895,16 @@ class Orchestrator(TestFixLoopMixin):
         with open(config_path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         # Validate schema — raises pydantic.ValidationError with field-level detail on bad config
-        try:
-            _AppConfig.model_validate(cfg)
-        except _PydanticValidationError as exc:
-            raise ValueError(f"Invalid config.yaml: {exc}") from exc
-
-        # Load optional local override config (never committed)
+        # Validate AFTER merging local override so the effective config is checked
         local_path = Path(config_path).parent / "config.local.yaml"
         if local_path.exists():
             with open(local_path, encoding="utf-8") as lf:
                 local_cfg = yaml.safe_load(lf) or {}
             cfg = _deep_merge(cfg, local_cfg)
+        try:
+            _AppConfig.model_validate(cfg)
+        except _PydanticValidationError as exc:
+            raise ValueError(f"Invalid config ({config_path}): {exc}") from exc
 
         llm = cfg.get("llm", {})
         gh = cfg.get("github", {})
