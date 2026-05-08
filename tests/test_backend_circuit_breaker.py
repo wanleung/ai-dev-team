@@ -78,3 +78,88 @@ def test_open_circuit_skips_api_call():
         backend.call([{"role": "user", "content": "hello"}])
 
     mock_client.chat.completions.create.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# New tests: _stream_call and call_with_tools also trip the breaker
+# ---------------------------------------------------------------------------
+
+def _make_backend(model: str):
+    """Create a bare OpenAICompatibleBackend instance without calling __init__."""
+    from agents.backends.base import OpenAICompatibleBackend
+
+    backend = OpenAICompatibleBackend.__new__(OpenAICompatibleBackend)
+    backend.model = model
+    backend._stream = False
+    backend._inter_call_delay = 0
+    backend._max_retries = 1
+    backend._retry_delay = 0.0
+    backend._client = MagicMock()
+    return backend
+
+
+def test_stream_call_trips_circuit_after_threshold():
+    """_stream_call should trip the circuit breaker after threshold failures."""
+    from unittest.mock import patch
+    from agents.backends.base import _CircuitOpenError
+    from core.circuit_breaker_registry import CircuitBreakerRegistry
+
+    model = "stream-cb-test-model"
+    backend = _make_backend(model)
+    backend._client.chat.completions.create.side_effect = ConnectionError("timeout")
+
+    scope = CircuitBreakerScopeConfig(threshold=2, recovery_timeout_s=3600)
+    cfg = CircuitBreakerConfig(enabled=True, per_backend=scope,
+                               per_agent=scope, per_repo=scope)
+    registry = CircuitBreakerRegistry(cfg)
+
+    with patch("agents.backends.base._get_cb_registry", return_value=registry):
+        # First two calls should raise the underlying ConnectionError
+        for _ in range(2):
+            with pytest.raises(ConnectionError):
+                backend._stream_call([{"role": "user", "content": "hi"}])
+
+        # Third call — circuit is open, should raise CircuitOpenError
+        with pytest.raises(_CircuitOpenError):
+            backend._stream_call([{"role": "user", "content": "hi"}])
+
+        # Verify no further API calls are made when circuit is open
+        call_count_before = backend._client.chat.completions.create.call_count
+        with pytest.raises(_CircuitOpenError):
+            backend._stream_call([{"role": "user", "content": "open circuit"}])
+        assert backend._client.chat.completions.create.call_count == call_count_before
+
+
+def test_call_with_tools_trips_circuit_after_threshold():
+    """call_with_tools should trip the circuit breaker after threshold failures."""
+    from unittest.mock import patch
+    from agents.backends.base import _CircuitOpenError
+    from core.circuit_breaker_registry import CircuitBreakerRegistry
+
+    model = "tools-cb-test-model"
+    backend = _make_backend(model)
+    backend._client.chat.completions.create.side_effect = ConnectionError("timeout")
+
+    tools = MagicMock()
+    tools.schemas = []
+
+    scope = CircuitBreakerScopeConfig(threshold=2, recovery_timeout_s=3600)
+    cfg = CircuitBreakerConfig(enabled=True, per_backend=scope,
+                               per_agent=scope, per_repo=scope)
+    registry = CircuitBreakerRegistry(cfg)
+
+    with patch("agents.backends.base._get_cb_registry", return_value=registry):
+        # First two calls should raise the underlying ConnectionError
+        for _ in range(2):
+            with pytest.raises(ConnectionError):
+                backend.call_with_tools([{"role": "user", "content": "hi"}], tools)
+
+        # Third call — circuit is open, should raise CircuitOpenError
+        with pytest.raises(_CircuitOpenError):
+            backend.call_with_tools([{"role": "user", "content": "hi"}], tools)
+
+        # Verify no further API calls are made when circuit is open
+        call_count_before = backend._client.chat.completions.create.call_count
+        with pytest.raises(_CircuitOpenError):
+            backend.call_with_tools([{"role": "user", "content": "open circuit"}], tools)
+        assert backend._client.chat.completions.create.call_count == call_count_before
