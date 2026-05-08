@@ -1,0 +1,20 @@
+tracker_repo: wanleung/custom-blog
+default_target: ~
+parallel_issues: 2
+labels:
+  ai-feature: tdd
+  ai-fix: ai-smart-fix
+  ai-docs: ai-docs
+update_branch: true
+enabled: true
+
+settings:
+  watch_prs: true
+  pr_fix_label: "ai-fix"
+  pr_failure_pattern: "❌|FAILED|tests? failed|test suite failed"
+  max_pr_retries: 3
+  watch_draft_prs: false
+  pipeline:
+    chaining:
+      on_test_failure: "ai-fix"
+      on_review_issues: "ai-fix"

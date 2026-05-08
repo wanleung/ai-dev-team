@@ -1,0 +1,16 @@
+# Built-in feature pipeline — label: ai-feature
+# Mirrors the original Orchestrator default sequence.
+stages:
+  - pm
+  - pm_reviewer
+  - architect
+  - architect_reviewer
+  - qa_planner
+  - qa_engineer
+  - tier_review
+  - junior_engineer
+  - senior_engineer
+  - test_fix
+  - reviewer
+  - deploy_tester
+  - deploy_fix
