@@ -30,7 +30,7 @@ import threading
 import time
 import uuid
 from logging_setup import configure_logging, bind_run_id, clear_run_id
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -1280,15 +1280,60 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                     )
                     futures_to_task[fut] = t
 
-            for fut in as_completed(futures_to_task):
-                t = futures_to_task[fut]
-                try:
-                    fut.result()
-                except Exception as exc:  # noqa: BLE001
-                    logger.error("Unhandled error for issue #%d: %s", t["issue"]["number"], _sanitise(str(exc), github_token))
+            pipeline_timeout_s = int(global_settings.get("pipeline_timeout_s") or 3600)
+
+            try:
+                for fut in as_completed(futures_to_task, timeout=pipeline_timeout_s):
+                    t = futures_to_task[fut]
+                    try:
+                        fut.result()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error(
+                            "Unhandled error for issue #%d: %s",
+                            t["issue"]["number"],
+                            _sanitise(str(exc), github_token),
+                            exc_info=True,
+                        )
+            except FuturesTimeoutError:
+                hung = [
+                    f"#{futures_to_task[f]['issue']['number']}"
+                    for f in futures_to_task
+                    if not f.done()
+                ]
+                logger.warning(
+                    "Pipeline timeout (%ds) exceeded — cancelling %d hung pipeline(s): %s",
+                    pipeline_timeout_s, len(hung), ", ".join(hung),
+                )
+                for f in futures_to_task:
+                    f.cancel()
+                # Clean up labels for futures that were cancelled before they started running.
+                # Futures that were already running have their own label lifecycle in run_pipeline().
+                for f in futures_to_task:
+                    if f.cancelled():
+                        t = futures_to_task[f]
+                        issue_number = t["issue"]["number"]
+                        tracker_repo = t["tracker_repo"]
+                        logger.warning(
+                            "Issue #%d timed out before starting — marking as failed",
+                            issue_number,
+                        )
+                        try:
+                            remove_label(tracker_repo, issue_number, LABEL_QUEUED)
+                        except Exception:  # noqa: BLE001
+                            logger.warning(
+                                "Could not remove %s for timed-out issue #%d",
+                                LABEL_QUEUED, issue_number, exc_info=True,
+                            )
+                        try:
+                            add_label(tracker_repo, issue_number, LABEL_FAILED)
+                        except Exception:  # noqa: BLE001
+                            logger.warning(
+                                "Could not add %s for timed-out issue #%d",
+                                LABEL_FAILED, issue_number, exc_info=True,
+                            )
         finally:
             for ex in repo_executors:
-                ex.shutdown(wait=True)
+                ex.shutdown(wait=False, cancel_futures=True)
     finally:
         clear_run_id()
 
