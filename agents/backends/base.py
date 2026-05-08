@@ -252,19 +252,21 @@ class OpenAICompatibleBackend(LLMBackend):
 
         # The entire stream creation AND iteration is retried as a unit.
         # If a mid-stream error occurs, the request restarts from scratch.
-        # TODO(t1): wrap with circuit breaker (tracked: T1-Task7 follow-up)
-        reply = _retry_with_backoff(
-            lambda: _collect(
-                self._client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=0.3,
-                    stream=True,
-                    **self._extra_body(),
-                )
-            ),
-            max_retries=self._max_retries,
-            base_delay=self._retry_delay,
+        cb = _get_cb_registry().get_or_create("backend", self.model)
+        reply = cb.call(
+            lambda: _retry_with_backoff(
+                lambda: _collect(
+                    self._client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=0.3,
+                        stream=True,
+                        **self._extra_body(),
+                    )
+                ),
+                max_retries=self._max_retries,
+                base_delay=self._retry_delay,
+            )
         )
         effective_run_id = run_id if run_id is not None else get_ledger().active_run_id()
         if effective_run_id is not None:
@@ -320,6 +322,7 @@ class OpenAICompatibleBackend(LLMBackend):
     ) -> str:
         messages = list(messages)  # local copy for tool loop
 
+        cb = _get_cb_registry().get_or_create("backend", self.model)  # fetch once; stable for all turns
         for _ in range(max_turns):
             # Fix 2 (Option B): call _pre_call() before every API call so that
             # backends like CopilotBackend can refresh a short-lived session token
@@ -328,18 +331,19 @@ class OpenAICompatibleBackend(LLMBackend):
             self._pre_call()
             if self._inter_call_delay > 0:
                 time.sleep(self._inter_call_delay)
-            # TODO(t1): wrap with circuit breaker (tracked: T1-Task7 follow-up)
-            response = _retry_with_backoff(
-                lambda: self._client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=tools.schemas,
-                    tool_choice="auto",
-                    temperature=0.3,
-                    **self._extra_body(),
-                ),
-                max_retries=self._max_retries,
-                base_delay=self._retry_delay,
+            response = cb.call(
+                lambda: _retry_with_backoff(
+                    lambda: self._client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        tools=tools.schemas,
+                        tool_choice="auto",
+                        temperature=0.3,
+                        **self._extra_body(),
+                    ),
+                    max_retries=self._max_retries,
+                    base_delay=self._retry_delay,
+                )
             )
             effective_run_id = run_id if run_id is not None else get_ledger().active_run_id()
             if effective_run_id is not None:
@@ -385,16 +389,17 @@ class OpenAICompatibleBackend(LLMBackend):
             "content": "Please provide your final response based on the tool results above.",
         })
         self._pre_call()
-        # TODO(t1): wrap with circuit breaker (tracked: T1-Task7 follow-up)
-        response = _retry_with_backoff(
-            lambda: self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.3,
-                **self._extra_body(),
-            ),
-            max_retries=self._max_retries,
-            base_delay=self._retry_delay,
+        response = cb.call(
+            lambda: _retry_with_backoff(
+                lambda: self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                    **self._extra_body(),
+                ),
+                max_retries=self._max_retries,
+                base_delay=self._retry_delay,
+            )
         )
         effective_run_id = run_id if run_id is not None else get_ledger().active_run_id()
         if effective_run_id is not None:

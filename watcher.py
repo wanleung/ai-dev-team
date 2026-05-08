@@ -45,7 +45,7 @@ from tenacity import (
     before_sleep_log,
 )
 from utils import sanitise as _sanitise
-from config_schema import load_repo_entry
+from config_schema import load_repo_entry, AppConfig as _AppConfig
 from pydantic import ValidationError as _ValidationError
 from watcher_types import GitHubComment, GitHubIssue, GitHubPR, WatcherTask
 
@@ -463,7 +463,7 @@ def run_pipeline(
             try:
                 dlq.enqueue(_dlq_entry)
             except Exception as _dlq_exc:  # noqa: BLE001
-                logger.warning("Could not enqueue to DLQ: %s", _dlq_exc)
+                logger.warning("Could not enqueue to DLQ: %s", _sanitise(str(_dlq_exc), os.environ.get("GITHUB_TOKEN", "")))
         return False
 
 
@@ -471,6 +471,7 @@ def _load_pipeline_config() -> dict:
     """Load config.yaml + config.local.yaml from the script directory.
 
     Returns the merged config dict with llm and pipeline sections.
+    Raises ValueError if the merged result fails AppConfig schema validation.
     """
     script_dir = Path(__file__).parent
     cfg: dict = {}
@@ -485,6 +486,15 @@ def _load_pipeline_config() -> dict:
                     cfg[section] = {**cfg.get(section, {}), **val}
                 else:
                     cfg[section] = val
+    try:
+        _AppConfig.model_validate(cfg)  # validate only; callers consume raw dict
+    except _ValidationError as exc:
+        # Use include_input=False to avoid leaking secret values (e.g. github.token)
+        # that may appear in Pydantic's input_value snippets.
+        errors = exc.errors(include_input=False, include_url=False)
+        raise ValueError(
+            f"Invalid config (merged config.yaml + config.local.yaml): {errors}"
+        ) from exc
     return cfg
 
 
@@ -1536,7 +1546,7 @@ def main() -> None:
                     # Intentionally no dlq= to prevent re-enqueue loops
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("DLQ retry failed for issue #%d: %s", entry.issue_number, exc)
+                logger.warning("DLQ retry failed for issue #%d: %s", entry.issue_number, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
                 dlq.nack(entry.id)
                 failed += 1
             else:
