@@ -14,6 +14,7 @@ import requests
 
 import watcher
 from watcher import _dispatch, watch, _run_pr_revision, _is_retryable_http_error, ensure_label
+from watcher_types import GitHubIssue, GitHubLabel, GitHubPR, GitHubComment, WatcherTask
 
 
 # ── Shared fixture — prevent _dispatch from reading real config.yaml ──────────
@@ -607,3 +608,72 @@ def test_ensure_label_skips_post_when_label_exists():
          patch("watcher.requests.post") as mock_post:
         ensure_label("owner/repo", "ai-feature", "0075ca")
         mock_post.assert_not_called()
+
+
+# ── TypedDict field-access tests ──────────────────────────────────────────────
+
+def test_github_issue_typeddict_fields():
+    issue: GitHubIssue = {
+        "number": 1,
+        "title": "Test issue",
+        "body": "body text",
+        "html_url": "https://github.com/owner/repo/issues/1",
+        "labels": [],
+        "state": "open",
+        "pull_request": None,
+    }
+    assert issue["number"] == 1
+    assert issue["state"] == "open"
+
+
+def test_github_label_typeddict_fields():
+    label: GitHubLabel = {"name": "ai-feature", "color": "0075ca"}
+    assert label["name"] == "ai-feature"
+
+
+def test_github_pr_typeddict_fields():
+    pr: GitHubPR = {
+        "number": 7,
+        "title": "My PR",
+        "body": None,
+        "html_url": "https://github.com/owner/repo/pull/7",
+        "labels": [],
+        "state": "open",
+        "draft": False,
+        "head": {"ref": "feature-branch", "sha": "abc123"},
+        "base": {"ref": "master"},
+    }
+    assert pr["number"] == 7
+    assert pr["draft"] is False
+
+
+def test_github_comment_typeddict_fields():
+    comment: GitHubComment = {
+        "id": 101,
+        "body": "looks good",
+        "user": {"login": "alice"},
+        "created_at": "2025-01-01T00:00:00Z",
+    }
+    assert comment["id"] == 101
+    assert comment["user"]["login"] == "alice"
+
+
+def test_watcher_task_typeddict_fields():
+    issue: GitHubIssue = {
+        "number": 42,
+        "title": "Fix thing",
+        "body": None,
+        "html_url": "https://github.com/owner/repo/issues/42",
+        "labels": [],
+        "state": "open",
+        "pull_request": None,
+    }
+    task: WatcherTask = {
+        "issue": issue,
+        "tracker_repo": "owner/repo",
+        "default_target": None,
+        "label": "ai-feature",
+        "model": "gpt-4.1",
+        "num_engineers": 2,
+    }
+    assert task["tracker_repo"] == "owner/repo"
