@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import contextvars
+import fcntl
 import glob
 import json
 import logging
@@ -898,17 +899,20 @@ def _utcnow_iso() -> str:
 
 
 def _trigger_resume(issue_number: int, issue_title: str, requirement: str, workspace_dir: str) -> None:
-    """Write a resume trigger file so the main watch() loop picks up the issue next cycle."""
+    """Write a resume trigger file atomically so the main watch() loop picks up the issue next cycle."""
     trigger_dir = os.path.join(workspace_dir, "resume_queue")
     os.makedirs(trigger_dir, exist_ok=True)
     trigger_path = os.path.join(trigger_dir, f"resume_{issue_number}.json")
-    with open(trigger_path, "w") as f:
-        json.dump({
-            "issue_number": issue_number,
-            "issue_title": issue_title,
-            "requirement": requirement,
-        }, f, indent=2)
-    logging.getLogger("watcher").info(f"[Watcher] Resume trigger written: {trigger_path}")
+    tmp_path_str = trigger_path + ".tmp"
+    payload = {
+        "issue_number": issue_number,
+        "issue_title": issue_title,
+        "requirement": requirement,
+    }
+    with open(tmp_path_str, "w") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp_path_str, trigger_path)  # atomic on POSIX
+    logging.getLogger("watcher").info("[Watcher] Resume trigger written: %s", trigger_path)
 
 
 def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_dir: str, bot_login: str) -> None:
@@ -1041,7 +1045,15 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
     for trigger_path in glob.glob(os.path.join(trigger_dir, "resume_*.json")):
         try:
             with open(trigger_path) as f:
-                trigger = json.load(f)
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    logger.debug("[Watcher] Skipping locked resume file %s (another process holds it)", os.path.basename(trigger_path))
+                    continue
+                try:
+                    trigger = json.load(f)
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
             issue_number = trigger["issue_number"]
             requirement = trigger.get("requirement", trigger.get("issue_title", ""))
             logger.info(f"[Watcher] Resuming pipeline for issue #{issue_number}")

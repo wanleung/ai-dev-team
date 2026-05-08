@@ -3,6 +3,7 @@ tests/test_watcher.py — Unit tests for watcher.py pipeline dispatch and issue 
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 import tempfile
@@ -703,3 +704,52 @@ def test_run_pipeline_handler_logs_exc_info(caplog, monkeypatch, tmp_path):
     error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert error_records, "Expected at least one ERROR log"
     assert error_records[0].exc_info is not None, "exc_info must be set so traceback is captured"
+
+
+# ── HP-4: Atomic resume queue tests ──────────────────────────────────────────
+
+def test_trigger_resume_is_atomic(tmp_path):
+    """No .tmp file should remain after a successful trigger write."""
+    workspace = str(tmp_path)
+    watcher._trigger_resume(42, "Fix auth bug", "Add JWT support", workspace)
+    trigger = tmp_path / "resume_queue" / "resume_42.json"
+    assert trigger.exists()
+    data = json.loads(trigger.read_text())
+    assert data["issue_number"] == 42
+    assert data["issue_title"] == "Fix auth bug"
+    assert not (tmp_path / "resume_queue" / "resume_42.json.tmp").exists()
+
+
+def test_trigger_resume_overwrites_safely(tmp_path):
+    """A second write to the same issue replaces the first atomically."""
+    workspace = str(tmp_path)
+    watcher._trigger_resume(7, "First title", "First req", workspace)
+    watcher._trigger_resume(7, "Updated title", "Updated req", workspace)
+    trigger = tmp_path / "resume_queue" / "resume_7.json"
+    data = json.loads(trigger.read_text())
+    assert data["issue_title"] == "Updated title"
+
+
+def test_process_resume_queue_skips_locked_file(tmp_path, caplog):
+    """_process_resume_queue skips a file that is already locked by another process."""
+    import fcntl as _fcntl
+
+    workspace = str(tmp_path)
+    watcher._trigger_resume(99, "Locked issue", "Requirement", workspace)
+
+    def fake_flock(fd, op):
+        if op == _fcntl.LOCK_EX | _fcntl.LOCK_NB:
+            raise BlockingIOError("locked")
+
+    with patch("fcntl.flock", side_effect=fake_flock):
+        with caplog.at_level(logging.DEBUG, logger="watcher"):
+            tasks = watcher._process_resume_queue(
+                workspace, ["owner/repo"], {}, "gpt-4.1", 2,
+                tmp_path / "logs", dry_run=False, logger=logging.getLogger("watcher"),
+            )
+
+    assert tasks == []
+    assert any(
+        "locked" in r.message.lower() or "skip" in r.message.lower()
+        for r in caplog.records
+    )
