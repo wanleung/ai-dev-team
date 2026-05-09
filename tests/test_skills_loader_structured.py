@@ -4,10 +4,9 @@ from __future__ import annotations
 import warnings
 from pathlib import Path
 
-import warnings
-from pathlib import Path
+import pytest
 
-from skills_loader import SkillLoader
+from skills_loader import SkillLoader, SkillContext
 
 
 SAMPLE_SKILL_MD = """---
@@ -114,3 +113,141 @@ This is the QA section.
     result = loader.build_structured_prompt(entry, "engineer")
     assert result == ""
     assert "QA section" not in result
+
+
+# ── Feature 1: depends_on topological sort ─────────────────────────────────────
+
+def _make_skill(tmp_path, name, depends_on=None, tags=None, version="1.0.0"):
+    """Helper: write a minimal skill file and return its path."""
+    deps_str = ""
+    if depends_on:
+        deps_str = f"depends_on: [{', '.join(depends_on)}]\n"
+    tags_str = f"tags: [{', '.join(tags or [])}]\n"
+    content = (
+        f"---\nname: {name}\ndescription: {name} skill\nversion: {version}\n"
+        f"roles: {{engineer: true}}\n{deps_str}{tags_str}---\n\n# {name}\nContent of {name}.\n"
+    )
+    skill_file = tmp_path / f"{name}.md"
+    skill_file.write_text(content)
+    return skill_file
+
+
+def test_detect_pulls_in_dependency_not_directly_matched(tmp_path):
+    """detect() includes skill B when skill A depends_on B, even if B has no tag match."""
+    _make_skill(tmp_path, "base-skill", tags=["base"])
+    _make_skill(tmp_path, "advanced-skill", depends_on=["base-skill"], tags=["advanced"])
+
+    loader = SkillLoader(local_skills_dir=tmp_path).init()
+    ctx = SkillContext(issue_body="advanced", explicit_skills=[], repo_languages=[])
+    result = loader.detect(ctx)
+
+    names = [s.name for s in result]
+    assert "base-skill" in names, "Dependency should be pulled in automatically"
+    assert "advanced-skill" in names
+
+
+def test_detect_dependency_ordered_before_dependent(tmp_path):
+    """detect() places base-skill before advanced-skill when advanced depends_on base."""
+    _make_skill(tmp_path, "base-skill", tags=["base"])
+    _make_skill(tmp_path, "advanced-skill", depends_on=["base-skill"], tags=["advanced"])
+
+    loader = SkillLoader(local_skills_dir=tmp_path).init()
+    ctx = SkillContext(issue_body="base advanced", explicit_skills=[], repo_languages=[])
+    result = loader.detect(ctx)
+
+    names = [s.name for s in result]
+    assert names.index("base-skill") < names.index("advanced-skill"), (
+        f"base-skill must come before advanced-skill, got: {names}"
+    )
+
+
+def test_detect_raises_on_circular_dependency(tmp_path):
+    """detect() raises ValueError when skills have a circular dependency."""
+    _make_skill(tmp_path, "skill-x", depends_on=["skill-y"], tags=["x"])
+    _make_skill(tmp_path, "skill-y", depends_on=["skill-x"], tags=["y"])
+
+    loader = SkillLoader(local_skills_dir=tmp_path).init()
+    ctx = SkillContext(issue_body="x y", explicit_skills=[], repo_languages=[])
+    with pytest.raises(ValueError, match="[Cc]ircular"):
+        loader.detect(ctx)
+
+
+# ── Feature 2: required_roles enforcement ──────────────────────────────────────
+
+def test_for_role_excludes_skill_when_role_not_in_required_roles(tmp_path):
+    """for_role() skips a skill if role is not listed in required_roles."""
+    content = (
+        "---\nname: arch-only\ndescription: arch only\nversion: 1.0.0\n"
+        "roles: {engineer: true, architect: true}\n"
+        "required_roles: [architect]\n"
+        "---\n\n## For Architects\nArch content.\n\n## For Engineers\nEng content.\n"
+    )
+    (tmp_path / "arch-only.md").write_text(content)
+
+    loader = SkillLoader(local_skills_dir=tmp_path).init()
+    ctx = SkillContext(issue_body="", explicit_skills=["arch-only"], repo_languages=[])
+    matched = loader.detect(ctx)
+
+    # engineer role: arch-only has required_roles=[architect], engineer is NOT in it → skip
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        blocks = loader.for_role("engineer", matched)
+    assert blocks == [], f"Expected no blocks for engineer, got: {blocks}"
+    assert any("required_roles" in str(warning.message) for warning in w)
+
+
+def test_for_role_includes_skill_when_role_in_required_roles(tmp_path):
+    """for_role() includes the skill when role IS listed in required_roles."""
+    content = (
+        "---\nname: arch-only\ndescription: arch only\nversion: 1.0.0\n"
+        "roles: {engineer: true, architect: true}\n"
+        "required_roles: [architect]\n"
+        "---\n\n## For Architects\nArch content.\n"
+    )
+    (tmp_path / "arch-only.md").write_text(content)
+
+    loader = SkillLoader(local_skills_dir=tmp_path).init()
+    ctx = SkillContext(issue_body="", explicit_skills=["arch-only"], repo_languages=[])
+    matched = loader.detect(ctx)
+
+    blocks = loader.for_role("architect", matched)
+    assert len(blocks) == 1
+    assert "Arch content" in blocks[0].content
+
+
+# ── Feature 3: min_version semver enforcement ──────────────────────────────────
+
+def test_detect_excludes_skill_below_min_version(tmp_path):
+    """detect() excludes a skill whose version is below min_version."""
+    content = (
+        "---\nname: old-skill\ndescription: desc\nversion: 1.1.0\n"
+        "min_version: 2.0.0\nroles: {engineer: true}\ntags: [python]\n"
+        "---\n\nContent.\n"
+    )
+    (tmp_path / "old-skill.md").write_text(content)
+
+    loader = SkillLoader(local_skills_dir=tmp_path).init()
+    ctx = SkillContext(issue_body="python", explicit_skills=[], repo_languages=[])
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = loader.detect(ctx)
+
+    assert all(s.name != "old-skill" for s in result), "Skill below min_version should be excluded"
+    assert any("min_version" in str(warning.message) for warning in w)
+
+
+def test_detect_includes_skill_meeting_min_version(tmp_path):
+    """detect() includes a skill whose version meets min_version."""
+    content = (
+        "---\nname: new-skill\ndescription: desc\nversion: 2.1.0\n"
+        "min_version: 2.0.0\nroles: {engineer: true}\ntags: [python]\n"
+        "---\n\nContent.\n"
+    )
+    (tmp_path / "new-skill.md").write_text(content)
+
+    loader = SkillLoader(local_skills_dir=tmp_path).init()
+    ctx = SkillContext(issue_body="python", explicit_skills=[], repo_languages=[])
+    result = loader.detect(ctx)
+
+    assert any(s.name == "new-skill" for s in result), "Skill meeting min_version should be included"
