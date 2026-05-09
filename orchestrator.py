@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -319,6 +320,9 @@ class PipelineResult:
     duration_seconds: float = 0.0
     errors: list["_PipelineError"] = field(default_factory=list)
     completed_stages: list[str] = field(default_factory=list)  # stages that finished OK
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
     # Q&A clarification fields
     pending_clarification: Optional[dict] = None  # set while waiting for human reply
     clarification_history: list[dict] = field(default_factory=list)  # completed Q&A rounds
@@ -399,11 +403,14 @@ class PipelineResult:
     def add_error(self, error: "str | _PipelineError") -> None:
         """Add an error. Accepts a bare string (backwards compat) or a PipelineError."""
         if isinstance(error, str):
-            self.errors.append(
-                _PipelineError(code="UNKNOWN", stage="unknown", message=error, severity="error")
-            )
-        else:
+            error = _PipelineError(code="UNKNOWN", stage="unknown", message=error, severity="error")
+        with self._lock:
             self.errors.append(error)
+
+    def add_completed_stage(self, key: str) -> None:
+        """Thread-safe append to completed_stages."""
+        with self._lock:
+            self.completed_stages.append(key)
 
     def has_fatal(self) -> bool:
         """Return True if any error has severity='fatal'."""
@@ -623,6 +630,7 @@ class Orchestrator(TestFixLoopMixin):
         self.skill_loader: Optional[SkillLoader] = skill_loader
         self.framework_docs_loader: FrameworkDocsLoader = framework_docs_loader or FrameworkDocsLoader(config={})
         self.repo_context_loader: Optional[RepoContextLoader] = repo_context_loader
+        self._checkpoint_lock: threading.Lock = threading.Lock()
 
         # RAG registry and auto-indexer: only active when RAG MCP is configured
         # (rag_registry is built below from mcp_servers; store a forward ref here)
@@ -631,15 +639,23 @@ class Orchestrator(TestFixLoopMixin):
 
         # Build combined tool registry (builtin + optional MCP servers)
         if mcp_servers:
-            mcp_registry = MCPToolRegistry(mcp_servers)
-            tool_registry = CombinedToolRegistry(builtin_tools, mcp_registry)
+            try:
+                mcp_registry = MCPToolRegistry(mcp_servers)
+                tool_registry = CombinedToolRegistry(builtin_tools, mcp_registry)
+            except Exception as exc:
+                log.warning("[orchestrator] MCP init failed: %s — continuing with builtin tools only", exc)
+                tool_registry = builtin_tools
         else:
             tool_registry = builtin_tools
         self._tool_registry = tool_registry
 
         # Extract RAG server for retrieval-augmented agents (isolated from builtin tools)
         rag_servers = [s for s in (mcp_servers or []) if s.get("name") == "rag"]
-        rag_registry = MCPToolRegistry(rag_servers) if rag_servers else None
+        try:
+            rag_registry = MCPToolRegistry(rag_servers) if rag_servers else None
+        except Exception as exc:
+            log.warning("[orchestrator] RAG MCP init failed: %s — RAG disabled", exc)
+            rag_registry = None
         self._rag_registry = rag_registry
         self.repo_auto_indexer = RepoAutoIndexer() if rag_registry else None
 
@@ -2353,7 +2369,7 @@ class Orchestrator(TestFixLoopMixin):
                 result,
                 lambda: self._stage_repo_index(result),
             )
-            result.completed_stages.append("rag_index")
+            result.add_completed_stage("rag_index")
 
         # ── Mode-driven stage loop ────────────────────────────────────────────
         stage_list = self._build_stage_list()
@@ -2433,8 +2449,8 @@ class Orchestrator(TestFixLoopMixin):
                         any_failed = True
                     else:
                         if s.name == "senior_engineer":
-                            result.completed_stages.append("engineer")
-                        result.completed_stages.append(s.checkpoint_key)
+                            result.add_completed_stage("engineer")
+                        result.add_completed_stage(s.checkpoint_key)
                         self._tracker.mark_done(s.checkpoint_key)
             elif len(result.errors) > errors_before:
                 any_failed = True
@@ -2450,8 +2466,8 @@ class Orchestrator(TestFixLoopMixin):
                 seq_s = runnable[0]
                 # Backward-compat: senior_engineer stage also marks old "engineer" key
                 if seq_s.name == "senior_engineer":
-                    result.completed_stages.append("engineer")
-                result.completed_stages.append(seq_s.checkpoint_key)
+                    result.add_completed_stage("engineer")
+                result.add_completed_stage(seq_s.checkpoint_key)
                 self._tracker.mark_done(seq_s.checkpoint_key)
 
             result.progress_comment_id = self._tracker.comment_id
@@ -2592,7 +2608,7 @@ class Orchestrator(TestFixLoopMixin):
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
-            result.completed_stages.append("pm")
+            result.add_completed_stage("pm")
             self._tracker.mark_done("pm")
             result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
@@ -2613,7 +2629,7 @@ class Orchestrator(TestFixLoopMixin):
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
-            result.completed_stages.append("pm_reviewer")
+            result.add_completed_stage("pm_reviewer")
             self._tracker.mark_done("pm_reviewer")
             result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
@@ -2622,7 +2638,7 @@ class Orchestrator(TestFixLoopMixin):
 
         # Step 3: Revision loop (skip if disabled)
         if self.max_prd_revisions == 0:
-            result.completed_stages.append("pm_review_loop")
+            result.add_completed_stage("pm_review_loop")
             self._tracker.mark_done("pm_review_loop")
             result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
@@ -2671,7 +2687,7 @@ class Orchestrator(TestFixLoopMixin):
                 self._save_checkpoint(result)
                 return False
 
-            result.completed_stages.append(key)
+            result.add_completed_stage(key)
             self._tracker.mark_done(key)
             result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
@@ -2691,7 +2707,7 @@ class Orchestrator(TestFixLoopMixin):
                             f"⚠️ PRD revision limit reached after {self.max_prd_revisions} rounds. "
                             f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
                         )
-                    result.completed_stages.append("pm_review_loop")
+                    result.add_completed_stage("pm_review_loop")
                     self._tracker.mark_done("pm_review_loop")
                     result.progress_comment_id = self._tracker.comment_id
                     self._save_checkpoint(result)
@@ -2702,7 +2718,7 @@ class Orchestrator(TestFixLoopMixin):
                 f"  ✅ [green]PRD APPROVED (round {result.prd_revision_count})[/green]"
             )
 
-        result.completed_stages.append("pm_review_loop")
+        result.add_completed_stage("pm_review_loop")
         self._tracker.mark_done("pm_review_loop")
         result.progress_comment_id = self._tracker.comment_id
         self._save_checkpoint(result)
@@ -2754,7 +2770,7 @@ class Orchestrator(TestFixLoopMixin):
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
-            result.completed_stages.append("architect")
+            result.add_completed_stage("architect")
             self._tracker.mark_done("architect")
             result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
@@ -2775,7 +2791,7 @@ class Orchestrator(TestFixLoopMixin):
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
-            result.completed_stages.append("architect_reviewer")
+            result.add_completed_stage("architect_reviewer")
             self._tracker.mark_done("architect_reviewer")
             result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
@@ -2784,7 +2800,7 @@ class Orchestrator(TestFixLoopMixin):
 
         # Step 3: Revision loop (skip if disabled)
         if self.max_design_revisions == 0:
-            result.completed_stages.append("architect_review_loop")
+            result.add_completed_stage("architect_review_loop")
             self._tracker.mark_done("architect_review_loop")
             result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
@@ -2833,7 +2849,7 @@ class Orchestrator(TestFixLoopMixin):
                 self._save_checkpoint(result)
                 return False
 
-            result.completed_stages.append(key)
+            result.add_completed_stage(key)
             self._tracker.mark_done(key)
             result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
@@ -2853,7 +2869,7 @@ class Orchestrator(TestFixLoopMixin):
                             f"⚠️ Design revision limit reached after {self.max_design_revisions} rounds. "
                             f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
                         )
-                    result.completed_stages.append("architect_review_loop")
+                    result.add_completed_stage("architect_review_loop")
                     self._tracker.mark_done("architect_review_loop")
                     result.progress_comment_id = self._tracker.comment_id
                     self._save_checkpoint(result)
@@ -2864,7 +2880,7 @@ class Orchestrator(TestFixLoopMixin):
                 f"  ✅ [green]DESIGN APPROVED (round {result.design_revision_count})[/green]"
             )
 
-        result.completed_stages.append("architect_review_loop")
+        result.add_completed_stage("architect_review_loop")
         self._tracker.mark_done("architect_review_loop")
         result.progress_comment_id = self._tracker.comment_id
         self._save_checkpoint(result)
@@ -3704,21 +3720,22 @@ class Orchestrator(TestFixLoopMixin):
         completed_stages is empty — there is nothing useful to preserve and an
         empty checkpoint would shadow any existing good checkpoint at the same path.
         """
-        if not result.completed_stages:
-            return  # Nothing worth preserving; don't clobber an existing checkpoint.
+        with self._checkpoint_lock:
+            if not result.completed_stages:
+                return  # Nothing worth preserving; don't clobber an existing checkpoint.
 
-        path = self._checkpoint_path(result)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        content = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
+            path = self._checkpoint_path(result)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            content = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
 
-        # Write atomically: write to a sibling tmp file, then rename.
-        fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".ckpt_", suffix=".json")
-        try:
-            os.write(fd, content.encode("utf-8"))
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.replace(tmp_path, path)  # atomic on POSIX
+            # Write atomically: write to a sibling tmp file, then rename.
+            fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".ckpt_", suffix=".json")
+            try:
+                os.write(fd, content.encode("utf-8"))
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp_path, path)  # atomic on POSIX
 
     def _load_checkpoint(self, requirement: str) -> Optional[PipelineResult]:
         """Load the best checkpoint matching this requirement.
@@ -3747,11 +3764,12 @@ class Orchestrator(TestFixLoopMixin):
 
     def _clear_checkpoint(self, result: PipelineResult) -> None:
         """Delete the checkpoint file after a successful pipeline run."""
-        path = self._checkpoint_path(result)
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        with self._checkpoint_lock:
+            path = self._checkpoint_path(result)
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _ensure_github_labels(self) -> None:
         """Create standard labels in the repo if they don't exist."""
