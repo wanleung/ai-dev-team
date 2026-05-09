@@ -2,6 +2,7 @@
 from __future__ import annotations
 from config_schema import DegradationConfig, LLMConfig
 from core.degradation import DegradationContext, DegradationPolicy, DegradationResult
+from core.events import DegradationEvent, set_emit_callback, reset_emit_callback
 
 
 def _policy(reduce=True, fallback=True, skip=True, optional=None, enabled=True):
@@ -147,3 +148,34 @@ def test_skip_stages_no_op_when_skippable_empty():
                 context=_ctx())
     assert r.skipped_stages == []
     assert r.actions_taken == []
+
+
+def test_degradation_emits_event_when_actions_taken():
+    events = []
+    set_emit_callback(events.append)
+    try:
+        cfg = DegradationConfig(enabled=True, reduce_engineers=True, fallback_model=False,
+                                skip_optional_stages=False, optional_stages=[])
+        policy = DegradationPolicy(cfg, LLMConfig(model="gpt-4o"))
+        ctx = DegradationContext(reason="circuit_open", original_num_engineers=2,
+                                 original_model="gpt-4o")
+        policy.apply(num_engineers=2, model="gpt-4o", skippable_stages=[], context=ctx)
+        assert any(isinstance(e, DegradationEvent) and e.trigger == "circuit_open"
+                   for e in events)
+    finally:
+        reset_emit_callback()
+
+
+def test_degradation_no_event_when_disabled():
+    events = []
+    set_emit_callback(events.append)
+    try:
+        cfg = DegradationConfig(enabled=False, reduce_engineers=True, fallback_model=False,
+                                skip_optional_stages=False, optional_stages=[])
+        policy = DegradationPolicy(cfg, LLMConfig(model="gpt-4o"))
+        ctx = DegradationContext(reason="test", original_num_engineers=2, original_model="gpt-4o")
+        policy.apply(num_engineers=2, model="gpt-4o", skippable_stages=[], context=ctx)
+        assert not any(isinstance(e, DegradationEvent) for e in events)
+    finally:
+        reset_emit_callback()
+

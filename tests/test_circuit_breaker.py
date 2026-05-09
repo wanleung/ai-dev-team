@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import pytest
 from core.circuit_breaker import CircuitBreaker, CircuitOpenError
+from core.events import CircuitBreakerEvent, set_emit_callback, reset_emit_callback
 
 
 def _make(threshold=3, recovery_timeout_s=1):
@@ -128,3 +129,43 @@ def test_half_open_probe_failure_reopens_when_threshold_gt_1():
         "Circuit should be OPEN after a failed HALF_OPEN probe, "
         "regardless of threshold value"
     )
+
+
+# ── event emission ────────────────────────────────────────────────────────────
+
+def test_circuit_breaker_emits_open_event():
+    """Opening the circuit emits a CircuitBreakerEvent with state='open'."""
+    events = []
+    set_emit_callback(events.append)
+    try:
+        cb = CircuitBreaker("test_open", threshold=2, recovery_timeout_s=60)
+        cb.record_failure()
+        cb.record_failure()  # threshold reached → OPEN
+        assert any(
+            isinstance(e, CircuitBreakerEvent)
+            and e.state == "open"
+            and e.name == "test_open"
+            and e.failure_count == 2
+            for e in events
+        ), f"Expected open event, got: {events}"
+    finally:
+        reset_emit_callback()
+
+
+def test_circuit_breaker_emits_closed_event_on_success():
+    """A successful call after HALF_OPEN emits state='closed'."""
+    events = []
+    set_emit_callback(events.append)
+    try:
+        cb = CircuitBreaker("test_close", threshold=1, recovery_timeout_s=0)
+        cb.record_failure()            # → OPEN
+        time.sleep(0.01)               # allow _MIN_RECOVERY_S to elapse → HALF_OPEN
+        cb.call(lambda: "ok")          # HALF_OPEN probe → CLOSED
+        assert any(
+            isinstance(e, CircuitBreakerEvent)
+            and e.state == "closed"
+            and e.failure_count == 0
+            for e in events
+        ), f"Expected closed event, got: {events}"
+    finally:
+        reset_emit_callback()

@@ -1421,6 +1421,40 @@ def _setup_logging(log_dir: Path, run_id: str | None = None) -> logging.Logger:
     return logging.getLogger("watcher")
 
 
+def _cmd_list_dlq(cfg: dict) -> None:
+    """Print all current DLQ entries to stdout as a formatted table.
+
+    Warning: for the SQS backend, this calls drain() which temporarily changes
+    message visibility. Messages will reappear after the visibility timeout expires.
+    """
+    from core.dead_letter import build_dlq
+    from config_schema import DLQConfig
+
+    dlq_cfg_raw = (cfg.get("reliability") or {}).get("dead_letter", {})
+    dlq_cfg = DLQConfig.model_validate(dlq_cfg_raw) if dlq_cfg_raw else DLQConfig()
+
+    if dlq_cfg.backend == "sqs":
+        print("Note: SQS backend — listing temporarily affects message visibility.\n")
+
+    dlq = build_dlq(dlq_cfg, workspace_root=Path("."))
+
+    entries = list(dlq.drain())
+    if not entries:
+        print("DLQ is empty — no failed entries.")
+        return
+
+    header = f"{'ID':<36}  {'Issue':>6}  {'Attempts':>8}  {'Failed At':<22}  Error"
+    print(header)
+    print("-" * len(header))
+    for e in entries:
+        error_msg = (e.error or {}).get("message", str(e.error))[:60]
+        print(
+            f"{e.id:<36}  {e.issue_number:>6}  {e.attempt_count:>8}  "
+            f"{e.failed_at:<22}  {error_msg}"
+        )
+    print(f"\n{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} in DLQ.")
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI Software House — GitHub issue watcher")
     parser.add_argument("--config", default="repos.yaml", help="Path to repos.yaml")
@@ -1436,6 +1470,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Drain the dead-letter queue and retry failed pipeline tasks.",
+    )
+    parser.add_argument(
+        "--list-dlq",
+        action="store_true",
+        default=False,
+        help="List all entries currently in the dead-letter queue and exit. "
+             "Note: for the SQS backend, listing temporarily affects message visibility.",
     )
 
     sub = parser.add_subparsers(dest="command")
@@ -1519,6 +1560,12 @@ def main() -> None:
     raw = load_watcher_config(config_path)
     log_dir = Path(config_path.parent / raw.get("settings", {}).get("log_dir", "logs/watcher"))
     logger = _setup_logging(log_dir)
+
+    # ── --list-dlq: display current DLQ entries and exit ─────────────────────
+    if args.list_dlq:
+        pipeline_cfg = _load_pipeline_config()
+        _cmd_list_dlq(pipeline_cfg)
+        sys.exit(0)
 
     # ── --retry-dlq: drain dead-letter queue and retry failed tasks ──────────
     if args.retry_dlq:

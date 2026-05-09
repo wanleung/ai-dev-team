@@ -14,6 +14,8 @@ import threading
 import time
 from typing import Callable, TypeVar
 
+from core.events import CircuitBreakerEvent, emit_event
+
 T = TypeVar("T")
 
 # Minimum elapsed time before an open circuit can transition to half_open.
@@ -47,6 +49,7 @@ class CircuitBreaker:
         self._recovery_timeout_s = recovery_timeout_s
         self._failure_count: int = 0
         self._opened_at: float | None = None
+        self._was_half_open: bool = False
         self._lock = threading.Lock()
 
     @property
@@ -66,10 +69,22 @@ class CircuitBreaker:
         return "open"
 
     def record_success(self) -> None:
-        """Record a successful outcome, resetting the failure count and closing the circuit."""
+        """Record a successful outcome, resetting the failure count and closing the circuit.
+
+        Only emits a CircuitBreakerEvent when transitioning from HALF_OPEN → CLOSED.
+        Successful calls while already CLOSED do not emit (no state change occurred).
+        """
         with self._lock:
+            prior_was_half_open = self._was_half_open
+            self._was_half_open = False
             self._failure_count = 0
             self._opened_at = None
+        if prior_was_half_open:
+            emit_event(CircuitBreakerEvent(
+                name=self.name,
+                state="closed",
+                failure_count=0,
+            ))
 
     def record_failure(self) -> None:
         """Record a failed outcome; opens (or re-opens) the circuit once ``threshold`` is reached.
@@ -78,12 +93,24 @@ class CircuitBreaker:
         recovery timer so that a failure during a probe (half_open) correctly
         transitions back to OPEN with a fresh countdown.
         """
+        opened_now = False
+        failure_count_snapshot = 0
         with self._lock:
+            prior_state = self._state_unlocked()
             self._failure_count += 1
             if self._failure_count >= self._threshold:
                 # Always refresh the timer: covers both closed→open and
                 # half_open→open (re-open) transitions.
                 self._opened_at = time.monotonic()
+                if prior_state != "open":  # genuine transition: closed or half_open → open
+                    opened_now = True
+                    failure_count_snapshot = self._failure_count
+        if opened_now:
+            emit_event(CircuitBreakerEvent(
+                name=self.name,
+                state="open",
+                failure_count=failure_count_snapshot,
+            ))
 
     def call(self, fn: Callable[[], T]) -> T:
         """Execute *fn* through the circuit breaker.
@@ -118,6 +145,7 @@ class CircuitBreaker:
             # HALF_OPEN: reset opened_at so a subsequent failure reopens with
             # a fresh timer, and reset failure count for a clean probe attempt.
             if state == "half_open":
+                self._was_half_open = True
                 self._opened_at = None
                 self._failure_count = self._threshold - 1  # one probe failure re-opens immediately
         # Lock is released here — safe to call fn() without holding it.
