@@ -36,6 +36,12 @@ _ROLE_SECTION_MAP: dict[str, str] = {
 }
 
 
+_KNOWN_FRONTMATTER_KEYS = {
+    "name", "description", "version", "roles", "tags", "source",
+    "required_roles", "depends_on", "min_version",
+}
+
+
 @dataclass
 class SkillEntry:
     """Parsed skill from a markdown file."""
@@ -47,6 +53,12 @@ class SkillEntry:
     tags: list[str]
     source: str              # "local" or "marketplace"
     raw_body: str            # full markdown body (below frontmatter)
+    # Roles that MUST be present in the roles dict for this skill to be usable.
+    required_roles: list[str] = field(default_factory=list)
+    # Names of other skills that must be loaded before this one.
+    depends_on: list[str] = field(default_factory=list)
+    # Minimum skill version string (e.g. '1.2.0'). Empty = no constraint.
+    min_version: str = ""
 
 
 @dataclass
@@ -153,6 +165,21 @@ class SkillLoader:
         if not isinstance(roles_raw, dict):
             roles_raw = {}
 
+        unknown_keys = set(meta.keys()) - _KNOWN_FRONTMATTER_KEYS
+        if unknown_keys:
+            warnings.warn(
+                f"[skills] Unknown frontmatter key(s) in {path.name}: "
+                f"{sorted(unknown_keys)}. Known keys: {sorted(_KNOWN_FRONTMATTER_KEYS)}"
+            )
+
+        required_roles_raw = meta.get("required_roles", [])
+        if not isinstance(required_roles_raw, list):
+            required_roles_raw = []
+
+        depends_on_raw = meta.get("depends_on", [])
+        if not isinstance(depends_on_raw, list):
+            depends_on_raw = []
+
         return SkillEntry(
             name=name,
             description=str(meta.get("description", "")),
@@ -161,6 +188,9 @@ class SkillLoader:
             tags=[str(t).lower() for t in meta.get("tags", [])],
             source=str(meta.get("source", "local")),
             raw_body=match.group(2),
+            required_roles=[str(r) for r in required_roles_raw],
+            depends_on=[str(d) for d in depends_on_raw],
+            min_version=str(meta.get("min_version", "")),
         )
 
     # ── Detection ─────────────────────────────────────────────────────────────
@@ -392,3 +422,37 @@ class SkillLoader:
     def update_marketplace(self) -> None:
         """Re-fetch marketplace index and all cached skills."""
         self._marketplace_skills = self._load_marketplace(update=True)
+
+    # ── Structured prompt extraction ──────────────────────────────────────────
+
+    def build_structured_prompt(self, skill: SkillEntry, role: str) -> str:
+        """Extract the role-scoped content block from a skill's raw_body.
+
+        Looks for a markdown section headed ``## <role>`` (case-insensitive) and
+        returns everything up to the next ``##`` heading. Falls back to the full
+        ``raw_body`` if no matching section is found.
+
+        Args:
+            skill: The parsed SkillEntry.
+            role: The agent role to extract content for (e.g. "engineer").
+
+        Returns:
+            The role-scoped content string, stripped of leading/trailing whitespace.
+        """
+        lines = skill.raw_body.splitlines(keepends=True)
+        in_section = False
+        section_lines: list[str] = []
+
+        for line in lines:
+            if re.match(rf"^##\s+{re.escape(role)}\s*$", line, re.IGNORECASE):
+                in_section = True
+                continue
+            if in_section:
+                if re.match(r"^##\s+", line):
+                    break
+                section_lines.append(line)
+
+        if in_section:
+            # Section was found (even if empty) — return its content, not the fallback.
+            return "".join(section_lines).strip()
+        return skill.raw_body.strip()
