@@ -86,6 +86,28 @@ class CircuitBreaker:
                 failure_count=0,
             ))
 
+    def force_open(self) -> None:
+        """Immediately trip the circuit breaker to OPEN state.
+
+        Used by AgentHealthMonitor to open the breaker when an agent exceeds
+        its consecutive-failure threshold, without requiring the breaker's own
+        threshold to be reached.
+
+        Emits a CircuitBreakerEvent if transitioning from a non-open state.
+        Calling this method when the circuit is already OPEN is a no-op.
+        """
+        with self._lock:
+            prior_state = self._state_unlocked()
+            if prior_state != "open":
+                self._failure_count = self._threshold
+                self._opened_at = time.monotonic()
+        if prior_state != "open":
+            emit_event(CircuitBreakerEvent(
+                name=self.name,
+                state="open",
+                failure_count=self._failure_count,
+            ))
+
     def record_failure(self) -> None:
         """Record a failed outcome; opens (or re-opens) the circuit once ``threshold`` is reached.
 
