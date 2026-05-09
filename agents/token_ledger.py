@@ -12,6 +12,10 @@ from typing import Optional
 current_stage: ContextVar[str] = ContextVar("current_stage", default="unknown")
 
 
+class BudgetExceededError(Exception):
+    """Raised by TokenLedger.record() when the run's cost exceeds max_cost_usd."""
+
+
 @dataclass
 class UsageRecord:
     run_id: str
@@ -26,11 +30,13 @@ class UsageRecord:
 class TokenLedger:
     """Accumulates LLM token usage across a pipeline run."""
 
-    def __init__(self, pricing: dict[str, list[float]] | None = None) -> None:
+    def __init__(self, pricing: dict[str, list[float]] | None = None, max_cost_usd: float | None = None) -> None:
         # pricing: model_name -> [input_price_per_1M, output_price_per_1M]
         self._pricing: dict[str, list[float]] = pricing or {}
+        self._max_cost_usd: float | None = max_cost_usd
         self._runs: dict[str, dict] = {}          # run_id -> metadata
         self._events: dict[str, list[UsageRecord]] = {}  # run_id -> events
+        self._totals: dict[str, float] = {}       # run_id -> running cost total
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -44,6 +50,7 @@ class TokenLedger:
             "finished_at": None,
         }
         self._events[run_id] = []
+        self._totals[run_id] = 0.0
 
     def record(
         self,
@@ -67,6 +74,13 @@ class TokenLedger:
                 cost_usd=cost,
             )
         )
+        self._totals[run_id] = self._totals.get(run_id, 0.0) + cost
+        if self._max_cost_usd is not None:
+            total = self._totals[run_id]
+            if total > self._max_cost_usd:
+                raise BudgetExceededError(
+                    f"Pipeline cost ${total:.4f} exceeds budget ${self._max_cost_usd:.4f}"
+                )
 
     def finish_run(self, run_id: str) -> None:
         """Mark a run as finished by recording its completion timestamp."""

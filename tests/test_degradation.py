@@ -150,6 +150,26 @@ def test_skip_stages_no_op_when_skippable_empty():
     assert r.actions_taken == []
 
 
+# ── DegradationSnapshot / restore tests (T2-C Task 4) ────────────────────
+
+def test_restore_returns_snapshot_values():
+    from core.degradation import DegradationSnapshot
+    p = _policy()
+    snap = DegradationSnapshot(num_engineers=4, model="gpt-4.1")
+    result = p.restore(snap)
+    assert result.num_engineers == 4
+    assert result.model == "gpt-4.1"
+    assert result.skipped_stages == []
+
+
+def test_restore_includes_auto_recovery_action():
+    from core.degradation import DegradationSnapshot
+    p = _policy()
+    snap = DegradationSnapshot(num_engineers=2, model="gpt-4-mini")
+    result = p.restore(snap)
+    assert any("auto_recovery" in a for a in result.actions_taken)
+
+
 def test_degradation_emits_event_when_actions_taken():
     events = []
     set_emit_callback(events.append)
@@ -178,4 +198,3 @@ def test_degradation_no_event_when_disabled():
         assert not any(isinstance(e, DegradationEvent) for e in events)
     finally:
         reset_emit_callback()
-

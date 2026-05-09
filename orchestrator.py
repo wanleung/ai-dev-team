@@ -52,7 +52,7 @@ from memory_store import MemoryStore
 from skills_loader import SkillContext, SkillLoader
 from test_fix_loop import TestFixLoopMixin
 from tools import builtin_tools, CombinedToolRegistry, MCPToolRegistry
-from agents.token_ledger import TokenLedger, current_stage, get_ledger, set_ledger
+from agents.token_ledger import TokenLedger, BudgetExceededError, current_stage, get_ledger, set_ledger
 from utils import sanitise as _sanitise, deep_merge as _deep_merge
 from core.errors import PipelineError as _PipelineError
 
@@ -472,6 +472,9 @@ class PipelineStage:
     stop_message: str = ""
     """Optional message printed when stop_if triggers."""
 
+    timeout_s: float | None = None
+    """Per-stage timeout in seconds. None = no timeout (wait forever)."""
+
     loop_stages: list[str] = field(default_factory=list)
     """Stage names to run repeatedly. Non-empty = this is a loop block."""
 
@@ -773,8 +776,30 @@ class Orchestrator(TestFixLoopMixin):
         self.conflict_resolver_model: Optional[str] = conflict_resolver_model
         ct = self._cost_tracking
         if ct.get("enabled", False):
-            ledger = TokenLedger(pricing=ct.get("pricing", {}))
+            max_cost = None
+            if ct.get("max_cost_usd") is not None:
+                try:
+                    max_cost = float(ct["max_cost_usd"])
+                except (TypeError, ValueError):
+                    pass
+            ledger = TokenLedger(pricing=ct.get("pricing", {}), max_cost_usd=max_cost)
             set_ledger(ledger)
+
+        # Per-stage timeouts from config
+        self._stage_timeouts: dict[str, float] = {}
+        _pipeline_cfg = {}
+        if hasattr(self, "_cfg"):
+            _pipeline_cfg = self._cfg.get("pipeline", {}) or {}
+        for _stage_name, _secs in (_pipeline_cfg.get("stage_timeouts") or {}).items():
+            try:
+                self._stage_timeouts[_stage_name] = float(_secs)
+            except (TypeError, ValueError):
+                pass
+
+        # Agent health monitor
+        from core.agent_health import AgentHealthMonitor
+        _health_threshold = int(3)  # default; overridable via config if needed
+        self._agent_health = AgentHealthMonitor(failure_threshold=_health_threshold)
 
     # ── Backend factory helpers ───────────────────────────────────────────────
 
@@ -1182,7 +1207,7 @@ class Orchestrator(TestFixLoopMixin):
 
     def _make_stage_registry(self) -> dict[str, "PipelineStage"]:
         """Build the full registry of all known pipeline stages."""
-        return {
+        _registry = {
             "pm": PipelineStage(
                 name="pm",
                 label="📋 Product Manager",
@@ -1323,6 +1348,11 @@ class Orchestrator(TestFixLoopMixin):
                 fn=lambda r: self._stage_doc_commit_pr(r),
             ),
         }
+        # Wire per-stage timeouts from config
+        for _name, _stage in _registry.items():
+            if _name in self._stage_timeouts:
+                _stage.timeout_s = self._stage_timeouts[_name]
+        return _registry
 
     def _load_pipeline_yaml(self, config_path: str) -> "list | None":
         """Parse and validate pipeline.yaml from the same directory as config_path.
@@ -1559,7 +1589,8 @@ class Orchestrator(TestFixLoopMixin):
                 try:
                     self._run_stage(
                         inner.label, inner.description, result,
-                        lambda s=inner: s.fn(result)
+                        lambda s=inner: s.fn(result),
+                        timeout_s=inner.timeout_s,
                     )
                 finally:
                     current_stage.reset(_inner_token)
@@ -2329,14 +2360,32 @@ class Orchestrator(TestFixLoopMixin):
             try:
                 if stage.loop_stages:
                     # Loop block from pipeline.yaml
-                    ok = self._run_loop_stage(stage, result)
+                    try:
+                        ok = self._run_loop_stage(stage, result)
+                    except BudgetExceededError as exc:
+                        error_msg = f"Pipeline halted: {exc}"
+                        result.add_error(error_msg)
+                        console.print(f"  💸 [bold red]{error_msg}[/bold red]")
+                        self._tracker.mark_failed(stage.checkpoint_key, error_msg)
+                        result.progress_comment_id = self._tracker.comment_id
+                        self._save_checkpoint(result)
+                        return self._finish(result, start_time)
                     if not ok:
                         self._tracker.mark_failed(stage.checkpoint_key)
                         result.progress_comment_id = self._tracker.comment_id
                         self._save_checkpoint(result)
                         return self._finish(result, start_time)
                 else:
-                    self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result))
+                    try:
+                        self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result), timeout_s=stage.timeout_s)
+                    except BudgetExceededError as exc:
+                        error_msg = f"Pipeline halted: {exc}"
+                        result.add_error(error_msg)
+                        console.print(f"  💸 [bold red]{error_msg}[/bold red]")
+                        self._tracker.mark_failed(stage.checkpoint_key, error_msg)
+                        result.progress_comment_id = self._tracker.comment_id
+                        self._save_checkpoint(result)
+                        return self._finish(result, start_time)
 
                     if result.errors:
                         self._tracker.mark_failed(stage.checkpoint_key, str(result.errors[-1]))
@@ -3409,8 +3458,15 @@ class Orchestrator(TestFixLoopMixin):
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
-    def _run_stage(self, name: str, description: str, result: PipelineResult, fn) -> None:
-        """Run a pipeline stage with progress display and error handling."""
+    def _run_stage(self, name: str, description: str, result: PipelineResult, fn, timeout_s: float | None = None) -> None:
+        """Run a pipeline stage with progress display, error handling, and optional timeout.
+
+        If *timeout_s* is set and the stage exceeds it, a timeout error is recorded
+        on *result*. The background thread continues until the LLM call returns —
+        Python cannot forcibly kill threads.
+        """
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
         with Progress(
             SpinnerColumn(),
             TextColumn(f"[bold blue]{name}[/bold blue] {description}"),
@@ -3419,14 +3475,43 @@ class Orchestrator(TestFixLoopMixin):
         ) as progress:
             progress.add_task("running", total=None)
             try:
-                fn()
+                if timeout_s is not None:
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    future = executor.submit(fn)
+                    try:
+                        future.result(timeout=timeout_s)
+                    except FuturesTimeout:
+                        executor.shutdown(wait=False)  # don't block; thread runs until LLM returns
+                        error_msg = (
+                            f"{name} timed out after {timeout_s}s "
+                            f"(background thread still running)"
+                        )
+                        result.add_error(error_msg)
+                        console.print(f"  ⏱️  [yellow]{error_msg}[/yellow]")
+                        return
+                    else:
+                        executor.shutdown(wait=False)
+                else:
+                    fn()
                 console.print(f"  ✅ [green]{name}[/green] complete")
+                if hasattr(self, "_agent_health"):
+                    self._agent_health.record_success(name)
             except ClarificationNeeded:
                 raise  # handled by run() — do not log as error
+            except BudgetExceededError:
+                raise  # propagate so the stage loop can halt the pipeline
             except Exception as exc:
                 error_msg = f"{name} failed: {exc}"
                 result.add_error(error_msg)
                 console.print(f"  ❌ [red]{error_msg}[/red]")
+                if hasattr(self, "_agent_health"):
+                    self._agent_health.record_failure(name)
+                    if self._agent_health.is_unhealthy(name):
+                        console.print(
+                            f"  ⚠️  [yellow]{name} has failed "
+                            f"{self._agent_health.failure_count(name)} consecutive times — "
+                            f"consider applying degradation policy[/yellow]"
+                        )
 
     def _build_clarification_context(self, history: list[dict], stage: str) -> str:
         """Build an answer-injection block for a specific stage from Q&A history.
