@@ -65,6 +65,10 @@ console = Console()
 # Marker embedded in bot comments to acknowledge processed update-branch directives
 _UPDATE_BRANCH_MARKER = "<!-- auto-update-branch -->"
 
+# Valid values for a loop block's 'until' verdict field.
+# Typos at load time raise ValueError rather than silently looping forever.
+VALID_LOOP_VERDICTS: frozenset[str] = frozenset({"APPROVED", "NEEDS_REVISION"})
+
 
 def _parse_explicit_skills(text: str) -> list[str]:
     """Parse 'skills: name1, name2' directive from issue body."""
@@ -498,6 +502,10 @@ class PipelineStage:
     required_output_fields: list[str] = field(default_factory=list)
     """Fields that must be non-empty on PipelineResult after this stage completes.
     Empty list = no verification (default, backward-compatible)."""
+
+    is_critical: bool = False
+    """When True, this stage's circuit breaker state is checked by downstream stages.
+    Downstream non-critical stages are skipped if any critical CB is open."""
 
 
 MODES: dict[str, list[str]] = {
@@ -1239,6 +1247,7 @@ class Orchestrator(TestFixLoopMixin):
                 checkpoint_key="pm",
                 fn=lambda r: self._stage_pm(r, r.requirement),
                 required_output_fields=["prd"],
+                is_critical=True,
             ),
             "pm_reviewer": PipelineStage(
                 name="pm_reviewer",
@@ -1254,6 +1263,7 @@ class Orchestrator(TestFixLoopMixin):
                 checkpoint_key="architect",
                 fn=lambda r: self._stage_architect(r),
                 required_output_fields=["design"],
+                is_critical=True,
             ),
             "architect_reviewer": PipelineStage(
                 name="architect_reviewer",
@@ -1444,6 +1454,14 @@ class Orchestrator(TestFixLoopMixin):
                         f"Loop block at index {i} 'until' must be a non-empty string "
                         f"(e.g. 'APPROVED'). Got: {loop['until']!r}"
                     )
+                # Whitelist check: reject typos immediately rather than looping forever
+                until_val = str(loop["until"]).strip().upper()
+                if until_val not in VALID_LOOP_VERDICTS:
+                    raise ValueError(
+                        f"Loop block at index {i} 'until' must be one of "
+                        f"{sorted(VALID_LOOP_VERDICTS)}. Got: {loop['until']!r}"
+                    )
+                loop["until"] = until_val  # normalise to uppercase
                 if not isinstance(loop["stages"], list) or len(loop["stages"]) == 0:
                     raise ValueError(
                         f"Loop block at index {i} 'stages' must be a non-empty list."
@@ -3531,6 +3549,24 @@ class Orchestrator(TestFixLoopMixin):
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
+    def _critical_cb_open(self) -> str | None:
+        """Return the name of the first critical stage whose circuit breaker is open, or None.
+
+        Checks the well-known critical stage checkpoint keys ('pm', 'architect'). Used by
+        _run_stage() to cascade-skip downstream stages when an upstream critical
+        stage has tripped its circuit breaker open.
+        """
+        from core.circuit_breaker_registry import get_registry
+        registry = get_registry()
+        for name in ("pm", "architect"):
+            try:
+                cb = registry.get_or_create("agent", name)
+                if cb.state == "open":
+                    return name
+            except Exception as exc:
+                _log.warning("_critical_cb_open: error checking breaker %r: %s", name, exc)
+        return None
+
     def _run_stage_safe(self, stage: "PipelineStage", result: "PipelineResult") -> bool:
         """Thread-safe wrapper for _run_stage used in parallel group execution.
 
@@ -3548,18 +3584,46 @@ class Orchestrator(TestFixLoopMixin):
                 lambda s=stage: s.fn(result),
                 timeout_s=stage.timeout_s,
                 required_output_fields=stage.required_output_fields,
+                cb_key=stage.checkpoint_key,
+                is_critical=stage.is_critical,
             )
         finally:
             current_stage.reset(_token)
         return len(result.errors) == errors_before
 
-    def _run_stage(self, name: str, description: str, result: PipelineResult, fn, timeout_s: float | None = None, required_output_fields: list[str] | None = None) -> None:
+    def _run_stage(self, name: str, description: str, result: PipelineResult, fn, timeout_s: float | None = None, required_output_fields: list[str] | None = None, cb_key: str | None = None, is_critical: bool = False) -> None:
         """Run a pipeline stage with progress display, error handling, and optional timeout.
 
         If *timeout_s* is set and the stage exceeds it, a timeout error is recorded
         on *result*. The background thread continues until the LLM call returns —
         Python cannot forcibly kill threads.
+
+        Args:
+            name:                  Stage display label (used in progress output).
+            description:           Short description shown in progress spinner.
+            result:                PipelineResult to record errors on.
+            fn:                    Callable to execute the stage logic.
+            timeout_s:             Optional wall-clock timeout in seconds.
+            required_output_fields: Fields verified on result after stage completes.
+            cb_key:                Circuit breaker key for this stage (defaults to name).
+                                   Should be the stage's checkpoint_key for consistency.
+            is_critical:           When True, this stage is exempt from cascade-skip;
+                                   critical stages always run regardless of upstream CB state.
         """
+        # CB cascade: skip non-critical stages when a critical upstream CB is open.
+        # Critical stages (pm, architect) always run so they can recover.
+        if not is_critical:
+            open_stage = self._critical_cb_open()
+            if open_stage:
+                result.add_error(_PipelineError(
+                    code="STAGE_SKIPPED",
+                    stage=cb_key or name,
+                    message=f"Skipped: critical stage {open_stage!r} circuit breaker is open",
+                    severity="warning",
+                    context={"upstream_stage": open_stage, "reason": "CB_CASCADE"},
+                ))
+                return
+
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
         with Progress(
             SpinnerColumn(),
@@ -3609,13 +3673,14 @@ class Orchestrator(TestFixLoopMixin):
                 if hasattr(self, "_agent_health"):
                     self._agent_health.record_failure(name)
                     if self._agent_health.is_unhealthy(name):
+                        effective_cb_key = cb_key or name
                         console.print(
                             f"  ⚠️  [yellow]{name} has failed "
                             f"{self._agent_health.failure_count(name)} consecutive times — "
-                            f"tripping circuit breaker for '{name}'[/yellow]"
+                            f"tripping circuit breaker for '{effective_cb_key}'[/yellow]"
                         )
                         from core.circuit_breaker_registry import get_registry
-                        get_registry().get_or_create("agent", name).force_open()
+                        get_registry().get_or_create("agent", effective_cb_key).force_open()
 
     def _build_clarification_context(self, history: list[dict], stage: str) -> str:
         """Build an answer-injection block for a specific stage from Q&A history.
