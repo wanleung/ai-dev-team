@@ -20,12 +20,22 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, replace as dc_replace
 from pathlib import Path
 from typing import Any, Iterator
 
 from config_schema import DLQConfig, DLQRedisConfig, DLQSQSConfig
+from core.events import DLQEvent, emit_event
+
+logger = logging.getLogger(__name__)
+
+
+def _dlq_emit(action: str, entry_id: str, backend: str, attempt_count: int = 1) -> None:
+    """Emit a DLQEvent; exceptions are suppressed by emit_event's internal handler."""
+    emit_event(DLQEvent(action=action, entry_id=entry_id, backend=backend,
+                        attempt_count=attempt_count))
 
 
 @dataclass
@@ -112,6 +122,7 @@ class FileDeadLetterQueue(DeadLetterQueue):
         tmp = target.with_suffix(".tmp")
         tmp.write_text(json.dumps(asdict(entry), indent=2), encoding="utf-8")
         tmp.replace(target)
+        _dlq_emit("enqueue", entry.id, "file", entry.attempt_count)
 
     def drain(self) -> Iterator[DLQEntry]:
         """Yield all entries found in the directory, skipping corrupt files."""
@@ -127,6 +138,7 @@ class FileDeadLetterQueue(DeadLetterQueue):
         f = self._file_for(entry_id)
         if f.exists():
             f.unlink()
+            _dlq_emit("ack", entry_id, "file")
 
     def nack(self, entry_id: str) -> None:
         """Increment attempt_count; discard entry if max_attempts exceeded (atomic write)."""
@@ -136,10 +148,12 @@ class FileDeadLetterQueue(DeadLetterQueue):
             data["attempt_count"] = data.get("attempt_count", 1) + 1
             if data["attempt_count"] > self._max_attempts:
                 f.unlink(missing_ok=True)
+                _dlq_emit("nack", entry_id, "file", data["attempt_count"])
                 return
             tmp = f.with_suffix(".tmp")
             tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
             tmp.replace(f)
+            _dlq_emit("nack", entry_id, "file", data["attempt_count"])
 
 
 class RedisDLQ(DeadLetterQueue):
@@ -179,6 +193,7 @@ class RedisDLQ(DeadLetterQueue):
         self._redis.hset(self._cfg.key, entry.id, payload)
         if self._cfg.ttl_s is not None:
             self._redis.expire(self._cfg.key, self._cfg.ttl_s)
+        _dlq_emit("enqueue", entry.id, "redis", entry.attempt_count)
 
     def drain(self) -> Iterator[DLQEntry]:
         """Yield all entries currently in the hash (order is not guaranteed)."""
@@ -193,7 +208,9 @@ class RedisDLQ(DeadLetterQueue):
 
     def ack(self, entry_id: str) -> None:
         """Remove the entry with entry_id from the hash (O(1))."""
-        self._redis.hdel(self._cfg.key, entry_id)
+        removed = self._redis.hdel(self._cfg.key, entry_id)
+        if removed:
+            _dlq_emit("ack", entry_id, "redis")
 
     def nack(self, entry_id: str) -> None:
         """Increment attempt_count; drop entry if max_attempts exceeded."""
@@ -211,6 +228,7 @@ class RedisDLQ(DeadLetterQueue):
             self._redis.hset(self._cfg.key, entry_id, json.dumps(data))
         else:
             self._redis.hdel(self._cfg.key, entry_id)
+        _dlq_emit("nack", entry_id, "redis", data["attempt_count"])
 
 
 class SQSDeadLetterQueue(DeadLetterQueue):
@@ -245,6 +263,7 @@ class SQSDeadLetterQueue(DeadLetterQueue):
             QueueUrl=self._cfg.queue_url,
             MessageBody=json.dumps(asdict(entry)),
         )
+        _dlq_emit("enqueue", entry.id, "sqs", entry.attempt_count)
 
     def drain(self) -> Iterator[DLQEntry]:
         """Poll the SQS queue in batches and yield entries until the queue is empty.
@@ -287,10 +306,14 @@ class SQSDeadLetterQueue(DeadLetterQueue):
         rh = self._receipt_handles.pop(entry_id, None)
         self._entries.pop(entry_id, None)
         if rh:
+            deleted = False
             try:
                 self._sqs.delete_message(QueueUrl=self._cfg.queue_url, ReceiptHandle=rh)
+                deleted = True
             except Exception:
                 pass  # Handle expired; message will re-appear and be re-processed
+            if deleted:
+                _dlq_emit("ack", entry_id, "sqs")
 
     def nack(self, entry_id: str) -> None:
         """Delete original SQS message and re-enqueue with incremented attempt_count.
@@ -314,8 +337,24 @@ class SQSDeadLetterQueue(DeadLetterQueue):
             # Handle expired; original message will re-appear via visibility timeout.
             # Do NOT call enqueue — that would create a duplicate.
             return
-        # Re-enqueue with updated count
-        self.enqueue(updated)
+        # Re-enqueue with updated count — send directly to avoid double-firing
+        # a spurious "enqueue" event; only one "nack" event should be emitted.
+        try:
+            self._sqs.send_message(
+                QueueUrl=self._cfg.queue_url,
+                MessageBody=json.dumps(asdict(updated)),
+            )
+        except Exception:
+            # send_message failed after original was deleted: silent data loss.
+            # A "failed" action type would be needed to emit here; DLQEvent
+            # doesn't model that today.
+            logger.warning(
+                "DLQ data loss: entry %s deleted from SQS but re-enqueue failed; "
+                "entry is permanently lost.",
+                entry_id,
+            )
+            return
+        _dlq_emit("nack", entry_id, "sqs", updated.attempt_count)
 
 
 def build_dlq(cfg: DLQConfig, workspace_root: Path = Path(".")) -> DeadLetterQueue:

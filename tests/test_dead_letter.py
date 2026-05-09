@@ -15,6 +15,7 @@ from core.dead_letter import (
     SQSDeadLetterQueue,
     build_dlq,
 )
+from core.events import DLQEvent, set_emit_callback, reset_emit_callback
 
 
 def _entry(**kwargs) -> DLQEntry:
@@ -391,3 +392,205 @@ def test_redis_dlq_nack_unknown_id_is_noop():
     dlq.enqueue(_make_entry("e1"))
     dlq.nack("nonexistent")   # must not raise
     assert len(list(dlq.drain())) == 1
+
+
+# ── DLQ event emission ────────────────────────────────────────────────────────
+
+
+def test_dlq_enqueue_emits_event(tmp_path):
+    events = []
+    set_emit_callback(events.append)
+    try:
+        cfg = DLQConfig(enabled=True, backend="file", file=DLQFileConfig(path=str(tmp_path / "dlq")))
+        dlq = build_dlq(cfg, workspace_root=tmp_path)
+        entry = DLQEntry(id="e1", issue_number=1, tracker_repo="r", label="ai-dev",
+                         model="gpt-4o", num_engineers=1, failed_at="2026-01-01T00:00:00Z",
+                         error={"msg": "fail"})
+        dlq.enqueue(entry)
+        assert any(isinstance(e, DLQEvent) and e.action == "enqueue" and e.entry_id == "e1"
+                   for e in events), f"Expected enqueue event, got: {events}"
+    finally:
+        reset_emit_callback()
+
+
+def test_dlq_ack_emits_event(tmp_path):
+    events = []
+    set_emit_callback(events.append)
+    try:
+        cfg = DLQConfig(enabled=True, backend="file", file=DLQFileConfig(path=str(tmp_path / "dlq")))
+        dlq = build_dlq(cfg, workspace_root=tmp_path)
+        entry = DLQEntry(id="e2", issue_number=2, tracker_repo="r", label="ai-dev",
+                         model="gpt-4o", num_engineers=1, failed_at="2026-01-01T00:00:00Z",
+                         error={})
+        dlq.enqueue(entry)
+        events.clear()
+        dlq.ack("e2")
+        assert any(isinstance(e, DLQEvent) and e.action == "ack" and e.entry_id == "e2"
+                   for e in events), f"Expected ack event, got: {events}"
+    finally:
+        reset_emit_callback()
+
+
+def _make_file_dlq_and_entry(tmp_path, entry_id="e1"):
+    cfg = DLQConfig(enabled=True, backend="file", file=DLQFileConfig(path=str(tmp_path / "dlq")))
+    dlq = build_dlq(cfg, workspace_root=tmp_path)
+    entry = DLQEntry(id=entry_id, issue_number=1, tracker_repo="r", label="ai-dev",
+                     model="gpt-4o", num_engineers=1, failed_at="2026-01-01T00:00:00Z",
+                     error={})
+    return dlq, entry
+
+
+def test_file_dlq_nack_emits_event_update_path(tmp_path):
+    """nack emits when entry survives (attempt_count < max_attempts)."""
+    events = []
+    set_emit_callback(events.append)
+    try:
+        dlq, entry = _make_file_dlq_and_entry(tmp_path)
+        dlq.enqueue(entry)
+        events.clear()
+        dlq.nack(entry.id)
+        assert any(isinstance(e, DLQEvent) and e.action == "nack" and e.entry_id == entry.id
+                   for e in events), f"Expected nack event, got: {events}"
+    finally:
+        reset_emit_callback()
+
+
+def test_file_dlq_nack_emits_event_discard_path(tmp_path):
+    """nack emits even when entry is discarded (attempt_count > max_attempts)."""
+    events = []
+    set_emit_callback(events.append)
+    try:
+        dlq = FileDeadLetterQueue(Path(tmp_path / "dlq"), max_attempts=1)
+        entry = DLQEntry(id="discard", issue_number=1, tracker_repo="r", label="ai-dev",
+                         model="gpt-4o", num_engineers=1, failed_at="2026-01-01T00:00:00Z",
+                         error={}, attempt_count=1)
+        dlq.enqueue(entry)
+        dlq.nack(entry.id)  # attempt_count → 2 > max_attempts=1 → discard
+        events.clear()
+        # enqueue fresh entry to test the discard path specifically
+        entry2 = DLQEntry(id="discard2", issue_number=2, tracker_repo="r", label="ai-dev",
+                          model="gpt-4o", num_engineers=1, failed_at="2026-01-01T00:00:00Z",
+                          error={}, attempt_count=1)
+        dlq.enqueue(entry2)
+        dlq.nack(entry2.id)  # discard path
+        assert any(isinstance(e, DLQEvent) and e.action == "nack" and e.entry_id == "discard2"
+                   for e in events), f"Expected nack event on discard path, got: {events}"
+    finally:
+        reset_emit_callback()
+
+
+def test_redis_dlq_enqueue_emits_event():
+    """redis backend emits enqueue event with backend='redis'."""
+    events = []
+    set_emit_callback(events.append)
+    try:
+        dlq = _make_redis_dlq()
+        entry = _make_entry("redis-e1")
+        dlq.enqueue(entry)
+        assert any(isinstance(e, DLQEvent) and e.action == "enqueue"
+                   and e.entry_id == "redis-e1" and e.backend == "redis"
+                   for e in events), f"Expected redis enqueue event, got: {events}"
+    finally:
+        reset_emit_callback()
+
+
+def test_redis_dlq_ack_emits_event():
+    """redis backend emits ack event."""
+    events = []
+    set_emit_callback(events.append)
+    try:
+        dlq = _make_redis_dlq()
+        dlq.enqueue(_make_entry("redis-e2"))
+        events.clear()
+        dlq.ack("redis-e2")
+        assert any(isinstance(e, DLQEvent) and e.action == "ack" and e.entry_id == "redis-e2"
+                   for e in events), f"Expected redis ack event, got: {events}"
+    finally:
+        reset_emit_callback()
+
+
+def test_redis_dlq_ack_unknown_id_emits_no_event():
+    """redis ack() on unknown entry_id must not emit a phantom event."""
+    events = []
+    set_emit_callback(events.append)
+    try:
+        dlq = _make_redis_dlq()
+        dlq.ack("nonexistent-id")
+        assert not any(isinstance(e, DLQEvent) and e.action == "ack" for e in events), \
+            f"Expected no ack event for unknown id, got: {events}"
+    finally:
+        reset_emit_callback()
+
+
+def test_redis_dlq_nack_emits_event():
+    """redis backend emits nack event with correct attempt_count."""
+    events = []
+    set_emit_callback(events.append)
+    try:
+        dlq = _make_redis_dlq(max_attempts=3)
+        dlq.enqueue(_make_entry("redis-e3"))
+        events.clear()
+        dlq.nack("redis-e3")
+        nack_events = [e for e in events if isinstance(e, DLQEvent) and e.action == "nack"]
+        assert len(nack_events) == 1, f"Expected exactly 1 nack event, got: {events}"
+        assert nack_events[0].entry_id == "redis-e3"
+        assert nack_events[0].attempt_count == 2
+    finally:
+        reset_emit_callback()
+
+
+def _make_sqs_dlq_with_entry(entry_id="sqs-e1"):
+    """Return (dlq, mock_sqs, entry) with the entry already drained so ack/nack work."""
+    mock_sqs = MagicMock()
+    entry = DLQEntry(id=entry_id, issue_number=1, tracker_repo="r", label="ai-dev",
+                     model="gpt-4o", num_engineers=1, failed_at="2026-01-01T00:00:00Z",
+                     error={})
+    import json as _json
+    mock_sqs.receive_message.side_effect = [
+        {"Messages": [{"Body": _json.dumps(
+            {"id": entry_id, "issue_number": 1, "tracker_repo": "r", "label": "ai-dev",
+             "model": "gpt-4o", "num_engineers": 1, "failed_at": "2026-01-01T00:00:00Z",
+             "error": {}, "target_repo": "", "attempt_count": 1}
+        ), "ReceiptHandle": "rh-1"}]},
+        {"Messages": []},
+    ]
+    cfg = DLQSQSConfig(queue_url="https://sqs.eu-west-1.amazonaws.com/123/test")
+    dlq = SQSDeadLetterQueue(cfg, client=mock_sqs)
+    list(dlq.drain())  # populate receipt handles
+    return dlq, mock_sqs, entry
+
+
+def test_sqs_dlq_enqueue_emits_event():
+    """sqs backend emits enqueue event with backend='sqs'."""
+    events = []
+    set_emit_callback(events.append)
+    try:
+        mock_sqs = MagicMock()
+        cfg = DLQSQSConfig(queue_url="https://sqs.eu-west-1.amazonaws.com/123/test")
+        dlq = SQSDeadLetterQueue(cfg, client=mock_sqs)
+        entry = DLQEntry(id="sqs-enq", issue_number=1, tracker_repo="r", label="ai-dev",
+                         model="gpt-4o", num_engineers=1, failed_at="2026-01-01T00:00:00Z",
+                         error={})
+        dlq.enqueue(entry)
+        assert any(isinstance(e, DLQEvent) and e.action == "enqueue"
+                   and e.entry_id == "sqs-enq" and e.backend == "sqs"
+                   for e in events), f"Expected sqs enqueue event, got: {events}"
+    finally:
+        reset_emit_callback()
+
+
+def test_sqs_dlq_nack_emits_exactly_one_event():
+    """Regression: nack() must emit exactly one DLQEvent(action='nack'), not also 'enqueue'."""
+    events = []
+    set_emit_callback(events.append)
+    try:
+        dlq, _, _ = _make_sqs_dlq_with_entry("sqs-nack")
+        dlq.nack("sqs-nack")
+        dlq_events = [e for e in events if isinstance(e, DLQEvent)]
+        assert len(dlq_events) == 1, \
+            f"Expected exactly 1 DLQEvent from nack(), got {len(dlq_events)}: {dlq_events}"
+        assert dlq_events[0].action == "nack"
+        assert dlq_events[0].entry_id == "sqs-nack"
+        assert dlq_events[0].backend == "sqs"
+    finally:
+        reset_emit_callback()

@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from config_schema import DegradationConfig, LLMConfig
+from core.events import DegradationEvent, emit_event
 
 
 @dataclass
@@ -128,9 +129,15 @@ class DegradationPolicy:
                     f"skip_optional_stages: {to_skip} (reason: {context.reason})"
                 )
 
-        return DegradationResult(
+        result = DegradationResult(
             num_engineers=result_engineers,
             model=result_model,
             skipped_stages=result_skipped,
             actions_taken=actions,
         )
+        if actions:
+            emit_event(DegradationEvent(
+                trigger=context.reason,
+                actions_taken=actions,
+            ))
+        return result
