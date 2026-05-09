@@ -1,9 +1,11 @@
 """Tests for MCPToolRegistry and CombinedToolRegistry."""
 from __future__ import annotations
 
+import asyncio
 import json
+import warnings
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from tools.registry import LocalToolRegistry, CombinedToolRegistry
 
@@ -286,3 +288,97 @@ def test_mcp_registry_sse_schemas(monkeypatch):
     reg = MCPToolRegistry(servers)
     names = [s["function"]["name"] for s in reg.schemas]
     assert "sse_tool" in names
+
+
+# ── MCPToolRegistry: per-server connection timeout ────────────────────────────
+
+def test_mcp_registry_skips_server_on_connect_timeout():
+    """A slow server (timeout exceeded) is skipped with a warning, not hung forever."""
+    async def _slow_list_tools(self, server):
+        await asyncio.sleep(999)  # simulates a hung server
+        return []
+
+    servers = [{"name": "slow", "type": "stdio", "command": "echo", "connect_timeout_s": 0.05}]
+
+    with patch.object(MCPToolRegistry, "_list_tools", new=_slow_list_tools):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            registry = MCPToolRegistry.__new__(MCPToolRegistry)
+            registry._servers = servers
+            registry._schemas = []
+            registry._tool_to_server = {}
+            asyncio.run(registry._connect_all())
+
+    assert len(registry._schemas) == 0   # no tools registered from slow server
+    # Must be a genuine timeout warning, not just any warning about the server
+    assert any(
+        "timeout" in str(warning.message).lower() or "timed out" in str(warning.message).lower()
+        for warning in w
+    ), f"Expected a timeout warning, got: {[str(x.message) for x in w]}"
+
+
+def test_mcp_registry_default_connect_timeout_is_ten():
+    """_connect_all() passes timeout=10.0 to asyncio.wait_for when connect_timeout_s is absent."""
+    captured = {}
+
+    async def _spy_wait_for(coro, timeout):
+        captured["timeout"] = timeout
+        coro.close()
+        raise asyncio.TimeoutError
+
+    servers = [{"name": "s1", "type": "sse", "url": "http://localhost:9999"}]
+
+    with patch("asyncio.wait_for", new=_spy_wait_for):
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            registry = MCPToolRegistry.__new__(MCPToolRegistry)
+            registry._servers = servers
+            registry._schemas = []
+            registry._tool_to_server = {}
+            asyncio.run(registry._connect_all())
+
+    assert captured["timeout"] == 10.0
+
+
+def test_mcp_registry_per_server_timeout_respected():
+    """_connect_all() passes the server's connect_timeout_s to asyncio.wait_for."""
+    captured = {}
+
+    async def _spy_wait_for(coro, timeout):
+        captured["timeout"] = timeout
+        coro.close()
+        raise asyncio.TimeoutError
+
+    servers = [{"name": "fast", "type": "sse", "url": "http://localhost:9999", "connect_timeout_s": 2.5}]
+
+    with patch("asyncio.wait_for", new=_spy_wait_for):
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            registry = MCPToolRegistry.__new__(MCPToolRegistry)
+            registry._servers = servers
+            registry._schemas = []
+            registry._tool_to_server = {}
+            asyncio.run(registry._connect_all())
+
+    assert captured["timeout"] == 2.5
+
+
+def test_mcp_registry_timeout_warning_mentions_server_name():
+    """Timeout warning message includes the server name."""
+    async def _slow_list_tools(self, server):
+        await asyncio.sleep(999)
+        return []
+
+    servers = [{"name": "my-special-server", "type": "sse", "url": "http://localhost", "connect_timeout_s": 0.05}]
+
+    with patch.object(MCPToolRegistry, "_list_tools", new=_slow_list_tools):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            registry = MCPToolRegistry.__new__(MCPToolRegistry)
+            registry._servers = servers
+            registry._schemas = []
+            registry._tool_to_server = {}
+            asyncio.run(registry._connect_all())
+
+    assert any("my-special-server" in str(warning.message) for warning in w), \
+        f"Expected server name in warning, got: {[str(x.message) for x in w]}"

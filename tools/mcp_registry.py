@@ -91,10 +91,26 @@ class MCPToolRegistry(ToolRegistry):
         asyncio.run(self._connect_all())
 
     async def _connect_all(self) -> None:
-        """Connect to all configured MCP servers and fetch their tool lists."""
+        """Connect to all configured MCP servers and fetch their tool lists.
+
+        Each server's ``connect_timeout_s`` key (default 10.0) limits how long
+        the initial tool-list fetch may take.  Servers that exceed the timeout
+        are skipped with a warning rather than blocking the caller indefinitely.
+        """
         for server in self._servers:
+            timeout_s: float = float(server.get("connect_timeout_s", 10.0))
             try:
-                tools = await self._list_tools(server)
+                tools = await asyncio.wait_for(
+                    self._list_tools(server),
+                    timeout=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                warnings.warn(
+                    f"[MCPToolRegistry] Timed out connecting to MCP server "
+                    f"'{server.get('name', '?')}' after {timeout_s}s. Skipping.",
+                    stacklevel=2,
+                )
+                continue
             except Exception as exc:
                 warnings.warn(
                     f"[MCPToolRegistry] Could not connect to MCP server "

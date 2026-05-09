@@ -53,7 +53,7 @@ from skills_loader import SkillContext, SkillLoader
 from test_fix_loop import TestFixLoopMixin
 from tools import builtin_tools, CombinedToolRegistry, MCPToolRegistry
 from agents.token_ledger import TokenLedger, current_stage, get_ledger, set_ledger
-from utils import sanitise as _sanitise
+from utils import sanitise as _sanitise, deep_merge as _deep_merge
 from core.errors import PipelineError as _PipelineError
 
 log = logging.getLogger(__name__)
@@ -62,21 +62,6 @@ console = Console()
 
 # Marker embedded in bot comments to acknowledge processed update-branch directives
 _UPDATE_BRANCH_MARKER = "<!-- auto-update-branch -->"
-
-
-def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge override into base, returning a new dict.
-
-    Nested dicts are merged at the leaf level; scalars are overwritten.
-    Neither input dict is mutated.
-    """
-    result = dict(base)
-    for key, val in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
-            result[key] = _deep_merge(result[key], val)
-        else:
-            result[key] = val
-    return result
 
 
 def _parse_explicit_skills(text: str) -> list[str]:
