@@ -142,36 +142,47 @@ class FileDeadLetterQueue(DeadLetterQueue):
             tmp.replace(f)
 
 
-class RedisDeadLetterQueue(DeadLetterQueue):
-    """Redis list-based DLQ backend.
+class RedisDLQ(DeadLetterQueue):
+    """Redis-backed DLQ using a hash for O(1) ack/nack.
 
-    Entries are stored as JSON strings in a Redis list. Requires the ``redis`` package.
+    Storage layout: Redis hash at ``cfg.key`` where field = entry.id,
+    value = JSON blob. TTL (if configured) is refreshed on every enqueue.
 
-    Args:
-        cfg: Redis DLQ configuration (url, key, ttl_s).
-        client: Optional pre-built Redis client (mainly for testing).
-        max_attempts: Entries that exceed this count are discarded on nack.
+    **Optional dependency:** requires the ``redis`` Python package
+    (``pip install redis``). A client may be injected for testing; when no
+    client is provided one is created from ``cfg.url``.
+
+    Migration: any entries written by the old list-based implementation
+    are not migrated. On upgrade, the old list key is abandoned in Redis.
     """
 
-    def __init__(self, cfg: DLQRedisConfig, client=None, max_attempts: int = 3) -> None:
+    def __init__(
+        self,
+        cfg: "DLQRedisConfig",
+        max_attempts: int = 3,
+        client=None,
+    ) -> None:
         self._cfg = cfg
         self._max_attempts = max_attempts
         if client is not None:
             self._redis = client
         else:
-            import redis as _redis  # lazy import — optional dependency
+            import redis as _redis
             self._redis = _redis.from_url(cfg.url)
 
     def enqueue(self, entry: DLQEntry) -> None:
-        """Push the entry JSON to the head of the Redis list."""
+        """Store entry JSON in the Redis hash keyed by entry.id.
+
+        Re-enqueueing an entry with the same id overwrites the previous record (idempotent).
+        """
         payload = json.dumps(asdict(entry))
-        self._redis.lpush(self._cfg.key, payload)
-        if self._cfg.ttl_s:
+        self._redis.hset(self._cfg.key, entry.id, payload)
+        if self._cfg.ttl_s is not None:
             self._redis.expire(self._cfg.key, self._cfg.ttl_s)
 
     def drain(self) -> Iterator[DLQEntry]:
-        """Yield all entries in the Redis list without removing them."""
-        items = self._redis.lrange(self._cfg.key, 0, -1) or []
+        """Yield all entries currently in the hash (order is not guaranteed)."""
+        items = self._redis.hvals(self._cfg.key) or []
         for item in items:
             try:
                 raw = item.decode() if isinstance(item, bytes) else item
@@ -181,31 +192,25 @@ class RedisDeadLetterQueue(DeadLetterQueue):
                 continue
 
     def ack(self, entry_id: str) -> None:
-        """Remove the entry with the given id from the Redis list."""
-        for item in self._redis.lrange(self._cfg.key, 0, -1) or []:
-            try:
-                raw = item.decode() if isinstance(item, bytes) else item
-                data = json.loads(raw)
-                if data.get("id") == entry_id:
-                    self._redis.lrem(self._cfg.key, 1, item)
-                    return
-            except Exception:
-                continue
+        """Remove the entry with entry_id from the hash (O(1))."""
+        self._redis.hdel(self._cfg.key, entry_id)
 
     def nack(self, entry_id: str) -> None:
-        """Increment attempt_count and re-push; discard if max_attempts exceeded."""
-        for item in self._redis.lrange(self._cfg.key, 0, -1) or []:
-            try:
-                raw = item.decode() if isinstance(item, bytes) else item
-                data = json.loads(raw)
-                if data.get("id") == entry_id:
-                    data["attempt_count"] = data.get("attempt_count", 1) + 1
-                    self._redis.lrem(self._cfg.key, 1, item)
-                    if data["attempt_count"] <= self._max_attempts:
-                        self._redis.lpush(self._cfg.key, json.dumps(data))
-                    return
-            except Exception:
-                continue
+        """Increment attempt_count; drop entry if max_attempts exceeded."""
+        # Note: hget → hset is not atomic; concurrent nacks on the same entry_id
+        # may under-count. Acceptable for low-throughput DLQ use.
+        raw = self._redis.hget(self._cfg.key, entry_id)
+        if raw is None:
+            return
+        try:
+            data = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+        except Exception:
+            return
+        data["attempt_count"] = data.get("attempt_count", 1) + 1
+        if data["attempt_count"] <= self._max_attempts:
+            self._redis.hset(self._cfg.key, entry_id, json.dumps(data))
+        else:
+            self._redis.hdel(self._cfg.key, entry_id)
 
 
 class SQSDeadLetterQueue(DeadLetterQueue):
@@ -341,7 +346,7 @@ def build_dlq(cfg: DLQConfig, workspace_root: Path = Path(".")) -> DeadLetterQue
             raise ValueError(
                 "reliability.dead_letter.redis config is required for redis backend"
             )
-        return RedisDeadLetterQueue(cfg.redis, max_attempts=cfg.max_attempts)
+        return RedisDLQ(cfg.redis, max_attempts=cfg.max_attempts)
 
     if cfg.backend == "sqs":
         if cfg.sqs is None:

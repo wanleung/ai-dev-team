@@ -98,7 +98,7 @@ class DLQRedisConfig(BaseModel):
 
     url: str = "redis://localhost:6379"
     key: str = "ai-swhouse:dlq"
-    ttl_s: int = 604800
+    ttl_s: Optional[int] = 604800
 
 
 class DLQSQSConfig(BaseModel):

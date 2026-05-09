@@ -11,7 +11,7 @@ from core.dead_letter import (
     DLQEntry,
     FileDeadLetterQueue,
     NullDeadLetterQueue,
-    RedisDeadLetterQueue,
+    RedisDLQ,
     SQSDeadLetterQueue,
     build_dlq,
 )
@@ -106,42 +106,6 @@ def test_null_dlq_ack_nack_are_noop():
     dlq = NullDeadLetterQueue()
     dlq.ack("any-id")
     dlq.nack("any-id")
-
-
-# ── RedisDeadLetterQueue ──────────────────────────────────────────────────────
-
-def test_redis_dlq_enqueue_calls_lpush():
-    mock_redis = MagicMock()
-    cfg = DLQRedisConfig(url="redis://localhost:6379", key="test:dlq", ttl_s=100)
-    dlq = RedisDeadLetterQueue(cfg, client=mock_redis)
-    e = _entry()
-    dlq.enqueue(e)
-    mock_redis.lpush.assert_called_once()
-    args = mock_redis.lpush.call_args[0]
-    assert args[0] == "test:dlq"
-    payload = json.loads(args[1])
-    assert payload["id"] == e.id
-
-
-def test_redis_dlq_drain_yields_decoded_entries():
-    mock_redis = MagicMock()
-    e = _entry()
-    mock_redis.lrange.return_value = [json.dumps(e.__dict__).encode()]
-    cfg = DLQRedisConfig()
-    dlq = RedisDeadLetterQueue(cfg, client=mock_redis)
-    drained = list(dlq.drain())
-    assert len(drained) == 1
-    assert drained[0].id == e.id
-
-
-def test_redis_dlq_ack_removes_entry():
-    mock_redis = MagicMock()
-    e = _entry()
-    mock_redis.lrange.return_value = [json.dumps(e.__dict__).encode()]
-    cfg = DLQRedisConfig()
-    dlq = RedisDeadLetterQueue(cfg, client=mock_redis)
-    dlq.ack(e.id)
-    mock_redis.lrem.assert_called_once()
 
 
 # ── SQSDeadLetterQueue ────────────────────────────────────────────────────────
@@ -287,14 +251,14 @@ def test_sqs_drain_clears_stale_handles():
 
 
 def test_build_dlq_redis_backend(tmp_path):
-    """build_dlq should return RedisDeadLetterQueue when backend='redis'."""
+    """build_dlq should return RedisDLQ when backend='redis'."""
     mock_redis_client = MagicMock()
     cfg = DLQConfig(
         enabled=True,
         backend="redis",
         redis=DLQRedisConfig(url="redis://localhost:6379", key="dlq:test"),
     )
-    with patch("core.dead_letter.RedisDeadLetterQueue.__init__", return_value=None) as mock_init:
+    with patch("core.dead_letter.RedisDLQ.__init__", return_value=None) as mock_init:
         # Patch __init__ so we don't need a live Redis; check the class is instantiated
         dlq = build_dlq(cfg, workspace_root=tmp_path)
         mock_init.assert_called_once()
@@ -304,8 +268,22 @@ def test_build_dlq_redis_backend(tmp_path):
         backend="redis",
         redis=DLQRedisConfig(url="redis://localhost:6379", key="dlq:test"),
     )
-    dlq2 = RedisDeadLetterQueue(cfg2.redis, client=mock_redis_client, max_attempts=cfg2.max_attempts)
-    assert isinstance(dlq2, RedisDeadLetterQueue)
+    dlq2 = RedisDLQ(cfg2.redis, client=mock_redis_client, max_attempts=cfg2.max_attempts)
+    assert isinstance(dlq2, RedisDLQ)
+
+
+def test_build_dlq_returns_redis_dlq_for_redis_backend():
+    """build_dlq() must return the O(1) hash-based RedisDLQ, not the old list-based class."""
+    from core.dead_letter import build_dlq, RedisDLQ
+    from config_schema import DLQConfig, DLQRedisConfig
+
+    cfg = DLQConfig(
+        enabled=True,
+        backend="redis",
+        redis=DLQRedisConfig(url="redis://localhost", key="test", ttl_s=None),
+    )
+    dlq = build_dlq(cfg)
+    assert isinstance(dlq, RedisDLQ)
 
 
 def test_build_dlq_unknown_backend_raises(tmp_path):
@@ -315,24 +293,6 @@ def test_build_dlq_unknown_backend_raises(tmp_path):
     cfg = DLQConfig.model_construct(enabled=True, backend="kafka")
     with pytest.raises(ValueError, match="Unknown DLQ backend"):
         build_dlq(cfg, workspace_root=tmp_path)
-
-
-def test_redis_nack_max_attempts_discards():
-    """Redis backend: after max_attempts nacks, entry should be removed from Redis."""
-    mock_redis = MagicMock()
-    cfg = DLQRedisConfig(url="redis://localhost:6379", key="test:dlq")
-    dlq = RedisDeadLetterQueue(cfg, client=mock_redis, max_attempts=2)
-    
-    e = _entry(attempt_count=2)
-    mock_redis.lrange.return_value = [json.dumps(e.__dict__).encode()]
-    
-    # First nack: attempt_count=2 → 3 > max_attempts=2, should be removed
-    dlq.nack(e.id)
-    
-    # Verify lrem was called to remove the entry (not re-added)
-    mock_redis.lrem.assert_called_once()
-    # Verify lpush was NOT called to re-add it
-    mock_redis.lpush.assert_not_called()
 
 
 def test_sqs_ack_expired_handle_no_raise():
@@ -356,3 +316,78 @@ def test_sqs_ack_expired_handle_no_raise():
     mock_sqs.delete_message.assert_called_once_with(
         QueueUrl=cfg.queue_url, ReceiptHandle="rh-expired"
     )
+
+
+# ── RedisDLQ (hash-based O(1) backend) ───────────────────────────────────────
+
+import fakeredis
+
+
+def _make_entry(entry_id: str = "e1") -> DLQEntry:
+    return DLQEntry(
+        id=entry_id,
+        issue_number=1,
+        tracker_repo="owner/repo",
+        label="ai-dev",
+        model="gpt-4o",
+        num_engineers=1,
+        failed_at="2026-01-01T00:00:00Z",
+        error={"message": "boom"},
+    )
+
+
+def _make_redis_dlq(max_attempts: int = 3) -> RedisDLQ:
+    cfg = DLQRedisConfig(url="redis://localhost", key="test_dlq", ttl_s=None)
+    client = fakeredis.FakeRedis()
+    return RedisDLQ(cfg, max_attempts=max_attempts, client=client)
+
+
+def test_redis_dlq_ack_is_o1():
+    """ack() removes exactly the targeted entry without scanning others."""
+    dlq = _make_redis_dlq()
+    e1 = _make_entry("e1")
+    e2 = _make_entry("e2")
+    dlq.enqueue(e1)
+    dlq.enqueue(e2)
+
+    dlq.ack("e1")
+
+    remaining = list(dlq.drain())
+    assert len(remaining) == 1
+    assert remaining[0].id == "e2"
+
+
+def test_redis_dlq_nack_increments_attempt_count():
+    dlq = _make_redis_dlq(max_attempts=3)
+    entry = _make_entry("e1")
+    dlq.enqueue(entry)
+
+    dlq.nack("e1")
+
+    items = list(dlq.drain())
+    assert len(items) == 1
+    assert items[0].attempt_count == 2
+
+
+def test_redis_dlq_nack_drops_entry_when_max_attempts_exceeded():
+    dlq = _make_redis_dlq(max_attempts=2)
+    entry = _make_entry("e1")
+    dlq.enqueue(entry)
+    dlq.nack("e1")   # attempt_count → 2 (== max_attempts, still kept)
+    dlq.nack("e1")   # attempt_count → 3 (> max_attempts, drop)
+
+    assert list(dlq.drain()) == []
+
+
+def test_redis_dlq_ack_unknown_id_is_noop():
+    dlq = _make_redis_dlq()
+    dlq.enqueue(_make_entry("e1"))
+    dlq.ack("nonexistent")   # must not raise
+    assert len(list(dlq.drain())) == 1
+
+
+def test_redis_dlq_nack_unknown_id_is_noop():
+    dlq = _make_redis_dlq()
+    dlq.enqueue(_make_entry("e1"))
+    dlq.nack("nonexistent")   # must not raise
+    assert len(list(dlq.drain())) == 1
