@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -483,6 +484,9 @@ class PipelineStage:
 
     loop_until: str = ""
     """Verdict string that exits a loop block early (e.g. 'APPROVED')."""
+
+    parallel_group: str | None = None
+    """When non-None, consecutive stages sharing this group name run concurrently."""
 
 
 MODES: dict[str, list[str]] = {
@@ -1242,6 +1246,9 @@ class Orchestrator(TestFixLoopMixin):
                 description="Classifying modules into junior/senior tiers...",
                 checkpoint_key="tier_review",
                 fn=lambda r: self._stage_tier_review(r),
+                # parallel_group can be set here for custom pipeline.yaml arrangements
+                # where tier_review and qa_planner appear consecutively.
+                # They are not consecutive in the built-in MODES, so no group is set by default.
             ),
             "junior_engineer": PipelineStage(
                 name="junior_engineer",
@@ -1274,6 +1281,7 @@ class Orchestrator(TestFixLoopMixin):
                 description="Creating test plan & acceptance criteria...",
                 checkpoint_key="qa_planner",
                 fn=lambda r: self._stage_qa_planner(r),
+                # parallel_group can be set in custom pipeline.yaml configurations.
             ),
             "qa_engineer": PipelineStage(
                 name="qa_engineer",
@@ -2341,78 +2349,120 @@ class Orchestrator(TestFixLoopMixin):
             result.completed_stages.append("rag_index")
 
         # ── Mode-driven stage loop ────────────────────────────────────────────
-        for stage in self._build_stage_list():
-            # Checkpoint resume: skip if already completed
-            if stage.checkpoint_key in result.completed_stages or stage.name in result.completed_stages:
-                console.print(f"  ⏭️  [dim]{stage.label} — skipped (checkpoint)[/dim]")
-                self._tracker.mark_skipped(stage.checkpoint_key)
-                continue
+        stage_list = self._build_stage_list()
+        i = 0
+        while i < len(stage_list):
+            stage = stage_list[i]
 
-            # Conditional skip (e.g. test_fix skipped when no test_files)
-            if stage.skip_if(result):
-                console.print(f"  ⏭️  [dim]{stage.label} — skipped[/dim]")
-                self._tracker.mark_skipped(stage.checkpoint_key)
-                continue
+            # Collect a parallel batch: current stage + following stages with the same group
+            if stage.parallel_group is not None:
+                batch = [stage]
+                j = i + 1
+                while j < len(stage_list) and stage_list[j].parallel_group == stage.parallel_group:
+                    batch.append(stage_list[j])
+                    j += 1
+                i = j
+            else:
+                batch = [stage]
+                i += 1
 
-            self._tracker.mark_in_progress(stage.checkpoint_key)
-
-            _stage_token = current_stage.set(stage.checkpoint_key)
-            try:
-                if stage.loop_stages:
-                    # Loop block from pipeline.yaml
-                    try:
-                        ok = self._run_loop_stage(stage, result)
-                    except BudgetExceededError as exc:
-                        error_msg = f"Pipeline halted: {exc}"
-                        result.add_error(error_msg)
-                        console.print(f"  💸 [bold red]{error_msg}[/bold red]")
-                        self._tracker.mark_failed(stage.checkpoint_key, error_msg)
-                        result.progress_comment_id = self._tracker.comment_id
-                        self._save_checkpoint(result)
-                        return self._finish(result, start_time)
-                    if not ok:
-                        self._tracker.mark_failed(stage.checkpoint_key)
-                        result.progress_comment_id = self._tracker.comment_id
-                        self._save_checkpoint(result)
-                        return self._finish(result, start_time)
+            # Filter out already-completed and conditionally-skipped stages
+            runnable = []
+            for s in batch:
+                if s.checkpoint_key in result.completed_stages or s.name in result.completed_stages:
+                    console.print(f"  ⏭️  [dim]{s.label} — skipped (checkpoint)[/dim]")
+                    self._tracker.mark_skipped(s.checkpoint_key)
+                elif s.skip_if(result):
+                    console.print(f"  ⏭️  [dim]{s.label} — skipped[/dim]")
+                    self._tracker.mark_skipped(s.checkpoint_key)
                 else:
-                    try:
-                        self._run_stage(stage.label, stage.description, result, lambda s=stage: s.fn(result), timeout_s=stage.timeout_s)
-                    except BudgetExceededError as exc:
-                        error_msg = f"Pipeline halted: {exc}"
-                        result.add_error(error_msg)
-                        console.print(f"  💸 [bold red]{error_msg}[/bold red]")
-                        self._tracker.mark_failed(stage.checkpoint_key, error_msg)
-                        result.progress_comment_id = self._tracker.comment_id
-                        self._save_checkpoint(result)
-                        return self._finish(result, start_time)
+                    runnable.append(s)
 
-                    if result.errors:
-                        self._tracker.mark_failed(stage.checkpoint_key, str(result.errors[-1]))
-                        result.progress_comment_id = self._tracker.comment_id
-                        self._save_checkpoint(result)
-                        return self._finish(result, start_time)
-            finally:
-                current_stage.reset(_stage_token)
+            if not runnable:
+                continue
 
-            # Backward-compat: senior_engineer stage also marks old "engineer" key
-            if stage.name == "senior_engineer":
-                result.completed_stages.append("engineer")
+            # Mark all runnable stages in-progress
+            for s in runnable:
+                self._tracker.mark_in_progress(s.checkpoint_key)
 
-            result.completed_stages.append(stage.checkpoint_key)
-            self._tracker.mark_done(stage.checkpoint_key)
+            # Track errors before this batch
+            errors_before = len(result.errors)
+
+            if len(runnable) > 1:
+                # Parallel execution — Python copies context per thread so current_stage
+                # is isolated; each thread sets its own token inside _run_stage_safe.
+                stage_results: dict[str, bool] = {}  # checkpoint_key → succeeded
+                with ThreadPoolExecutor(max_workers=len(runnable)) as executor:
+                    futures = {
+                        executor.submit(self._run_stage_safe, s, result): s
+                        for s in runnable
+                    }
+                    for future in as_completed(futures):
+                        s = futures[future]
+                        stage_results[s.checkpoint_key] = future.result()  # re-raises unexpected exceptions
+            else:
+                s = runnable[0]
+                _stage_token = current_stage.set(s.checkpoint_key)
+                try:
+                    if s.loop_stages:
+                        # Loop block from pipeline.yaml
+                        ok = self._run_loop_stage(s, result)
+                        if not ok:
+                            self._tracker.mark_failed(s.checkpoint_key)
+                            result.progress_comment_id = self._tracker.comment_id
+                            self._save_checkpoint(result)
+                            return self._finish(result, start_time)
+                    else:
+                        self._run_stage(s.label, s.description, result, lambda ss=s: ss.fn(result))
+                finally:
+                    current_stage.reset(_stage_token)
+
+            # Check for errors after the batch — only mark stages that actually failed
+            any_failed = False
+            if len(runnable) > 1:
+                for s in runnable:
+                    if not stage_results.get(s.checkpoint_key, True):
+                        self._tracker.mark_failed(s.checkpoint_key, str(result.errors[-1]) if result.errors else "")
+                        any_failed = True
+                    else:
+                        if s.name == "senior_engineer":
+                            result.completed_stages.append("engineer")
+                        result.completed_stages.append(s.checkpoint_key)
+                        self._tracker.mark_done(s.checkpoint_key)
+            elif len(result.errors) > errors_before:
+                any_failed = True
+                self._tracker.mark_failed(runnable[0].checkpoint_key, str(result.errors[-1]))
+
+            if any_failed:
+                result.progress_comment_id = self._tracker.comment_id
+                self._save_checkpoint(result)
+                return self._finish(result, start_time)
+
+            # Mark sequential stage done (parallel stages handled above)
+            if len(runnable) == 1:
+                seq_s = runnable[0]
+                # Backward-compat: senior_engineer stage also marks old "engineer" key
+                if seq_s.name == "senior_engineer":
+                    result.completed_stages.append("engineer")
+                result.completed_stages.append(seq_s.checkpoint_key)
+                self._tracker.mark_done(seq_s.checkpoint_key)
+
             result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
 
-            # Early pipeline stop (e.g. code review: CHANGES REQUESTED)
+            # Early pipeline stop — only meaningful for a single sequential stage
             # NOTE: checkpoint_key is saved before stop_if check (intentional).
             # On resume, completed stages (incl. reviewer) are skipped, so
             # the pipeline continues from the next stage rather than re-running
             # the stage that triggered the stop.
-            if stage.stop_if(result):
-                if stage.stop_message:
-                    console.print(f"[bold red]{stage.stop_message}[/bold red]")
-                return self._finish(result, start_time)
+            if len(runnable) == 1:
+                s = runnable[0]
+                if s.stop_if(result):
+                    console.print(
+                        f"\n  🛑 [bold yellow]{s.stop_message or 'Pipeline stopped early.'}[/bold yellow]"
+                    )
+                    return self._finish(result, start_time)
+
 
         # Pipeline complete — remove checkpoint
         self._clear_checkpoint(result)
@@ -3458,6 +3508,27 @@ class Orchestrator(TestFixLoopMixin):
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
+    def _run_stage_safe(self, stage: "PipelineStage", result: "PipelineResult") -> bool:
+        """Thread-safe wrapper for _run_stage used in parallel group execution.
+
+        Sets the current_stage ContextVar within this thread's context copy so
+        that token tracking is correct per-thread.  Errors are recorded on
+        *result*; returns True if the stage succeeded, False if it errored.
+        """
+        errors_before = len(result.errors)
+        _token = current_stage.set(stage.checkpoint_key)
+        try:
+            self._run_stage(
+                stage.label,
+                stage.description,
+                result,
+                lambda s=stage: s.fn(result),
+                timeout_s=stage.timeout_s,
+            )
+        finally:
+            current_stage.reset(_token)
+        return len(result.errors) == errors_before
+
     def _run_stage(self, name: str, description: str, result: PipelineResult, fn, timeout_s: float | None = None) -> None:
         """Run a pipeline stage with progress display, error handling, and optional timeout.
 
@@ -3466,7 +3537,6 @@ class Orchestrator(TestFixLoopMixin):
         Python cannot forcibly kill threads.
         """
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
-
         with Progress(
             SpinnerColumn(),
             TextColumn(f"[bold blue]{name}[/bold blue] {description}"),
@@ -3970,4 +4040,3 @@ class Orchestrator(TestFixLoopMixin):
                 console.print(f"  [yellow]⚠️  PR creation failed: {exc}[/yellow]")
 
         return {"plan": plan, "changes": changed, "pr_url": pr_url}
-
