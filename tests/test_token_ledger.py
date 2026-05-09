@@ -118,3 +118,32 @@ def test_estimate_tokens_returns_int():
     assert isinstance(completion_est, int)
     assert prompt_est > 0
     assert completion_est == 1  # "4" is one token
+
+
+# ── Budget enforcement tests (T2-C Task 2) ────────────────────────────────
+
+def test_budget_exceeded_raises():
+    from agents.token_ledger import BudgetExceededError
+    # 1000 input tokens @ $2/M = $0.002; budget is $0.001
+    ledger = TokenLedger(pricing=PRICING, max_cost_usd=0.001)
+    ledger.start_run("budget-1", "Proj", "org/repo")
+    with pytest.raises(BudgetExceededError, match="budget"):
+        ledger.record("budget-1", "pm", "gpt-4.1", prompt_tokens=1000, completion_tokens=0)
+
+
+def test_budget_not_exceeded_passes():
+    from agents.token_ledger import BudgetExceededError
+    ledger = TokenLedger(pricing=PRICING, max_cost_usd=1.00)
+    ledger.start_run("budget-2", "Proj", "org/repo")
+    # cost ~ $0.006 — well under $1.00
+    ledger.record("budget-2", "pm", "gpt-4.1", prompt_tokens=1000, completion_tokens=500)
+    # No exception raised
+
+
+def test_no_budget_limit_never_raises():
+    """TokenLedger with no max_cost_usd should never raise BudgetExceededError."""
+    from agents.token_ledger import BudgetExceededError
+    ledger = TokenLedger(pricing=PRICING)  # max_cost_usd=None
+    ledger.start_run("budget-3", "Proj", "org/repo")
+    # Very expensive call — should not raise
+    ledger.record("budget-3", "pm", "gpt-4.1", prompt_tokens=10_000_000, completion_tokens=10_000_000)

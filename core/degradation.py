@@ -42,6 +42,18 @@ class DegradationResult:
     actions_taken: list[str] = field(default_factory=list)
 
 
+@dataclass
+class DegradationSnapshot:
+    """A point-in-time snapshot of pre-degradation pipeline parameters.
+
+    Used with :meth:`DegradationPolicy.restore` to revert a pipeline back to
+    its original configuration after degraded conditions clear.
+    """
+
+    num_engineers: int
+    model: str
+
+
 class DegradationPolicy:
     """Applies configured degradation strategies when the pipeline is under pressure.
 
@@ -141,3 +153,18 @@ class DegradationPolicy:
                 actions_taken=actions,
             ))
         return result
+
+    def restore(self, snapshot: DegradationSnapshot) -> DegradationResult:
+        """Restore pipeline parameters from a pre-degradation snapshot.
+
+        Returns a :class:`DegradationResult` representing the restored state
+        (no stages skipped, actions_taken describes the auto_recovery).
+        """
+        return DegradationResult(
+            num_engineers=snapshot.num_engineers,
+            model=snapshot.model,
+            skipped_stages=[],
+            actions_taken=[
+                f"auto_recovery: restored to {snapshot.num_engineers} engineers, model={snapshot.model}"
+            ],
+        )
