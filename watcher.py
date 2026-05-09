@@ -70,6 +70,52 @@ LABEL_COLOURS = {
 LOCK_FILE = Path(__file__).parent / ".watcher.lock"
 _log = logging.getLogger("watcher")
 
+# ── Per-issue dedup lock ──────────────────────────────────────────────────────
+# Prevents the same GitHub issue from being processed twice concurrently within
+# this process (e.g. duplicate API results, overlapping watch() cycles).
+# Keyed by (tracker_repo, issue_number) so that issue #42 in repo A does not
+# block issue #42 in a different repo B.
+_ACTIVE_ISSUES: set[tuple[str, int]] = set()
+_ACTIVE_ISSUES_LOCK = threading.Lock()
+
+
+def _run_with_issue_lock(fn, issue: dict, repo: str, *args, **kwargs) -> None:
+    """Guard fn against concurrent calls for the same (repo, issue_number) pair.
+
+    Checks whether ``(repo, issue["number"])`` is already in the active-issues
+    sentinel set.  If it is, logs a debug message and returns immediately
+    without calling fn.  Otherwise, adds the key to the set, calls
+    ``fn(issue, repo, *args, **kwargs)``, and removes the key in a finally
+    block — ensuring the slot is always freed even if fn raises.
+
+    Args:
+        fn: Callable to invoke when the issue is not already in-flight.
+        issue: GitHub issue dict (must contain a ``"number"`` key).
+        repo: The tracker repository slug (``owner/name``).  Combined with
+            ``issue["number"]`` to form the dedup key so that the same issue
+            number in two different repos never suppresses each other.
+        *args: Extra positional arguments forwarded to fn after issue and repo.
+        **kwargs: Extra keyword arguments forwarded to fn.
+    """
+    issue_number: int = issue["number"]
+    key: tuple[str, int] = (repo, issue_number)
+
+    with _ACTIVE_ISSUES_LOCK:
+        if key in _ACTIVE_ISSUES:
+            _log.debug(
+                "[Watcher] Issue #%d in %s already being processed — skipping duplicate",
+                issue_number,
+                repo,
+            )
+            return
+        _ACTIVE_ISSUES.add(key)
+
+    try:
+        fn(issue, repo, *args, **kwargs)
+    finally:
+        with _ACTIVE_ISSUES_LOCK:
+            _ACTIVE_ISSUES.discard(key)
+
 
 def _is_retryable_http_error(exc: BaseException) -> bool:
     """Return True if exc is a transient network or HTTP error worth retrying."""
@@ -459,6 +505,7 @@ def run_pipeline(
                     message=_sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")),
                     severity="fatal",
                 ).to_dict(),
+                stage_name=getattr(exc, "stage", None) or "pipeline",
             )
             try:
                 dlq.enqueue(_dlq_entry)
@@ -1343,6 +1390,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                     ctx = contextvars.copy_context()
                     fut = ex.submit(
                         ctx.run,
+                        _run_with_issue_lock,
                         _run_with_global_cap,
                         t["issue"], t["tracker_repo"], t["default_target"],
                         t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
@@ -1443,13 +1491,13 @@ def _cmd_list_dlq(cfg: dict) -> None:
         print("DLQ is empty — no failed entries.")
         return
 
-    header = f"{'ID':<36}  {'Issue':>6}  {'Attempts':>8}  {'Failed At':<22}  Error"
+    header = f"{'ID':<36}  {'Issue':>6}  {'Stage':<20}  {'Attempts':>8}  {'Failed At':<22}  Error"
     print(header)
     print("-" * len(header))
     for e in entries:
         error_msg = (e.error or {}).get("message", str(e.error))[:60]
         print(
-            f"{e.id:<36}  {e.issue_number:>6}  {e.attempt_count:>8}  "
+            f"{e.id:<36}  {e.issue_number:>6}  {e.stage_name:<20}  {e.attempt_count:>8}  "
             f"{e.failed_at:<22}  {error_msg}"
         )
     print(f"\n{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} in DLQ.")

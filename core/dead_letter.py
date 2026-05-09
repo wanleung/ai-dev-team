@@ -52,6 +52,7 @@ class DLQEntry:
     error: dict[str, Any]
     target_repo: str = ""
     attempt_count: int = 1
+    stage_name: str = "pipeline"  # which pipeline stage failed; "pipeline" = unknown/fatal
 
 
 class DeadLetterQueue(ABC):
