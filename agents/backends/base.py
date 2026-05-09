@@ -270,7 +270,7 @@ class OpenAICompatibleBackend(LLMBackend):
         )
         effective_run_id = run_id if run_id is not None else get_ledger().active_run_id()
         if effective_run_id is not None:
-            pt, ct = estimate_tokens(messages, reply)
+            pt, ct = estimate_tokens(messages, reply, model=self.model)
             get_ledger().record(effective_run_id, current_stage.get(), self.model, pt, ct)
         return self._post_process(reply)
 
@@ -309,7 +309,7 @@ class OpenAICompatibleBackend(LLMBackend):
                 get_ledger().record(effective_run_id, current_stage.get(), self.model,
                                     usage.prompt_tokens, usage.completion_tokens)
             else:
-                pt, ct = estimate_tokens(messages, content)
+                pt, ct = estimate_tokens(messages, content, model=self.model)
                 get_ledger().record(effective_run_id, current_stage.get(), self.model, pt, ct)
         return self._post_process(content)
 
@@ -353,7 +353,7 @@ class OpenAICompatibleBackend(LLMBackend):
                                         usage.prompt_tokens, usage.completion_tokens)
                 else:
                     # fallback for backends that don't return usage in tool-call path
-                    pt, ct = estimate_tokens(messages, response.choices[0].message.content or "")
+                    pt, ct = estimate_tokens(messages, response.choices[0].message.content or "", model=self.model)
                     get_ledger().record(effective_run_id, current_stage.get(), self.model, pt, ct)
             msg = response.choices[0].message
             if not msg.tool_calls:
@@ -409,6 +409,6 @@ class OpenAICompatibleBackend(LLMBackend):
                                     usage.prompt_tokens, usage.completion_tokens)
             else:
                 # fallback for backends that don't return usage in tool-call path
-                pt, ct = estimate_tokens(messages, response.choices[0].message.content or "")
+                pt, ct = estimate_tokens(messages, response.choices[0].message.content or "", model=self.model)
                 get_ledger().record(effective_run_id, current_stage.get(), self.model, pt, ct)
         return self._post_process(response.choices[0].message.content or "")

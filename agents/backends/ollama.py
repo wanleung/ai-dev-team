@@ -140,7 +140,7 @@ class OllamaBackend(OpenAICompatibleBackend):
         result = self._post_process(full_content)
         effective_run_id = run_id if run_id is not None else get_ledger().active_run_id()
         if effective_run_id is not None:
-            pt, ct = estimate_tokens(messages, full_content)
+            pt, ct = estimate_tokens(messages, full_content, model=self.model)
             get_ledger().record(effective_run_id, current_stage.get(), self.model, pt, ct)
         return result
 

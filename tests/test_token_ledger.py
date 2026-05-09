@@ -147,3 +147,54 @@ def test_no_budget_limit_never_raises():
     ledger.start_run("budget-3", "Proj", "org/repo")
     # Very expensive call — should not raise
     ledger.record("budget-3", "pm", "gpt-4.1", prompt_tokens=10_000_000, completion_tokens=10_000_000)
+
+
+# ── Model-aware token estimation tests (T4-B Task 1) ─────────────────────────
+
+def test_openai_model_uses_tiktoken():
+    """GPT model should use tiktoken encoding, not char-based estimation."""
+    from agents.token_ledger import estimate_tokens
+    # Use a sentence where tiktoken count differs from chars // 4
+    text = "Hello world, this is a test sentence for token counting."
+    messages = [{"role": "user", "content": text}]
+    tiktoken_count, _ = estimate_tokens(messages, "", model="gpt-4")
+    char_estimate = len(text) // 4
+    # tiktoken gives different (usually lower) counts than chars // 4
+    assert tiktoken_count != char_estimate, (
+        "OpenAI path should use tiktoken, not char-based estimation"
+    )
+    assert tiktoken_count > 0
+
+
+def test_claude_model_uses_char_estimate():
+    """Claude model should use char-based estimation (~3.5 chars/token)."""
+    from agents.token_ledger import estimate_tokens
+    messages = [{"role": "user", "content": "A" * 350}]  # 350 chars → ~100 tokens
+    prompt_tok, _ = estimate_tokens(messages, "", model="claude-3-opus")
+    # char // 3.5 ≈ 100; tiktoken would give ~88
+    assert 90 <= prompt_tok <= 110
+
+
+def test_gemini_model_uses_char_estimate():
+    """Gemini model should use char-based estimation (~4 chars/token)."""
+    from agents.token_ledger import estimate_tokens
+    messages = [{"role": "user", "content": "B" * 400}]  # 400 chars → ~100 tokens
+    prompt_tok, _ = estimate_tokens(messages, "", model="gemini-pro")
+    assert 90 <= prompt_tok <= 110
+
+
+def test_unknown_model_uses_char_fallback():
+    """Unknown/Ollama model should use safe char-based fallback."""
+    from agents.token_ledger import estimate_tokens
+    messages = [{"role": "user", "content": "C" * 400}]
+    prompt_tok, _ = estimate_tokens(messages, "", model="llama3:70b")
+    # char // 4 = 100
+    assert 90 <= prompt_tok <= 110
+
+
+def test_no_model_arg_still_works():
+    """Calling estimate_tokens without model arg must still return counts (backward compat)."""
+    from agents.token_ledger import estimate_tokens
+    messages = [{"role": "user", "content": "Hello"}]
+    prompt_tok, comp_tok = estimate_tokens(messages, "Hi")
+    assert prompt_tok >= 0 and comp_tok >= 0

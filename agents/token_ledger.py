@@ -249,25 +249,58 @@ class TokenLedger:
         return (prompt_tokens * input_price + completion_tokens * output_price) / 1_000_000
 
 
-def estimate_tokens(messages: list[dict], reply: str) -> tuple[int, int]:
-    """Estimate prompt + completion token counts using tiktoken (cl100k_base).
+def estimate_tokens(
+    messages: list[dict],
+    reply: str,
+    model: str = "",
+) -> tuple[int, int]:
+    """Estimate prompt + completion token counts.
+
+    Dispatches by model family:
+    - OpenAI (gpt-*, text-*, o1*, o3*): uses tiktoken cl100k_base for precise counts
+    - Anthropic (claude-*): char // 3.5 approximation (~3.5 chars/token)
+    - Google (gemini-*): char // 4 approximation (~4 chars/token)
+    - All others (Ollama, unknown): char // 4 safe fallback
 
     Used as a fallback when response.usage is not available (streaming calls).
     Returns (prompt_tokens, completion_tokens).
+
+    Args:
+        messages: List of message dicts with 'content' keys.
+        reply: The completion text.
+        model: Optional model identifier string for dispatch. Defaults to OpenAI
+               tiktoken path when empty (backward compatible).
     """
-    try:
-        import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")
-        prompt_text = " ".join(
-            m.get("content", "") or "" for m in messages if isinstance(m.get("content"), str)
-        )
-        return len(enc.encode(prompt_text)), len(enc.encode(reply))
-    except Exception:
-        # Rough fallback if tiktoken is unavailable: ~4 chars per token
-        prompt_text = " ".join(
-            m.get("content", "") or "" for m in messages if isinstance(m.get("content"), str)
-        )
-        return max(0, len(prompt_text) // 4), max(0, len(reply) // 4)
+    model_lower = model.lower()
+
+    # OpenAI models (or no model specified): use tiktoken for precise counts
+    if not model_lower or any(model_lower.startswith(p) for p in ("gpt-", "text-", "o1", "o3")):
+        try:
+            import tiktoken
+            enc = tiktoken.get_encoding("cl100k_base")
+            prompt_text = " ".join(
+                m.get("content", "") or "" for m in messages if isinstance(m.get("content"), str)
+            )
+            return len(enc.encode(prompt_text)), len(enc.encode(reply))
+        except Exception:
+            pass  # fall through to char-based fallback
+
+    # Extract prompt text for char-based estimation
+    prompt_text = " ".join(
+        m.get("content", "") or "" for m in messages if isinstance(m.get("content"), str)
+    )
+
+    # Anthropic Claude: ~3.5 chars per token
+    if "claude" in model_lower:
+        divisor = 3.5
+    else:
+        # Gemini, Ollama, and all other unknown models: ~4 chars per token (conservative)
+        divisor = 4.0
+
+    return (
+        max(0, int(len(prompt_text) / divisor)),
+        max(0, int(len(reply) / divisor)),
+    )
 
 
 # Global ledger instance — replaced by Orchestrator with a configured instance.
