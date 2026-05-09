@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import warnings
+from heapq import heappop, heappush
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -84,15 +85,18 @@ class SkillLoader:
 
     def __init__(
         self,
-        config: dict,
+        config: Optional[dict] = None,
         local_skills_dir: Optional[Path] = None,
     ) -> None:
         """Initialise SkillLoader from a config dict.
 
         Args:
             config: Full application config dict. Reads from config["skills"].
+                    Defaults to an empty dict if not provided.
             local_skills_dir: Override path to local skills directory (used in tests).
         """
+        if config is None:
+            config = {}
         skills_cfg = config.get("skills", {})
         self._always_load: list[str] = skills_cfg.get("always_load", [])
         self._marketplace_repo: str = skills_cfg.get("marketplace_repo", "")
@@ -105,15 +109,19 @@ class SkillLoader:
 
     # ── Initialisation ────────────────────────────────────────────────────────
 
-    def init(self, update: bool = False) -> None:
+    def init(self, update: bool = False) -> "SkillLoader":
         """Scan local skills and optionally fetch marketplace index.
 
         Args:
             update: When True, forces re-fetch of marketplace skills even if cached.
+
+        Returns:
+            self, to allow method chaining: ``SkillLoader(...).init()``.
         """
         self._local_skills = self._load_dir(self._local_dir)
         if self._marketplace_repo:
             self._marketplace_skills = self._load_marketplace(update=update)
+        return self
 
     def _load_dir(self, directory: Path) -> list[SkillEntry]:
         """Parse all .md files in a directory into SkillEntry objects.
@@ -193,10 +201,113 @@ class SkillLoader:
             min_version=str(meta.get("min_version", "")),
         )
 
+    @staticmethod
+    def _check_min_version(version: str, min_version: str) -> bool:
+        """Return True if *version* >= *min_version* (semver-style comparison).
+
+        Parses both strings as ``MAJOR.MINOR.PATCH`` integers. Missing components
+        default to 0. Returns True if *min_version* is empty (no constraint).
+
+        Args:
+            version: The skill's declared version (e.g. ``"1.2.0"``).
+            min_version: The minimum required version (e.g. ``"2.0.0"``). Empty = no constraint.
+
+        Returns:
+            True if version meets or exceeds min_version; False otherwise.
+        """
+        if not min_version:
+            return True
+
+        def _parse(v: str) -> tuple[int, ...]:
+            parts = re.split(r"[.\-]", v.strip())
+            result = []
+            for p in parts[:3]:
+                try:
+                    result.append(int(p))
+                except ValueError:
+                    result.append(0)
+            while len(result) < 3:
+                result.append(0)
+            return tuple(result)
+
+        return _parse(version) >= _parse(min_version)
+
     # ── Detection ─────────────────────────────────────────────────────────────
 
+    def _resolve_dependencies(
+        self,
+        matched: list[SkillEntry],
+        skill_map: dict[str, SkillEntry],
+    ) -> list[SkillEntry]:
+        """Expand *matched* with missing dependencies and return topologically sorted list.
+
+        Uses Kahn's algorithm. Raises ValueError on circular dependencies.
+
+        Args:
+            matched: Skills selected by score (may be missing dependencies).
+            skill_map: All available skills keyed by name.
+
+        Returns:
+            Topologically sorted list (dependencies before dependents).
+
+        Raises:
+            ValueError: If a circular dependency is detected among the skills.
+        """
+        # Expand: pull in any missing dependencies transitively
+        needed: dict[str, SkillEntry] = {s.name: s for s in matched}
+        rank = {skill.name: index for index, skill in enumerate(matched)}
+        next_rank = len(rank)
+        queue = list(matched)
+        while queue:
+            skill = queue.pop(0)
+            for dep_name in skill.depends_on:
+                if dep_name not in needed:
+                    if dep_name in skill_map:
+                        dep = skill_map[dep_name]
+                        needed[dep_name] = dep
+                        rank[dep_name] = next_rank
+                        next_rank += 1
+                        queue.append(dep)
+                    else:
+                        warnings.warn(
+                            f"[skills] Skill '{skill.name}' depends_on '{dep_name}' "
+                            f"which is not loaded — skipping dependency."
+                        )
+
+        # Kahn's algorithm for topological sort
+        # Build in-degree count and adjacency list within the needed set
+        in_degree: dict[str, int] = {name: 0 for name in needed}
+        dependents: dict[str, list[str]] = {name: [] for name in needed}
+
+        for name, skill in needed.items():
+            for dep_name in skill.depends_on:
+                if dep_name in needed:
+                    in_degree[name] += 1
+                    dependents[dep_name].append(name)
+
+        # Start with skills that have no dependencies
+        ready = [(rank[name], name) for name, deg in in_degree.items() if deg == 0]
+        ready.sort()
+        sorted_names: list[str] = []
+
+        while ready:
+            _, name = heappop(ready)
+            sorted_names.append(name)
+            for dependent in dependents[name]:
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    heappush(ready, (rank[dependent], dependent))
+
+        if len(sorted_names) != len(needed):
+            cycle_nodes = [n for n in needed if n not in sorted_names]
+            raise ValueError(
+                f"[skills] Circular dependency detected among: {sorted(cycle_nodes)}"
+            )
+
+        return [needed[name] for name in sorted_names]
+
     def detect(self, context: SkillContext) -> list[SkillEntry]:
-        """Return skills relevant to the given context, ranked by tag overlap.
+        """Return skills relevant to the given context with dependency-aware ordering.
 
         Always includes ``always_load`` skills and explicitly requested skills.
         Auto-detection searches ``issue_body`` and ``repo_languages`` for tag matches.
@@ -205,9 +316,22 @@ class SkillLoader:
             context: A SkillContext describing the current task.
 
         Returns:
-            Ordered list of matched SkillEntry objects (highest score first).
+            Ordered list of matched SkillEntry objects where dependencies always
+            appear before dependents, while otherwise preserving the original
+            score-based order (highest score first, then name).
         """
         all_skills = self._local_skills + self._marketplace_skills
+        # Filter out skills that don't meet their own min_version constraint
+        filtered_skills: list[SkillEntry] = []
+        for skill in all_skills:
+            if not self._check_min_version(skill.version, skill.min_version):
+                warnings.warn(
+                    f"[skills] Skill '{skill.name}' version '{skill.version}' "
+                    f"does not meet min_version '{skill.min_version}' — excluding."
+                )
+            else:
+                filtered_skills.append(skill)
+        all_skills = filtered_skills
         skill_map = {s.name: s for s in all_skills}
 
         # Combine all context text for tag scanning (lowercase)
@@ -242,7 +366,8 @@ class SkillLoader:
 
         # Sort by score descending, then name for stable ordering
         matched_names = sorted(scores, key=lambda n: (-scores[n], n))
-        return [skill_map[n] for n in matched_names]
+        matched_skills = [skill_map[n] for n in matched_names]
+        return self._resolve_dependencies(matched_skills, skill_map)
 
     # ── Role-scoped injection ─────────────────────────────────────────────────
 
@@ -269,6 +394,15 @@ class SkillLoader:
         for skill in matched_skills:
             # Check role is enabled in frontmatter
             if not skill.roles.get(role, False):
+                continue
+
+            # Check required_roles: if the skill declares required roles and this
+            # role is not among them, skip for this role invocation.
+            if skill.required_roles and role not in skill.required_roles:
+                warnings.warn(
+                    f"[skills] Skill '{skill.name}' has required_roles {skill.required_roles} "
+                    f"but is being injected for role '{role}' — skipping."
+                )
                 continue
 
             # Extract the role-specific section
