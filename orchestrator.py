@@ -488,6 +488,10 @@ class PipelineStage:
     parallel_group: str | None = None
     """When non-None, consecutive stages sharing this group name run concurrently."""
 
+    required_output_fields: list[str] = field(default_factory=list)
+    """Fields that must be non-empty on PipelineResult after this stage completes.
+    Empty list = no verification (default, backward-compatible)."""
+
 
 MODES: dict[str, list[str]] = {
     # Standard waterfall: engineers then QA
@@ -1218,6 +1222,7 @@ class Orchestrator(TestFixLoopMixin):
                 description="Analyzing requirements & writing PRD...",
                 checkpoint_key="pm",
                 fn=lambda r: self._stage_pm(r, r.requirement),
+                required_output_fields=["prd"],
             ),
             "pm_reviewer": PipelineStage(
                 name="pm_reviewer",
@@ -1232,6 +1237,7 @@ class Orchestrator(TestFixLoopMixin):
                 description="Designing system architecture...",
                 checkpoint_key="architect",
                 fn=lambda r: self._stage_architect(r),
+                required_output_fields=["design"],
             ),
             "architect_reviewer": PipelineStage(
                 name="architect_reviewer",
@@ -1599,6 +1605,7 @@ class Orchestrator(TestFixLoopMixin):
                         inner.label, inner.description, result,
                         lambda s=inner: s.fn(result),
                         timeout_s=inner.timeout_s,
+                        required_output_fields=inner.required_output_fields,
                     )
                 finally:
                     current_stage.reset(_inner_token)
@@ -2413,7 +2420,7 @@ class Orchestrator(TestFixLoopMixin):
                             self._save_checkpoint(result)
                             return self._finish(result, start_time)
                     else:
-                        self._run_stage(s.label, s.description, result, lambda ss=s: ss.fn(result))
+                        self._run_stage(s.label, s.description, result, lambda ss=s: ss.fn(result), required_output_fields=s.required_output_fields)
                 finally:
                     current_stage.reset(_stage_token)
 
@@ -3524,12 +3531,13 @@ class Orchestrator(TestFixLoopMixin):
                 result,
                 lambda s=stage: s.fn(result),
                 timeout_s=stage.timeout_s,
+                required_output_fields=stage.required_output_fields,
             )
         finally:
             current_stage.reset(_token)
         return len(result.errors) == errors_before
 
-    def _run_stage(self, name: str, description: str, result: PipelineResult, fn, timeout_s: float | None = None) -> None:
+    def _run_stage(self, name: str, description: str, result: PipelineResult, fn, timeout_s: float | None = None, required_output_fields: list[str] | None = None) -> None:
         """Run a pipeline stage with progress display, error handling, and optional timeout.
 
         If *timeout_s* is set and the stage exceeds it, a timeout error is recorded
@@ -3563,6 +3571,14 @@ class Orchestrator(TestFixLoopMixin):
                         executor.shutdown(wait=False)
                 else:
                     fn()
+                if required_output_fields:
+                    from core.output_verifier import OutputVerifier, OutputVerificationError
+                    try:
+                        OutputVerifier(required_output_fields).verify(result, name)
+                    except OutputVerificationError as ove:
+                        result.add_error(str(ove))
+                        console.print(f"  ❌ [red]{ove}[/red]")
+                        return
                 console.print(f"  ✅ [green]{name}[/green] complete")
                 if hasattr(self, "_agent_health"):
                     self._agent_health.record_success(name)
@@ -3580,8 +3596,10 @@ class Orchestrator(TestFixLoopMixin):
                         console.print(
                             f"  ⚠️  [yellow]{name} has failed "
                             f"{self._agent_health.failure_count(name)} consecutive times — "
-                            f"consider applying degradation policy[/yellow]"
+                            f"tripping circuit breaker for '{name}'[/yellow]"
                         )
+                        from core.circuit_breaker_registry import get_registry
+                        get_registry().get_or_create("agent", name).force_open()
 
     def _build_clarification_context(self, history: list[dict], stage: str) -> str:
         """Build an answer-injection block for a specific stage from Q&A history.

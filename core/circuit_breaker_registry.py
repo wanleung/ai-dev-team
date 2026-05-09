@@ -30,6 +30,9 @@ class _NullBreaker(CircuitBreaker):
     def __init__(self, name: str) -> None:
         super().__init__(name, threshold=10**9, recovery_timeout_s=0)
 
+    def force_open(self) -> None:
+        """No-op: a null breaker never trips open, even when forced."""
+
 
 class _NullRegistry:
     """No-op registry returned when reliability config is disabled/absent."""
