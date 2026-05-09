@@ -594,3 +594,36 @@ def test_sqs_dlq_nack_emits_exactly_one_event():
         assert dlq_events[0].backend == "sqs"
     finally:
         reset_emit_callback()
+
+
+# ── stage_name field ─────────────────────────────────────────────────────────
+
+def test_dlq_entry_stage_name_field():
+    """DLQEntry accepts and stores a stage_name field."""
+    entry = DLQEntry(
+        id="test-1",
+        issue_number=1,
+        tracker_repo="owner/tracker",
+        label="ai-task",
+        model="gpt-4.1",
+        num_engineers=2,
+        failed_at="2026-05-09T00:00:00Z",
+        error={"code": "STAGE_ERROR", "message": "boom"},
+        stage_name="architect",
+    )
+    assert entry.stage_name == "architect"
+
+
+def test_dlq_entry_stage_name_defaults_to_pipeline():
+    """DLQEntry.stage_name defaults to 'pipeline' for backward compatibility."""
+    entry = DLQEntry(
+        id="test-2",
+        issue_number=2,
+        tracker_repo="owner/tracker",
+        label="ai-task",
+        model="gpt-4.1",
+        num_engineers=2,
+        failed_at="2026-05-09T00:00:00Z",
+        error={},
+    )
+    assert entry.stage_name == "pipeline"
