@@ -363,9 +363,16 @@ def test_redis_dlq_nack_increments_attempt_count():
     entry = _make_entry("e1")
     dlq.enqueue(entry)
 
-    dlq.nack("e1")
+    # fakeredis does not support Lua eval, so nack() falls back to the Python
+    # read-modify-write path which sets retry_after = time.time() + backoff.
+    # Freeze time so that:
+    #   • nack sees t=0  → retry_after = 0 + 60 = 60
+    #   • drain sees t=86400 → 60 ≤ 86400, entry is immediately drainable
+    with patch("core.dead_letter._time") as mock_time:
+        mock_time.time.side_effect = [0.0, 86400.0]
+        dlq.nack("e1")
+        items = list(dlq.drain())
 
-    items = list(dlq.drain())
     assert len(items) == 1
     assert items[0].attempt_count == 2
 

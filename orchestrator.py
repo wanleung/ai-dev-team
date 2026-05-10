@@ -4,6 +4,7 @@ Manages artifact passing, logging, and optional GitHub integration.
 """
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import os
@@ -61,6 +62,51 @@ from core.errors import PipelineError as _PipelineError
 log = logging.getLogger(__name__)
 
 console = Console()
+
+# ── Zombie thread tracking (T5-A) ────────────────────────────────────────────
+import time as _time  # alias to avoid name collision with user-code 'time'
+
+_leaked_thread_lock: threading.Lock = threading.Lock()
+_leaked_thread_labels: collections.deque = collections.deque(maxlen=1000)
+_leaked_thread_total: int = 0  # cumulative count; never saturates at deque's maxlen
+
+
+def _record_leaked_thread(stage_name: str) -> None:
+    """Track a zombie thread spawned by a timed-out stage."""
+    global _leaked_thread_total
+    label = f"{stage_name}@{_time.monotonic():.0f}"
+    with _leaked_thread_lock:
+        _leaked_thread_labels.append(label)
+        _leaked_thread_total += 1
+        window_count = len(_leaked_thread_labels)
+        total_count = _leaked_thread_total
+    log.warning(
+        "Stage %r timed out — leaked background thread still running. "
+        "Zombie threads this window (last 1000): %d, total (cumulative): %d",
+        stage_name,
+        window_count,
+        total_count,
+    )
+
+
+def get_leaked_thread_count() -> int:
+    """Return the cumulative number of zombie threads created by timed-out stages.
+
+    Unlike ``len(_leaked_thread_labels)`` (which saturates at the deque's
+    ``maxlen`` of 1000), this counter keeps growing so callers can detect
+    ongoing leakage beyond the rolling window.
+    """
+    with _leaked_thread_lock:
+        return _leaked_thread_total
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Parallel stage concurrency cap (T5-A)
+try:
+    MAX_PARALLEL_STAGES: int = max(1, int(os.getenv("AI_MAX_PARALLEL_STAGES", "8")))
+except (ValueError, TypeError):
+    MAX_PARALLEL_STAGES = 8
 
 # Marker embedded in bot comments to acknowledge processed update-branch directives
 _UPDATE_BRANCH_MARKER = "<!-- auto-update-branch -->"
@@ -2433,7 +2479,7 @@ class Orchestrator(TestFixLoopMixin):
                 # Parallel execution — Python copies context per thread so current_stage
                 # is isolated; each thread sets its own token inside _run_stage_safe.
                 stage_results: dict[str, bool] = {}  # checkpoint_key → succeeded
-                with ThreadPoolExecutor(max_workers=len(runnable)) as executor:
+                with ThreadPoolExecutor(max_workers=min(len(runnable), MAX_PARALLEL_STAGES)) as executor:
                     futures = {
                         executor.submit(self._run_stage_safe, s, result): s
                         for s in runnable
@@ -3640,6 +3686,7 @@ class Orchestrator(TestFixLoopMixin):
                         future.result(timeout=timeout_s)
                     except FuturesTimeout:
                         executor.shutdown(wait=False)  # don't block; thread runs until LLM returns
+                        _record_leaked_thread(name)
                         error_msg = (
                             f"{name} timed out after {timeout_s}s "
                             f"(background thread still running)"

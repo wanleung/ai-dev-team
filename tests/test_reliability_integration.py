@@ -71,9 +71,14 @@ def test_file_dlq_full_cycle(tmp_path):
     assert len(drained) == 1
     assert drained[0].issue_number == 99
 
-    # nack — should still be there with incremented count
-    dlq.nack(entry.id)
-    drained2 = list(dlq.drain())
+    # nack sets retry_after = time.time() + backoff (future-dated).
+    # Freeze _time so nack sees t=0 (retry_after=60) and drain sees t=86400
+    # (now > retry_after), making the entry immediately drainable again.
+    from unittest.mock import patch
+    with patch("core.dead_letter._time") as mock_time:
+        mock_time.time.side_effect = [0.0, 86400.0]
+        dlq.nack(entry.id)
+        drained2 = list(dlq.drain())
     assert len(drained2) == 1
     assert drained2[0].attempt_count == 2
 
