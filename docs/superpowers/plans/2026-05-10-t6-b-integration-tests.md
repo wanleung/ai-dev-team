@@ -333,10 +333,11 @@ from core.dead_letter import DLQEntry, RedisDLQ
 
 
 def _make_redis_cfg() -> DLQRedisConfig:
+    # Note: max_attempts is NOT a DLQRedisConfig field — it is passed separately
+    # to RedisDLQ(cfg=..., max_attempts=...).
     return DLQRedisConfig(
         url="redis://localhost:6379",  # not used — client is injected
         key="test:dlq",
-        max_attempts=5,
     )
 
 
@@ -355,7 +356,7 @@ def _make_entry(suffix: str) -> DLQEntry:
 
 def _make_dlq() -> RedisDLQ:
     client = fakeredis.FakeRedis()
-    return RedisDLQ(cfg=_make_redis_cfg(), client=client)
+    return RedisDLQ(cfg=_make_redis_cfg(), max_attempts=5, client=client)
 
 
 def test_redis_dlq_full_cycle():
@@ -425,9 +426,9 @@ def test_redis_dlq_drain_empty():
 def test_redis_dlq_nack_at_max_attempts_discards():
     """Entry is removed from Redis when nack exceeds max_attempts."""
     NOW = 3_000_000.0
-    cfg = DLQRedisConfig(url="redis://localhost:6379", key="test:dlq:max", max_attempts=1)
+    cfg = DLQRedisConfig(url="redis://localhost:6379", key="test:dlq:max")
     client = fakeredis.FakeRedis()
-    dlq = RedisDLQ(cfg=cfg, client=client)
+    dlq = RedisDLQ(cfg=cfg, max_attempts=1, client=client)
 
     entry = _make_entry("maxattempts")
     dlq.enqueue(entry)
