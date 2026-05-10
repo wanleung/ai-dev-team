@@ -10,8 +10,10 @@ from orchestrator import Orchestrator, PipelineResult
 
 
 def _make_orchestrator():
+    import threading
     orch = Orchestrator.__new__(Orchestrator)
     orch._agent_health = MagicMock()
+    orch._shutdown_event = threading.Event()
     return orch
 
 
