@@ -203,10 +203,11 @@ class SkillLoader:
 
     @staticmethod
     def _check_min_version(version: str, min_version: str) -> bool:
-        """Return True if *version* >= *min_version* (semver-style comparison).
+        """Return True if *version* >= *min_version* using PEP 440 semantics where possible.
 
-        Parses both strings as ``MAJOR.MINOR.PATCH`` integers. Missing components
-        default to 0. Returns True if *min_version* is empty (no constraint).
+        Uses ``packaging.version.Version`` for correct pre-release ordering (e.g. rc1 < stable).
+        Falls back to naive tuple comparison if ``packaging`` is not installed or the version
+        strings are not valid PEP 440 versions, logging a warning in that case.
 
         Args:
             version: The skill's declared version (e.g. ``"1.2.0"``).
@@ -218,6 +219,24 @@ class SkillLoader:
         if not min_version:
             return True
 
+        try:
+            from packaging.version import Version, InvalidVersion
+            try:
+                return Version(version) >= Version(min_version)
+            except InvalidVersion:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "[skills] Non-PEP-440 version string %r or %r — falling back to tuple comparison",
+                    version,
+                    min_version,
+                )
+        except ImportError:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "[skills] 'packaging' not installed — pre-release version comparison may be inaccurate"
+            )
+
+        # Tuple-based fallback
         def _parse(v: str) -> tuple[int, ...]:
             parts = re.split(r"[.\-]", v.strip())
             result = []
@@ -241,7 +260,7 @@ class SkillLoader:
     ) -> list[SkillEntry]:
         """Expand *matched* with missing dependencies and return topologically sorted list.
 
-        Uses Kahn's algorithm. Raises ValueError on circular dependencies.
+        Uses Kahn's algorithm. Raises ValueError on circular dependencies or missing deps.
 
         Args:
             matched: Skills selected by score (may be missing dependencies).
@@ -251,6 +270,8 @@ class SkillLoader:
             Topologically sorted list (dependencies before dependents).
 
         Raises:
+            ValueError: If a skill listed in ``depends_on`` is not present in
+                ``skill_map`` (missing or uninstalled dependency).
             ValueError: If a circular dependency is detected among the skills.
         """
         # Expand: pull in any missing dependencies transitively
@@ -269,9 +290,9 @@ class SkillLoader:
                         next_rank += 1
                         queue.append(dep)
                     else:
-                        warnings.warn(
+                        raise ValueError(
                             f"[skills] Skill '{skill.name}' depends_on '{dep_name}' "
-                            f"which is not loaded — skipping dependency."
+                            f"which is not loaded. Ensure all required skills are installed."
                         )
 
         # Kahn's algorithm for topological sort

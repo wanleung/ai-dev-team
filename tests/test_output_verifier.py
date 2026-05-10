@@ -46,15 +46,13 @@ def test_verify_raises_on_empty_list_field():
         verifier.verify(result, stage_name="tier_review")
 
 
-def test_verify_skips_missing_attribute_with_warning():
-    """If the result object lacks the field entirely, warn but do not raise."""
-    import warnings
+def test_verify_raises_on_missing_attribute():
+    """Missing attribute now raises OutputVerificationError (T5-B: fail-fast, no silent skip)."""
     result = _make_result()  # no attributes
     verifier = OutputVerifier(required_fields=["prd"])
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
+    with pytest.raises(OutputVerificationError) as exc_info:
         verifier.verify(result, stage_name="product_manager")
-    assert any("prd" in str(warning.message) for warning in w)
+    assert "prd" in str(exc_info.value)
 
 
 def test_empty_required_fields_always_passes():

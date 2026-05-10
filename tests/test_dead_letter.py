@@ -319,6 +319,22 @@ def test_sqs_ack_expired_handle_no_raise():
     )
 
 
+def test_sqs_drain_drops_unknown_fields():
+    """SQS drain: extra fields in message body must not raise TypeError or cause data loss."""
+    mock_sqs = MagicMock()
+    e = _entry()
+    body = {**e.__dict__, "future_field": "unexpected", "another_unknown": 42}
+    mock_sqs.receive_message.side_effect = [
+        {"Messages": [{"Body": json.dumps(body), "ReceiptHandle": "rh-unknown"}]},
+        {"Messages": []},
+    ]
+    cfg = DLQSQSConfig(queue_url="https://sqs.eu-west-1.amazonaws.com/123/test")
+    dlq = SQSDeadLetterQueue(cfg, client=mock_sqs)
+    drained = list(dlq.drain())
+    assert len(drained) == 1, "Entry with unknown fields should still be yielded"
+    assert drained[0].id == e.id
+
+
 # ── RedisDLQ (hash-based O(1) backend) ───────────────────────────────────────
 
 import fakeredis
