@@ -57,11 +57,12 @@ def _backoff_delay(attempt_count: int) -> float:
     """Exponential backoff: base * 2^(attempt-1), capped at max.
 
     Args:
-        attempt_count: The new attempt count after incrementing (1-based).
+        attempt_count: The new attempt count after incrementing (>= 1).
 
     Returns:
         Delay in seconds before the entry should be retried.
     """
+    attempt_count = max(1, attempt_count)
     exponent = min(attempt_count - 1, _MAX_BACKOFF_EXPONENT)
     return min(_DLQ_BACKOFF_BASE_S * (2 ** exponent), _DLQ_BACKOFF_MAX_S)
 
@@ -163,10 +164,9 @@ class InMemoryDeadLetterQueue(DeadLetterQueue):
         entry = self._store.get(entry_id)
         if entry is None:
             return
-        from dataclasses import replace
         new_count = entry.attempt_count + 1
         retry_after = _time.time() + _backoff_delay(new_count)
-        self._store[entry_id] = replace(entry, attempt_count=new_count, retry_after=retry_after)
+        self._store[entry_id] = dc_replace(entry, attempt_count=new_count, retry_after=retry_after)
 
 
 class FileDeadLetterQueue(DeadLetterQueue):
@@ -408,7 +408,7 @@ class SQSDeadLetterQueue(DeadLetterQueue):
             for msg in messages:
                 try:
                     data = json.loads(msg["Body"])
-                    entry = DLQEntry(**data)
+                    entry = DLQEntry(**{k: v for k, v in data.items() if k in DLQEntry.__dataclass_fields__})
                     self._receipt_handles[entry.id] = msg["ReceiptHandle"]
                     self._entries[entry.id] = entry
                     yield entry

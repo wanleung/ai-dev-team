@@ -10,19 +10,17 @@ stage is treated as failed rather than silently completing with missing data.
 """
 from __future__ import annotations
 
-import warnings
-
 
 class OutputVerificationError(ValueError):
     """Raised when a required PipelineResult field is missing or empty after a stage."""
 
-    def __init__(self, stage_name: str, field: str) -> None:
+    def __init__(self, stage_name: str, field: str, reason: str = "empty or None") -> None:
         super().__init__(
-            f"[{stage_name}] Required output field '{field}' is empty or None after stage completed. "
-            f"The stage may have failed silently."
+            f"Stage '{stage_name}': required field '{field}' is {reason}"
         )
         self.stage_name = stage_name
         self.field = field
+        self.reason = reason
 
 
 class OutputVerifier:
@@ -44,21 +42,16 @@ class OutputVerifier:
             stage_name: Human-readable stage identifier for error messages.
 
         Raises:
-            OutputVerificationError: If any required field is None, empty string,
-                or empty collection.
+            OutputVerificationError: If any required field is absent from result,
+                or is present but None, empty string, or empty collection.
         """
         for field in self._required:
             if not hasattr(result, field):
-                warnings.warn(
-                    f"[output_verifier] Stage '{stage_name}' declares required field "
-                    f"'{field}' but PipelineResult has no such attribute — skipping check.",
-                    stacklevel=2,
-                )
-                continue
+                raise OutputVerificationError(stage_name, field, reason="missing from result")
             value = getattr(result, field)
             if isinstance(value, str):
                 is_empty = not value.strip()
             else:
                 is_empty = not value
             if is_empty:
-                raise OutputVerificationError(stage_name, field)
+                raise OutputVerificationError(stage_name, field, reason="empty or None")
