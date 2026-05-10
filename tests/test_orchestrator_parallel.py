@@ -9,8 +9,10 @@ from orchestrator import PipelineResult, PipelineStage, Orchestrator
 
 def _make_orchestrator():
     """Build a minimal Orchestrator that can call _run_stage/_run_stage_safe."""
+    import threading
     orch = Orchestrator.__new__(Orchestrator)
     orch._agent_health = MagicMock()
+    orch._shutdown_event = threading.Event()
     return orch
 
 

@@ -58,6 +58,7 @@ from tools import builtin_tools, CombinedToolRegistry, MCPToolRegistry
 from agents.token_ledger import TokenLedger, BudgetExceededError, current_stage, get_ledger, set_ledger
 from utils import sanitise as _sanitise, deep_merge as _deep_merge
 from core.errors import PipelineError as _PipelineError
+from core.exceptions import ConfigurationError
 
 log = logging.getLogger(__name__)
 
@@ -177,6 +178,17 @@ class ClarificationNeeded(Exception):
     def __init__(self, questions: list[str]) -> None:
         self.questions = questions
         super().__init__(f"Clarification needed: {len(questions)} question(s)")
+
+
+class _ShutdownRequested(BaseException):
+    """Raised internally when a graceful shutdown is requested during a pipeline run.
+
+    Inherits from BaseException (not Exception) so it propagates through broad
+    ``except Exception`` handlers in stage loops without being accidentally swallowed.
+    The orchestrator's ``run()`` method catches this at the top level and returns
+    the current (partial) PipelineResult without marking the interrupted stage as
+    completed.
+    """
 
 
 @dataclass
@@ -879,6 +891,17 @@ class Orchestrator(TestFixLoopMixin):
         _health_threshold = int(3)  # default; overridable via config if needed
         self._agent_health = AgentHealthMonitor(failure_threshold=_health_threshold)
 
+        # Graceful shutdown: set by SIGTERM/SIGINT handlers; checked at every stage entry.
+        self._shutdown_event = threading.Event()
+
+        def _handle_shutdown(signum, frame):
+            self._shutdown_event.set()
+
+        if threading.current_thread() is threading.main_thread():
+            import signal as _signal
+            _signal.signal(_signal.SIGTERM, _handle_shutdown)
+            _signal.signal(_signal.SIGINT, _handle_shutdown)
+
     # ── Backend factory helpers ───────────────────────────────────────────────
 
     def _make_backend(self, agent_name: str) -> "LLMBackend":
@@ -1569,21 +1592,46 @@ class Orchestrator(TestFixLoopMixin):
         return None
 
     def _validate_pipeline_stages(self, source: str, stages: list) -> None:
-        """Warn about unknown stage names so errors surface early with context.
+        """Validate all stage names exist in the registry (collects all errors).
 
-        Unknown stages will raise a KeyError in ``_build_stage_list``; this
-        method surfaces the problem with a clear message at load time.
+        Walks top-level string entries and inner stages inside loop blocks.
+        Raises ConfigurationError listing all unknown stages at once.
+
+        Raises:
+            ConfigurationError: If ``stages`` is not a list, if any stage name
+                (including those nested inside loop blocks) does not exist in
+                the stage registry, or if a loop block is structurally invalid.
+                All unknown names are collected before raising so the caller
+                sees every problem in a single error.
         """
+        if not isinstance(stages, list):
+            raise ConfigurationError(
+                f"Pipeline 'stages' must be a list, got {type(stages).__name__!r} in {source!r}"
+            )
         registry = self._make_stage_registry()
         unknown = []
         for entry in stages:
-            if isinstance(entry, str) and entry not in registry:
-                unknown.append(entry)
+            if isinstance(entry, str):
+                if entry not in registry:
+                    unknown.append(entry)
+            elif isinstance(entry, dict) and "loop" in entry:
+                loop = entry["loop"]
+                if not isinstance(loop, dict):
+                    raise ConfigurationError(
+                        f"Loop block must be a mapping in {source!r}, got {type(loop).__name__!r}"
+                    )
+                inner_stages = loop.get("stages")
+                if inner_stages is not None and not isinstance(inner_stages, list):
+                    raise ConfigurationError(
+                        f"Loop 'stages' must be a list in {source!r}, got {type(inner_stages).__name__!r}"
+                    )
+                for inner in (inner_stages or []):
+                    if isinstance(inner, str) and inner not in registry:
+                        unknown.append(f"(loop){inner}")
         if unknown:
-            import logging as _logging
-            _logging.getLogger(__name__).warning(
-                "Pipeline %r references unknown stage(s) %s — valid stages: %s",
-                source, unknown, sorted(registry.keys()),
+            raise ConfigurationError(
+                f"Unknown pipeline stage(s) {unknown!r} in {source!r}. "
+                f"Valid stages: {sorted(registry.keys())}"
             )
 
     def _build_stage_list(self) -> list[PipelineStage]:
@@ -2405,155 +2453,173 @@ class Orchestrator(TestFixLoopMixin):
             border_style="cyan",
         ))
 
-        # ── Stage 1 + 2: hardcoded PM / Arch revision loops (standard pipeline only) ──
-        if getattr(self, '_pipeline_yaml_stages', None) is None:
-            # ── Stage 1: PM + PM Reviewer revision loop ───────────────────────
-            if "pm_review_loop" not in result.completed_stages:
-                ok = self._prd_revision_loop(result, requirement)
-                if not ok:
-                    return self._finish(result, start_time)
-            else:
-                console.print("  ⏭️  [dim]PRD revision loop — skipped (checkpoint)[/dim]")
-
-            # ── Stage 2: Architect + Architect Reviewer revision loop ─────────
-            if "architect_review_loop" not in result.completed_stages:
-                ok = self._design_revision_loop(result)
-                if not ok:
-                    return self._finish(result, start_time)
-            else:
-                console.print("  ⏭️  [dim]Design revision loop — skipped (checkpoint)[/dim]")
-
-        # ── RAG index (always before engineer, not mode-dependent) ─────────────
-        # Sync issue_number into tracker — PM may have just created the GitHub issue
-        self._tracker.issue_number = result.issue_number
-        if self.repo_auto_indexer and self.target_github and "rag_index" not in result.completed_stages:
-            self._run_stage(
-                "📦 RAG Index",
-                "Indexing repo codebase into RAG...",
-                result,
-                lambda: self._stage_repo_index(result),
-            )
-            result.add_completed_stage("rag_index")
-
-        # ── Mode-driven stage loop ────────────────────────────────────────────
-        stage_list = self._build_stage_list()
-        i = 0
-        while i < len(stage_list):
-            stage = stage_list[i]
-
-            # Collect a parallel batch: current stage + following stages with the same group
-            if stage.parallel_group is not None:
-                batch = [stage]
-                j = i + 1
-                while j < len(stage_list) and stage_list[j].parallel_group == stage.parallel_group:
-                    batch.append(stage_list[j])
-                    j += 1
-                i = j
-            else:
-                batch = [stage]
-                i += 1
-
-            # Filter out already-completed and conditionally-skipped stages
-            runnable = []
-            for s in batch:
-                if s.checkpoint_key in result.completed_stages or s.name in result.completed_stages:
-                    console.print(f"  ⏭️  [dim]{s.label} — skipped (checkpoint)[/dim]")
-                    self._tracker.mark_skipped(s.checkpoint_key)
-                elif s.skip_if(result):
-                    console.print(f"  ⏭️  [dim]{s.label} — skipped[/dim]")
-                    self._tracker.mark_skipped(s.checkpoint_key)
+        try:
+            # ── Stage 1 + 2: hardcoded PM / Arch revision loops (standard pipeline only) ──
+            if getattr(self, '_pipeline_yaml_stages', None) is None:
+                # ── Stage 1: PM + PM Reviewer revision loop ───────────────────────
+                if "pm_review_loop" not in result.completed_stages:
+                    ok = self._prd_revision_loop(result, requirement)
+                    if not ok:
+                        return self._finish(result, start_time)
                 else:
-                    runnable.append(s)
+                    console.print("  ⏭️  [dim]PRD revision loop — skipped (checkpoint)[/dim]")
 
-            if not runnable:
-                continue
+                # ── Stage 2: Architect + Architect Reviewer revision loop ─────────
+                if "architect_review_loop" not in result.completed_stages:
+                    ok = self._design_revision_loop(result)
+                    if not ok:
+                        return self._finish(result, start_time)
+                else:
+                    console.print("  ⏭️  [dim]Design revision loop — skipped (checkpoint)[/dim]")
 
-            # Mark all runnable stages in-progress
-            for s in runnable:
-                self._tracker.mark_in_progress(s.checkpoint_key)
+            # ── RAG index (always before engineer, not mode-dependent) ─────────────
+            # Sync issue_number into tracker — PM may have just created the GitHub issue
+            self._tracker.issue_number = result.issue_number
+            if self.repo_auto_indexer and self.target_github and "rag_index" not in result.completed_stages:
+                self._run_stage(
+                    "📦 RAG Index",
+                    "Indexing repo codebase into RAG...",
+                    result,
+                    lambda: self._stage_repo_index(result),
+                )
+                result.add_completed_stage("rag_index")
 
-            # Track errors before this batch
-            errors_before = len(result.errors)
+            # ── Mode-driven stage loop ────────────────────────────────────────────
+            stage_list = self._build_stage_list()
+            i = 0
+            while i < len(stage_list):
+                stage = stage_list[i]
 
-            if len(runnable) > 1:
-                # Parallel execution — Python copies context per thread so current_stage
-                # is isolated; each thread sets its own token inside _run_stage_safe.
-                stage_results: dict[str, bool] = {}  # checkpoint_key → succeeded
-                with ThreadPoolExecutor(max_workers=min(len(runnable), MAX_PARALLEL_STAGES)) as executor:
-                    futures = {
-                        executor.submit(self._run_stage_safe, s, result): s
-                        for s in runnable
-                    }
-                    for future in as_completed(futures):
-                        s = futures[future]
-                        stage_results[s.checkpoint_key] = future.result()  # re-raises unexpected exceptions
-            else:
-                s = runnable[0]
-                _stage_token = current_stage.set(s.checkpoint_key)
-                try:
-                    if s.loop_stages:
-                        # Loop block from pipeline.yaml
-                        ok = self._run_loop_stage(s, result)
-                        if not ok:
-                            self._tracker.mark_failed(s.checkpoint_key)
-                            result.progress_comment_id = self._tracker.comment_id
-                            self._save_checkpoint(result)
-                            return self._finish(result, start_time)
+                # Collect a parallel batch: current stage + following stages with the same group
+                if stage.parallel_group is not None:
+                    batch = [stage]
+                    j = i + 1
+                    while j < len(stage_list) and stage_list[j].parallel_group == stage.parallel_group:
+                        batch.append(stage_list[j])
+                        j += 1
+                    i = j
+                else:
+                    batch = [stage]
+                    i += 1
+
+                # Filter out already-completed and conditionally-skipped stages
+                runnable = []
+                for s in batch:
+                    if s.checkpoint_key in result.completed_stages or s.name in result.completed_stages:
+                        console.print(f"  ⏭️  [dim]{s.label} — skipped (checkpoint)[/dim]")
+                        self._tracker.mark_skipped(s.checkpoint_key)
+                    elif s.skip_if(result):
+                        console.print(f"  ⏭️  [dim]{s.label} — skipped[/dim]")
+                        self._tracker.mark_skipped(s.checkpoint_key)
                     else:
-                        self._run_stage(s.label, s.description, result, lambda ss=s: ss.fn(result), required_output_fields=s.required_output_fields)
-                finally:
-                    current_stage.reset(_stage_token)
+                        runnable.append(s)
 
-            # Check for errors after the batch — only mark stages that actually failed
-            any_failed = False
-            if len(runnable) > 1:
+                if not runnable:
+                    continue
+
+                # Mark all runnable stages in-progress
                 for s in runnable:
-                    if not stage_results.get(s.checkpoint_key, True):
-                        self._tracker.mark_failed(s.checkpoint_key, str(result.errors[-1]) if result.errors else "")
-                        any_failed = True
-                    else:
-                        if s.name == "senior_engineer":
-                            result.add_completed_stage("engineer")
-                        result.add_completed_stage(s.checkpoint_key)
-                        self._tracker.mark_done(s.checkpoint_key)
-            elif len(result.errors) > errors_before:
-                any_failed = True
-                self._tracker.mark_failed(runnable[0].checkpoint_key, str(result.errors[-1]))
+                    self._tracker.mark_in_progress(s.checkpoint_key)
 
-            if any_failed:
+                # Track errors before this batch
+                errors_before = len(result.errors)
+
+                if len(runnable) > 1:
+                    # Parallel execution — Python copies context per thread so current_stage
+                    # is isolated; each thread sets its own token inside _run_stage_safe.
+                    stage_results: dict[str, bool] = {}  # checkpoint_key → succeeded
+                    with ThreadPoolExecutor(max_workers=min(len(runnable), MAX_PARALLEL_STAGES)) as executor:
+                        futures = {
+                            executor.submit(self._run_stage_safe, s, result): s
+                            for s in runnable
+                        }
+                        try:
+                            for future in as_completed(futures):
+                                s = futures[future]
+                                stage_results[s.checkpoint_key] = future.result()  # re-raises unexpected exceptions
+                        except _ShutdownRequested:
+                            # Cancel any futures that haven't started yet so we don't
+                            # wait for them inside the ThreadPoolExecutor __exit__.
+                            for f in futures:
+                                f.cancel()
+                            raise
+                else:
+                    s = runnable[0]
+                    _stage_token = current_stage.set(s.checkpoint_key)
+                    try:
+                        if s.loop_stages:
+                            # Loop block from pipeline.yaml
+                            ok = self._run_loop_stage(s, result)
+                            if not ok:
+                                self._tracker.mark_failed(s.checkpoint_key)
+                                result.progress_comment_id = self._tracker.comment_id
+                                self._save_checkpoint(result)
+                                return self._finish(result, start_time)
+                        else:
+                            self._run_stage(s.label, s.description, result, lambda ss=s: ss.fn(result), required_output_fields=s.required_output_fields)
+                    finally:
+                        current_stage.reset(_stage_token)
+
+                # Check for errors after the batch — only mark stages that actually failed
+                any_failed = False
+                if len(runnable) > 1:
+                    for s in runnable:
+                        if not stage_results.get(s.checkpoint_key, True):
+                            self._tracker.mark_failed(s.checkpoint_key, str(result.errors[-1]) if result.errors else "")
+                            any_failed = True
+                        else:
+                            if s.name == "senior_engineer":
+                                result.add_completed_stage("engineer")
+                            result.add_completed_stage(s.checkpoint_key)
+                            self._tracker.mark_done(s.checkpoint_key)
+                elif len(result.errors) > errors_before:
+                    any_failed = True
+                    self._tracker.mark_failed(runnable[0].checkpoint_key, str(result.errors[-1]))
+
+                if any_failed:
+                    result.progress_comment_id = self._tracker.comment_id
+                    self._save_checkpoint(result)
+                    return self._finish(result, start_time)
+
+                # Mark sequential stage done (parallel stages handled above)
+                if len(runnable) == 1:
+                    seq_s = runnable[0]
+                    # Backward-compat: senior_engineer stage also marks old "engineer" key
+                    if seq_s.name == "senior_engineer":
+                        result.add_completed_stage("engineer")
+                    result.add_completed_stage(seq_s.checkpoint_key)
+                    self._tracker.mark_done(seq_s.checkpoint_key)
+
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
-                return self._finish(result, start_time)
 
-            # Mark sequential stage done (parallel stages handled above)
-            if len(runnable) == 1:
-                seq_s = runnable[0]
-                # Backward-compat: senior_engineer stage also marks old "engineer" key
-                if seq_s.name == "senior_engineer":
-                    result.add_completed_stage("engineer")
-                result.add_completed_stage(seq_s.checkpoint_key)
-                self._tracker.mark_done(seq_s.checkpoint_key)
+                # Early pipeline stop — only meaningful for a single sequential stage
+                # NOTE: checkpoint_key is saved before stop_if check (intentional).
+                # On resume, completed stages (incl. reviewer) are skipped, so
+                # the pipeline continues from the next stage rather than re-running
+                # the stage that triggered the stop.
+                if len(runnable) == 1:
+                    s = runnable[0]
+                    if s.stop_if(result):
+                        console.print(
+                            f"\n  🛑 [bold yellow]{s.stop_message or 'Pipeline stopped early.'}[/bold yellow]"
+                        )
+                        return self._finish(result, start_time)
 
+            # Pipeline complete — remove checkpoint
+            self._clear_checkpoint(result)
+            return self._finish(result, start_time)
+
+        except _ShutdownRequested:
+            # A graceful shutdown was requested (SIGTERM/SIGINT) while a stage was
+            # running.  Save the checkpoint so that the next run() with resume=True
+            # will pick up from the last *genuinely completed* stage — not from any
+            # stage that was interrupted before it finished.
+            logging.info("Graceful shutdown: pipeline interrupted before completion")
             result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
+            return self._finish(result, start_time)
 
-            # Early pipeline stop — only meaningful for a single sequential stage
-            # NOTE: checkpoint_key is saved before stop_if check (intentional).
-            # On resume, completed stages (incl. reviewer) are skipped, so
-            # the pipeline continues from the next stage rather than re-running
-            # the stage that triggered the stop.
-            if len(runnable) == 1:
-                s = runnable[0]
-                if s.stop_if(result):
-                    console.print(
-                        f"\n  🛑 [bold yellow]{s.stop_message or 'Pipeline stopped early.'}[/bold yellow]"
-                    )
-                    return self._finish(result, start_time)
-
-
-        # Pipeline complete — remove checkpoint
-        self._clear_checkpoint(result)
-        return self._finish(result, start_time)
 
     # ── Stage implementations ────────────────────────────────────────────────
 
@@ -2661,6 +2727,7 @@ class Orchestrator(TestFixLoopMixin):
                     "Analyzing requirements & writing PRD...",
                     result,
                     lambda: self._stage_pm(result, requirement),
+                    required_output_fields=["prd"],
                 )
             except ClarificationNeeded as exc:
                 self._tracker.mark_failed("pm", "Awaiting clarification")
@@ -2687,6 +2754,7 @@ class Orchestrator(TestFixLoopMixin):
                 "Reviewing PRD for completeness...",
                 result,
                 lambda: self._stage_pm_reviewer(result, requirement),
+                required_output_fields=["prd_review", "prd_verdict"],
             )
             if result.errors:
                 self._tracker.mark_failed("pm_reviewer", str(result.errors[-1]))
@@ -2731,6 +2799,7 @@ class Orchestrator(TestFixLoopMixin):
                 f"Revising PRD based on reviewer feedback (round {round_num})...",
                 result,
                 lambda rn=round_num: self._stage_pm_revision(result, requirement, rn),
+                required_output_fields=["prd"],
             )
             if result.errors:
                 self._tracker.mark_failed(key, str(result.errors[-1]))
@@ -2744,6 +2813,7 @@ class Orchestrator(TestFixLoopMixin):
                 f"Re-reviewing revised PRD (round {round_num})...",
                 result,
                 lambda: self._stage_pm_reviewer(result, requirement),
+                required_output_fields=["prd_review", "prd_verdict"],
             )
             if result.errors:
                 self._tracker.mark_failed(key, str(result.errors[-1]))
@@ -2823,7 +2893,13 @@ class Orchestrator(TestFixLoopMixin):
         if "architect" not in result.completed_stages:
             self._tracker.mark_in_progress("architect")
             try:
-                self._run_stage("🏗️  Architect", "Designing system architecture...", result, lambda: self._stage_architect(result))
+                self._run_stage(
+                    "🏗️  Architect",
+                    "Designing system architecture...",
+                    result,
+                    lambda: self._stage_architect(result),
+                    required_output_fields=["design"],
+                )
             except ClarificationNeeded as exc:
                 self._tracker.mark_failed("architect", "Awaiting clarification")
                 result.progress_comment_id = self._tracker.comment_id
@@ -2849,6 +2925,7 @@ class Orchestrator(TestFixLoopMixin):
                 "Reviewing system design...",
                 result,
                 lambda: self._stage_architect_reviewer(result),
+                required_output_fields=["design_review", "design_verdict"],
             )
             if result.errors:
                 self._tracker.mark_failed("architect_reviewer", str(result.errors[-1]))
@@ -2893,6 +2970,7 @@ class Orchestrator(TestFixLoopMixin):
                 f"Revising design based on reviewer feedback (round {round_num})...",
                 result,
                 lambda rn=round_num: self._stage_arch_revision(result, rn),
+                required_output_fields=["design"],
             )
             if result.errors:
                 self._tracker.mark_failed(key, str(result.errors[-1]))
@@ -2906,6 +2984,7 @@ class Orchestrator(TestFixLoopMixin):
                 f"Re-reviewing revised design (round {round_num})...",
                 result,
                 lambda: self._stage_architect_reviewer(result),
+                required_output_fields=["design_review", "design_verdict"],
             )
             if result.errors:
                 self._tracker.mark_failed(key, str(result.errors[-1]))
@@ -3656,6 +3735,12 @@ class Orchestrator(TestFixLoopMixin):
             is_critical:           When True, this stage is exempt from cascade-skip;
                                    critical stages always run regardless of upstream CB state.
         """
+        # Graceful shutdown: abort immediately if a SIGTERM/SIGINT was received.
+        # Raise _ShutdownRequested (BaseException) instead of returning None so
+        # that callers cannot mistakenly infer "stage succeeded" from "no new errors".
+        if getattr(self, "_shutdown_event", None) and self._shutdown_event.is_set():
+            raise _ShutdownRequested()
+
         # CB cascade: skip non-critical stages when a critical upstream CB is open.
         # Critical stages (pm, architect) always run so they can recover.
         if not is_critical:
