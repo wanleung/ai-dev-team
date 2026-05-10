@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ class TokenLedger:
     """Accumulates LLM token usage across a pipeline run."""
 
     def __init__(self, pricing: dict[str, list[float]] | None = None, max_cost_usd: float | None = None) -> None:
+        self._lock: threading.Lock = threading.Lock()
         # pricing: model_name -> [input_price_per_1M, output_price_per_1M]
         self._pricing: dict[str, list[float]] = pricing or {}
         self._max_cost_usd: float | None = max_cost_usd
@@ -42,15 +44,16 @@ class TokenLedger:
 
     def start_run(self, run_id: str, project_name: str, repo: str) -> None:
         """Register a new pipeline run and prepare it for recording."""
-        self._runs[run_id] = {
-            "run_id": run_id,
-            "project_name": project_name,
-            "repo": repo,
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "finished_at": None,
-        }
-        self._events[run_id] = []
-        self._totals[run_id] = 0.0
+        with self._lock:
+            self._runs[run_id] = {
+                "run_id": run_id,
+                "project_name": project_name,
+                "repo": repo,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": None,
+            }
+            self._events[run_id] = []
+            self._totals[run_id] = 0.0
 
     def record(
         self,
@@ -61,42 +64,53 @@ class TokenLedger:
         completion_tokens: int,
     ) -> None:
         """Record a single LLM call's token usage for the given run and stage."""
-        if run_id not in self._runs:
-            return  # tracking disabled or run not started
-        cost = self._calculate_cost(model, prompt_tokens, completion_tokens)
-        self._events[run_id].append(
-            UsageRecord(
-                run_id=run_id,
-                stage=stage,
-                model=model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost_usd=cost,
-            )
-        )
-        self._totals[run_id] = self._totals.get(run_id, 0.0) + cost
-        if self._max_cost_usd is not None:
-            total = self._totals[run_id]
-            if total > self._max_cost_usd:
-                raise BudgetExceededError(
-                    f"Pipeline cost ${total:.4f} exceeds budget ${self._max_cost_usd:.4f}"
+        with self._lock:
+            if run_id not in self._runs:
+                return  # tracking disabled or run not started
+            cost = self._calculate_cost(model, prompt_tokens, completion_tokens)
+            self._events[run_id].append(
+                UsageRecord(
+                    run_id=run_id,
+                    stage=stage,
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=cost,
                 )
+            )
+            self._totals[run_id] = self._totals.get(run_id, 0.0) + cost
+            if self._max_cost_usd is not None:
+                total = self._totals[run_id]
+                if total > self._max_cost_usd:
+                    raise BudgetExceededError(
+                        f"Pipeline cost ${total:.4f} exceeds budget ${self._max_cost_usd:.4f}"
+                    )
 
     def finish_run(self, run_id: str) -> None:
         """Mark a run as finished by recording its completion timestamp."""
-        if run_id in self._runs:
-            self._runs[run_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            if run_id in self._runs:
+                self._runs[run_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
 
     def active_run_id(self) -> str | None:
-        """Return the most recently started unfinished run_id, or None."""
-        for run_id, meta in reversed(list(self._runs.items())):
+        """Return the most recently started unfinished run_id, or None.
+
+        Iterates a snapshot of ``self._runs`` under the lock to avoid
+        ``RuntimeError: dictionary changed size during iteration`` in threaded
+        contexts where other methods may mutate ``_runs`` concurrently.
+        """
+        with self._lock:
+            items = list(self._runs.items())
+        for run_id, meta in reversed(items):
             if meta.get("finished_at") is None:
                 return run_id
         return None
 
     def summary(self, run_id: str) -> dict:
         """Return a summary dict with totals, per-stage, and per-model breakdowns."""
-        events = self._events.get(run_id, [])
+        with self._lock:
+            events = list(self._events.get(run_id, []))
+            run_meta = dict(self._runs.get(run_id, {}))
         total_prompt = sum(e.prompt_tokens for e in events)
         total_completion = sum(e.completion_tokens for e in events)
         total_cost = sum(e.cost_usd for e in events)
@@ -134,7 +148,8 @@ class TokenLedger:
 
         return {
             "run_id": run_id,
-            "project_name": self._runs.get(run_id, {}).get("project_name", ""),
+            "project_name": run_meta.get("project_name", ""),
+            "total_events": len(events),
             "total_prompt_tokens": total_prompt,
             "total_completion_tokens": total_completion,
             "total_cost_usd": total_cost,
@@ -305,14 +320,17 @@ def estimate_tokens(
 
 # Global ledger instance — replaced by Orchestrator with a configured instance.
 _ledger: TokenLedger = TokenLedger()
+_ledger_lock: threading.Lock = threading.Lock()
 
 
 def get_ledger() -> TokenLedger:
     """Return the global TokenLedger instance."""
-    return _ledger
+    with _ledger_lock:
+        return _ledger
 
 
 def set_ledger(ledger: TokenLedger) -> None:
     """Replace the global TokenLedger instance (used by Orchestrator at startup)."""
     global _ledger
-    _ledger = ledger
+    with _ledger_lock:
+        _ledger = ledger

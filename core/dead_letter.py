@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time as _time
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, replace as dc_replace
 from pathlib import Path
@@ -30,6 +31,39 @@ from config_schema import DLQConfig, DLQRedisConfig, DLQSQSConfig
 from core.events import DLQEvent, emit_event
 
 logger = logging.getLogger(__name__)
+
+# Lua script for atomic nack: increment attempt_count then hset or hdel in one round-trip.
+_LUA_NACK = """
+local raw = redis.call('HGET', KEYS[1], ARGV[1])
+if not raw then return nil end
+local ok, data = pcall(cjson.decode, raw)
+if not ok then return nil end
+local max_attempts = tonumber(ARGV[2])
+data['attempt_count'] = (data['attempt_count'] or 1) + 1
+if data['attempt_count'] > max_attempts then
+    redis.call('HDEL', KEYS[1], ARGV[1])
+    return data['attempt_count']
+end
+redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(data))
+return data['attempt_count']
+"""
+
+_DLQ_BACKOFF_BASE_S: float = 30.0    # seconds for attempt 1
+_DLQ_BACKOFF_MAX_S: float = 3600.0   # 1 hour cap
+_MAX_BACKOFF_EXPONENT: int = 30       # 2^30 > 1 billion — prevents OverflowError on huge counts
+
+
+def _backoff_delay(attempt_count: int) -> float:
+    """Exponential backoff: base * 2^(attempt-1), capped at max.
+
+    Args:
+        attempt_count: The new attempt count after incrementing (1-based).
+
+    Returns:
+        Delay in seconds before the entry should be retried.
+    """
+    exponent = min(attempt_count - 1, _MAX_BACKOFF_EXPONENT)
+    return min(_DLQ_BACKOFF_BASE_S * (2 ** exponent), _DLQ_BACKOFF_MAX_S)
 
 
 def _dlq_emit(action: str, entry_id: str, backend: str, attempt_count: int = 1) -> None:
@@ -53,6 +87,7 @@ class DLQEntry:
     target_repo: str = ""
     attempt_count: int = 1
     stage_name: str = "pipeline"  # which pipeline stage failed; "pipeline" = unknown/fatal
+    retry_after: float = 0.0  # Unix timestamp; 0.0 = available immediately
 
 
 class DeadLetterQueue(ABC):
@@ -99,6 +134,41 @@ class NullDeadLetterQueue(DeadLetterQueue):
         pass
 
 
+class InMemoryDeadLetterQueue(DeadLetterQueue):
+    """In-memory DLQ backend — primarily for testing; not persistent across restarts.
+
+    Supports exponential backoff via ``retry_after`` on nack.
+    """
+
+    def __init__(self) -> None:
+        self._store: dict[str, DLQEntry] = {}
+
+    def enqueue(self, entry: DLQEntry) -> None:
+        """Store the entry in the internal dict keyed by entry.id."""
+        self._store[entry.id] = entry
+
+    def drain(self) -> Iterator[DLQEntry]:
+        """Yield entries whose retry_after <= now (skips future-dated entries)."""
+        now = _time.time()
+        for entry in list(self._store.values()):
+            if entry.retry_after <= now:
+                yield entry
+
+    def ack(self, entry_id: str) -> None:
+        """Remove the entry from the store."""
+        self._store.pop(entry_id, None)
+
+    def nack(self, entry_id: str) -> None:
+        """Increment attempt_count and set retry_after using exponential backoff."""
+        entry = self._store.get(entry_id)
+        if entry is None:
+            return
+        from dataclasses import replace
+        new_count = entry.attempt_count + 1
+        retry_after = _time.time() + _backoff_delay(new_count)
+        self._store[entry_id] = replace(entry, attempt_count=new_count, retry_after=retry_after)
+
+
 class FileDeadLetterQueue(DeadLetterQueue):
     """Stores each DLQ entry as an individual JSON file inside a directory.
 
@@ -126,11 +196,14 @@ class FileDeadLetterQueue(DeadLetterQueue):
         _dlq_emit("enqueue", entry.id, "file", entry.attempt_count)
 
     def drain(self) -> Iterator[DLQEntry]:
-        """Yield all entries found in the directory, skipping corrupt files."""
+        """Yield all entries found in the directory, skipping corrupt files and future-dated entries."""
+        now = _time.time()
         for p in sorted(self._path.glob("*.json")):
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
-                yield DLQEntry(**data)
+                if data.get("retry_after", 0.0) > now:
+                    continue  # not yet due for retry
+                yield DLQEntry(**{k: v for k, v in data.items() if k in DLQEntry.__dataclass_fields__})
             except Exception:
                 continue
 
@@ -142,15 +215,17 @@ class FileDeadLetterQueue(DeadLetterQueue):
             _dlq_emit("ack", entry_id, "file")
 
     def nack(self, entry_id: str) -> None:
-        """Increment attempt_count; discard entry if max_attempts exceeded (atomic write)."""
+        """Increment attempt_count and set retry_after; discard entry if max_attempts exceeded (atomic write)."""
         f = self._file_for(entry_id)
         if f.exists():
             data = json.loads(f.read_text(encoding="utf-8"))
-            data["attempt_count"] = data.get("attempt_count", 1) + 1
+            old_count = data.get("attempt_count", 1)
+            data["attempt_count"] = old_count + 1
             if data["attempt_count"] > self._max_attempts:
                 f.unlink(missing_ok=True)
                 _dlq_emit("nack", entry_id, "file", data["attempt_count"])
                 return
+            data["retry_after"] = _time.time() + _backoff_delay(data["attempt_count"])
             tmp = f.with_suffix(".tmp")
             tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
             tmp.replace(f)
@@ -176,11 +251,13 @@ class RedisDLQ(DeadLetterQueue):
         cfg: "DLQRedisConfig",
         max_attempts: int = 3,
         client=None,
+        redis_client=None,
     ) -> None:
         self._cfg = cfg
         self._max_attempts = max_attempts
-        if client is not None:
-            self._redis = client
+        resolved_client = redis_client or client
+        if resolved_client is not None:
+            self._redis = resolved_client
         else:
             import redis as _redis
             self._redis = _redis.from_url(cfg.url)
@@ -197,13 +274,16 @@ class RedisDLQ(DeadLetterQueue):
         _dlq_emit("enqueue", entry.id, "redis", entry.attempt_count)
 
     def drain(self) -> Iterator[DLQEntry]:
-        """Yield all entries currently in the hash (order is not guaranteed)."""
+        """Yield all entries currently in the hash, skipping future-dated entries (order is not guaranteed)."""
+        now = _time.time()
         items = self._redis.hvals(self._cfg.key) or []
         for item in items:
             try:
                 raw = item.decode() if isinstance(item, bytes) else item
                 data = json.loads(raw)
-                yield DLQEntry(**data)
+                if data.get("retry_after", 0.0) > now:
+                    continue  # not yet due for retry
+                yield DLQEntry(**{k: v for k, v in data.items() if k in DLQEntry.__dataclass_fields__})
             except Exception:
                 continue
 
@@ -214,9 +294,43 @@ class RedisDLQ(DeadLetterQueue):
             _dlq_emit("ack", entry_id, "redis")
 
     def nack(self, entry_id: str) -> None:
-        """Increment attempt_count; drop entry if max_attempts exceeded."""
-        # Note: hget → hset is not atomic; concurrent nacks on the same entry_id
-        # may under-count. Acceptable for low-throughput DLQ use.
+        """Atomically increment attempt_count using Lua; drop if max_attempts exceeded.
+
+        Falls back to a Python-level read-modify-write on ResponseError
+        (e.g. Redis Cluster without script routing support).
+
+        ``retry_after`` is NOT set inside the Lua script (no Lua math for
+        wall-clock time). After a successful Lua nack we do a best-effort
+        follow-up ``hset`` to persist the backoff timestamp.
+        """
+        try:
+            from redis.exceptions import ResponseError
+        except ImportError:
+            ResponseError = Exception  # fallback if redis not installed
+
+        try:
+            attempt_count = self._redis.eval(
+                _LUA_NACK, 1, self._cfg.key, entry_id, self._max_attempts
+            )
+            if attempt_count is not None:
+                count = int(attempt_count)
+                _dlq_emit("nack", entry_id, "redis", count)
+                # Set retry_after in a follow-up update (best-effort, not atomic)
+                raw = self._redis.hget(self._cfg.key, entry_id)
+                if raw is not None:
+                    try:
+                        data = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+                        data["retry_after"] = _time.time() + _backoff_delay(count)
+                        self._redis.hset(self._cfg.key, entry_id, json.dumps(data))
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to set retry_after on entry %r: %s", entry_id, exc
+                        )
+            return
+        except ResponseError:
+            pass  # fall through to non-atomic fallback path
+
+        # Non-atomic fallback (e.g. Redis Cluster without script routing)
         raw = self._redis.hget(self._cfg.key, entry_id)
         if raw is None:
             return
@@ -224,7 +338,9 @@ class RedisDLQ(DeadLetterQueue):
             data = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
         except Exception:
             return
-        data["attempt_count"] = data.get("attempt_count", 1) + 1
+        old_count = data.get("attempt_count", 1)
+        data["attempt_count"] = old_count + 1
+        data["retry_after"] = _time.time() + _backoff_delay(data["attempt_count"])
         if data["attempt_count"] <= self._max_attempts:
             self._redis.hset(self._cfg.key, entry_id, json.dumps(data))
         else:
@@ -236,6 +352,11 @@ class SQSDeadLetterQueue(DeadLetterQueue):
     """AWS SQS-based DLQ backend.
 
     Entries are sent as JSON message bodies. Requires the ``boto3`` package.
+
+    Note: The ``retry_after`` backoff field on :class:`DLQEntry` is not enforced
+    by this backend. SQS uses its own visibility timeout and redrive policy for
+    retry scheduling. Entries returned by :meth:`drain` are not filtered by
+    ``retry_after``.
 
     Note:
         ``max_attempts`` is not enforced by this backend; configure a SQS Redrive
