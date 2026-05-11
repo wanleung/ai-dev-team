@@ -198,3 +198,51 @@ def test_no_model_arg_still_works():
     messages = [{"role": "user", "content": "Hello"}]
     prompt_tok, comp_tok = estimate_tokens(messages, "Hi")
     assert prompt_tok >= 0 and comp_tok >= 0
+
+
+# ── Short-string token estimation fix (T3-C Task 3) ──────────────────────────
+
+@pytest.mark.parametrize("text,model", [
+    ("4", "claude-3-sonnet"),       # 1 char, Claude path: round(1/3.5) = 0 → fixed to 1
+    ("hi", "gemini-pro"),           # 2 chars, Gemini path: round(0.5)→0 (banker's rounding), max(1,0)→1
+    ("x", "llama3"),                # 1 char, fallback path: round(1/4) = 0 → fixed to 1
+])
+def test_estimate_tokens_short_string_returns_at_least_one(text, model):
+    """Non-empty short strings must yield >= 1 token. Guards against int() floor returning 0."""
+    from agents.token_ledger import estimate_tokens
+    prompt_est, completion_est = estimate_tokens(
+        [{"role": "user", "content": text}], text, model=model
+    )
+    assert prompt_est >= 1, f"prompt_est={prompt_est} for text={text!r} model={model}"
+    assert completion_est >= 1, f"completion_est={completion_est} for text={text!r} model={model}"
+
+
+def test_estimate_tokens_empty_string_returns_zero():
+    """Empty string must yield 0 tokens (no content = no cost)."""
+    from agents.token_ledger import estimate_tokens
+    prompt_est, completion_est = estimate_tokens(
+        [{"role": "user", "content": ""}], "", model="gemini-pro"
+    )
+    assert prompt_est == 0
+    assert completion_est == 0
+
+
+def test_estimate_tokens_multiple_empty_messages_returns_zero():
+    """Two empty-content messages joined by space must not count as 1 token."""
+    from agents.token_ledger import estimate_tokens
+    prompt_est, completion_est = estimate_tokens(
+        [{"role": "user", "content": ""}, {"role": "assistant", "content": ""}],
+        "", model="gemini-pro"
+    )
+    assert prompt_est == 0
+    assert completion_est == 0
+
+
+def test_estimate_tokens_whitespace_only_returns_zero():
+    """Whitespace-only strings are treated as empty — no meaningful content, no tokens."""
+    from agents.token_ledger import estimate_tokens
+    prompt_est, completion_est = estimate_tokens(
+        [{"role": "user", "content": " "}], " ", model="claude-3-haiku"
+    )
+    assert prompt_est == 0
+    assert completion_est == 0

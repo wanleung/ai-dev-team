@@ -193,11 +193,11 @@ def remove_label(repo: str, issue_number: int, label: str) -> None:
 
 
 @_retry_github
-def get_open_issues(repo: str, label: str | list[str]) -> list[GitHubIssue]:
-    """Return open issues with the given label(s) that haven't been processed.
+def _get_open_issues_raw(repo: str, label: str | list[str]) -> list[GitHubIssue]:
+    """Inner (retryable) implementation of get_open_issues.
 
-    label may be a single string or a list; issues matching ANY label are returned
-    (deduped by issue number).
+    Uses raise_for_status() so that 429/5xx responses surface as HTTPError
+    and are intercepted by @_retry_github for exponential-backoff retries.
     """
     labels = [label] if isinstance(label, str) else list(label)
     seen: set[int] = set()
@@ -220,9 +220,34 @@ def get_open_issues(repo: str, label: str | list[str]) -> list[GitHubIssue]:
     return issues
 
 
+def get_open_issues(repo: str, label: str | list[str]) -> list[GitHubIssue]:
+    """Return open issues with the given label(s) that haven't been processed.
+
+    label may be a single string or a list; issues matching ANY label are returned
+    (deduped by issue number).
+
+    Retries transiently on 429/5xx via @_retry_github applied to the inner
+    function.  On final failure converts HTTPError to RuntimeError so callers
+    receive a consistent exception type.
+    """
+    try:
+        return _get_open_issues_raw(repo, label)
+    except requests.HTTPError as exc:
+        resp = exc.response
+        if resp is None:
+            raise RuntimeError("GitHub API error: (no response)") from exc
+        raise RuntimeError(
+            f"GitHub API error {resp.status_code}: {resp.text[:200]}"
+        ) from exc
+
+
 @_retry_github
-def get_open_prs(repo: str, skip_drafts: bool = True) -> list[GitHubPR]:
-    """Return open pull requests for the repo, optionally excluding drafts."""
+def _get_open_prs_raw(repo: str, skip_drafts: bool = True) -> list[GitHubPR]:
+    """Inner (retryable) implementation of get_open_prs.
+
+    Uses raise_for_status() so that 429/5xx responses surface as HTTPError
+    and are intercepted by @_retry_github for exponential-backoff retries.
+    """
     url = f"https://api.github.com/repos/{repo}/pulls"
     params = {"state": "open", "per_page": 50}
     resp = requests.get(url, headers=_gh_headers(), params=params, timeout=10)
@@ -233,13 +258,53 @@ def get_open_prs(repo: str, skip_drafts: bool = True) -> list[GitHubPR]:
     return prs
 
 
+def get_open_prs(repo: str, skip_drafts: bool = True) -> list[GitHubPR]:
+    """Return open pull requests for the repo, optionally excluding drafts.
+
+    Retries transiently on 429/5xx via @_retry_github applied to the inner
+    function.  On final failure converts HTTPError to RuntimeError so callers
+    receive a consistent exception type.
+    """
+    try:
+        return _get_open_prs_raw(repo, skip_drafts)
+    except requests.HTTPError as exc:
+        resp = exc.response
+        if resp is None:
+            raise RuntimeError("GitHub API error: (no response)") from exc
+        raise RuntimeError(
+            f"GitHub API error {resp.status_code}: {resp.text[:200]}"
+        ) from exc
+
+
 @_retry_github
-def get_pr_comments(repo: str, pr_number: int) -> list[GitHubComment]:
-    """Return all conversation comments on a pull request."""
+def _get_pr_comments_raw(repo: str, pr_number: int) -> list[GitHubComment]:
+    """Inner (retryable) implementation of get_pr_comments.
+
+    Uses raise_for_status() so that 429/5xx responses surface as HTTPError
+    and are intercepted by @_retry_github for exponential-backoff retries.
+    """
     url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
     resp = requests.get(url, headers=_gh_headers(), params={"per_page": 100}, timeout=10)
     resp.raise_for_status()
     return resp.json()
+
+
+def get_pr_comments(repo: str, pr_number: int) -> list[GitHubComment]:
+    """Return all conversation comments on a pull request.
+
+    Retries transiently on 429/5xx via @_retry_github applied to the inner
+    function.  On final failure converts HTTPError to RuntimeError so callers
+    receive a consistent exception type.
+    """
+    try:
+        return _get_pr_comments_raw(repo, pr_number)
+    except requests.HTTPError as exc:
+        resp = exc.response
+        if resp is None:
+            raise RuntimeError("GitHub API error: (no response)") from exc
+        raise RuntimeError(
+            f"GitHub API error {resp.status_code}: {resp.text[:200]}"
+        ) from exc
 
 
 def _pr_attempt_count(pr_labels: list[dict]) -> int:
@@ -314,7 +379,7 @@ def _collect_issue_prior_context(tracker_gh: "GitHubClient", issue_number: int) 
     try:
         comments = tracker_gh.get_issue_comments(issue_number)
     except Exception:  # noqa: BLE001
-        logger.debug("Could not fetch comments for #%d", issue_number, exc_info=True)
+        _log.debug("Could not fetch comments for #%d", issue_number, exc_info=True)
         return ""
 
     parts: list[str] = []
@@ -391,15 +456,17 @@ def run_pipeline(
         _target_repo = target_repo or tracker_repo
 
     if logger is None:
+        # Ensure a non-None logger to forward downstream (e.g. to _dispatch).
+        # Local log calls in this function use the module-level _log instead.
         logger = logging.getLogger("watcher")
 
-    logger.info(
+    _log.info(
         "  → Issue #%d: %r | label=%s | target=%s",
         _issue_number, _issue_title, label, _target_repo,
     )
 
     if dry_run:
-        logger.info("    [dry-run] Would run pipeline for label=%s", label)
+        _log.info("    [dry-run] Would run pipeline for label=%s", label)
         return True
 
     # ── Resolve log file path ─────────────────────────────────────────────────
@@ -445,7 +512,7 @@ def run_pipeline(
                 try:
                     remove_label(tracker_repo, _issue_number, stale)
                 except Exception:  # noqa: BLE001
-                    logger.debug("Could not remove stale label %r from #%d", stale, _issue_number, exc_info=True)
+                    _log.debug("Could not remove stale label %r from #%d", stale, _issue_number, exc_info=True)
             ensure_label(tracker_repo, next_label, "c5def5")
             add_label(tracker_repo, _issue_number, next_label)
             post_comment(
@@ -460,20 +527,20 @@ def run_pipeline(
                 f"The watcher will pick this up on the next cycle.\n\n"
                 f"To stop chaining, remove the `{next_label}` label.",
             )
-            logger.info(
+            _log.info(
                 "    🔁 Issue #%d chained → label=%s (verdict=%s, tests_passed=%s)",
                 _issue_number, next_label, result.verdict, result.tests_passed,
             )
         else:
             add_label(tracker_repo, _issue_number, LABEL_COMPLETE)
             remove_label(tracker_repo, _issue_number, LABEL_RUNNING)
-            logger.info("    ✅ Issue #%d complete", _issue_number)
+            _log.info("    ✅ Issue #%d complete", _issue_number)
 
         return True
 
     except Exception as exc:  # noqa: BLE001
         _token = os.environ.get("GITHUB_TOKEN", "")
-        logger.error("    ❌ Issue #%d failed: %s", _issue_number, _sanitise(str(exc), _token), exc_info=True)
+        _log.error("    ❌ Issue #%d failed: %s", _issue_number, _sanitise(str(exc), _token), exc_info=True)
         try:
             add_label(tracker_repo, _issue_number, LABEL_FAILED)
             remove_label(tracker_repo, _issue_number, LABEL_RUNNING)
@@ -485,7 +552,7 @@ def run_pipeline(
                 f"the issue to retry.",
             )
         except Exception:  # noqa: BLE001
-            logger.debug("Could not update labels/comment for #%d during failure cleanup", _issue_number, exc_info=True)
+            _log.debug("Could not update labels/comment for #%d during failure cleanup", _issue_number, exc_info=True)
         # ── Enqueue to DLQ for later retry ────────────────────────────────────
         if dlq is not None:
             from core.dead_letter import DLQEntry
@@ -510,7 +577,7 @@ def run_pipeline(
             try:
                 dlq.enqueue(_dlq_entry)
             except Exception as _dlq_exc:  # noqa: BLE001
-                logger.warning("Could not enqueue to DLQ: %s", _sanitise(str(_dlq_exc), os.environ.get("GITHUB_TOKEN", "")))
+                _log.warning("Could not enqueue to DLQ: %s", _sanitise(str(_dlq_exc), os.environ.get("GITHUB_TOKEN", "")))
         return False
 
 
@@ -683,7 +750,7 @@ def _dispatch(
     model: str,
     num_engineers: int,
     log_file: Path,
-    logger: logging.Logger,
+    logger: logging.Logger,  # noqa: ARG001 – forwarded by callers; body uses module _log
 ) -> "PipelineResult":
     """Run the unified Orchestrator with the pipeline file selected by ``label``.
 
@@ -743,9 +810,9 @@ def _dispatch(
             stages = orch.load_pipeline_for_label(label)
             if stages is not None:
                 orch._pipeline_yaml_stages = stages
-                logger.info("    Using pipelines/%s.yaml (%d stages)", label, len(stages))
+                _log.info("    Using pipelines/%s.yaml (%d stages)", label, len(stages))
             else:
-                logger.info("    Using built-in default pipeline (no pipelines/%s.yaml)", label)
+                _log.info("    Using built-in default pipeline (no pipelines/%s.yaml)", label)
 
             result = orch.run(requirement, trigger_issue_body=trigger_issue_body, issue_number=issue_number)
             return result
@@ -790,7 +857,7 @@ def _run_pr_revision(
     model: str,
     num_engineers: int,
     log_dir: Path,
-    logger: logging.Logger,
+    logger: logging.Logger,  # noqa: ARG001 – accepted for API consistency; body uses module _log
     pr_fix_label: str = "ai-fix",
     update_branch_enabled: bool = False,
     conflict_resolver_model: Optional[str] = None,
@@ -822,7 +889,7 @@ def _run_pr_revision(
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"pr-revision-{pr_number}-attempt{attempt}.log"
 
-    logger.info("  🔄 PR #%d: starting fix attempt %d", pr_number, attempt)
+    _log.info("  🔄 PR #%d: starting fix attempt %d", pr_number, attempt)
 
     # Mark as running and record attempt number (labels go on the PR in target_repo)
     ensure_label(target_repo, LABEL_RUNNING, LABEL_COLOURS[LABEL_RUNNING])
@@ -867,16 +934,16 @@ def _run_pr_revision(
                         f"(status: `{status}`). Log: `{log_file}`\n\n"
                         "Remove `agent-failed` to retry manually.",
                     )
-                    logger.info("  ❌ PR #%d fix attempt %d: %s", pr_number, attempt, status)
+                    _log.info("  ❌ PR #%d fix attempt %d: %s", pr_number, attempt, status)
                 else:
                     add_label(target_repo, pr_number, LABEL_COMPLETE)
                     remove_label(target_repo, pr_number, LABEL_RUNNING)
                     # Remove trigger label so next cycle doesn't re-trigger
                     remove_label(target_repo, pr_number, pr_fix_label)
-                    logger.info("  ✅ PR #%d fix attempt %d complete", pr_number, attempt)
+                    _log.info("  ✅ PR #%d fix attempt %d complete", pr_number, attempt)
 
             except Exception as exc:  # noqa: BLE001
-                logger.error("  ❌ PR #%d fix attempt %d unhandled error: %s", pr_number, attempt, _sanitise(str(exc), token))
+                _log.error("  ❌ PR #%d fix attempt %d unhandled error: %s", pr_number, attempt, _sanitise(str(exc), token))
                 add_label(target_repo, pr_number, LABEL_FAILED)
                 remove_label(target_repo, pr_number, LABEL_RUNNING)
                 post_comment(
@@ -887,7 +954,7 @@ def _run_pr_revision(
             finally:
                 sys.stdout, sys.stderr = old_stdout, old_stderr
     except OSError as exc:  # noqa: BLE001
-        logger.error("  ❌ PR #%d: could not open log file %s: %s", pr_number, log_file, _sanitise(str(exc), token))
+        _log.error("  ❌ PR #%d: could not open log file %s: %s", pr_number, log_file, _sanitise(str(exc), token))
         add_label(target_repo, pr_number, LABEL_FAILED)
         remove_label(target_repo, pr_number, LABEL_RUNNING)
         post_comment(
@@ -927,15 +994,15 @@ def _watch_prs(
         try:
             max_pr_retries = int(_w_settings.get("max_pr_retries", 3))
         except (ValueError, TypeError):
-            logger.warning("Invalid max_pr_retries for %s; defaulting to 3", tracker_repo)
+            _log.warning("Invalid max_pr_retries for %s; defaulting to 3", tracker_repo)
             max_pr_retries = 3
         skip_drafts = not _w_settings.get("watch_draft_prs", False)
 
-        logger.info("Checking PRs in %s (tracker: %s) …", target_repo, tracker_repo)
+        _log.info("Checking PRs in %s (tracker: %s) …", target_repo, tracker_repo)
         try:
             prs = get_open_prs(target_repo, skip_drafts=skip_drafts)
         except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to fetch PRs from %s: %s", target_repo, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
+            _log.error("Failed to fetch PRs from %s: %s", target_repo, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
             continue
 
         for pr in prs:
@@ -943,16 +1010,16 @@ def _watch_prs(
             try:
                 comments = get_pr_comments(target_repo, pr_number)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Could not fetch comments for PR #%d: %s", pr_number, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
+                _log.warning("Could not fetch comments for PR #%d: %s", pr_number, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
                 comments = []
 
             if not _should_fix_pr(pr, comments, pr_fix_label, pr_failure_pattern, max_pr_retries):
                 continue
 
-            logger.info("  🔧 PR #%d needs fixing (%s)", pr_number, pr.get("title", ""))
+            _log.info("  🔧 PR #%d needs fixing (%s)", pr_number, pr.get("title", ""))
 
             if dry_run:
-                logger.info("    [dry-run] Would run PR fix for #%d", pr_number)
+                _log.info("    [dry-run] Would run PR fix for #%d", pr_number)
                 continue
 
             _run_pr_revision(
@@ -1041,13 +1108,11 @@ def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_
     """
     from orchestrator import PipelineResult
 
-    logger = logging.getLogger("watcher")
-
     for tracker_repo in tracker_repos:
         try:
             waiting_issues = _get_issues_by_label(tracker_repo, LABEL_WAITING, github_token)
         except Exception as exc:
-            logger.warning("[Watcher] Could not list agent-waiting issues for %s: %s", tracker_repo, _sanitise(str(exc), github_token))
+            _log.warning("[Watcher] Could not list agent-waiting issues for %s: %s", tracker_repo, _sanitise(str(exc), github_token))
             continue
 
         for issue in waiting_issues:
@@ -1057,7 +1122,7 @@ def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_
             # Find checkpoint for this issue
             checkpoint_path = _find_checkpoint_for_issue(workspace_dir, issue_number)
             if not checkpoint_path:
-                logger.info(f"[Watcher] Issue #{issue_number}: no checkpoint found, skipping")
+                _log.info(f"[Watcher] Issue #{issue_number}: no checkpoint found, skipping")
                 continue
 
             try:
@@ -1065,32 +1130,32 @@ def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_
                     data = json.load(f)
                 result = PipelineResult.from_dict(data)
             except Exception as exc:
-                logger.warning(f"[Watcher] Issue #{issue_number}: could not load checkpoint: {_sanitise(str(exc), github_token)}")
+                _log.warning(f"[Watcher] Issue #{issue_number}: could not load checkpoint: {_sanitise(str(exc), github_token)}")
                 continue
 
             if not result.pending_clarification:
-                logger.info(f"[Watcher] Issue #{issue_number}: no pending_clarification in checkpoint")
+                _log.info(f"[Watcher] Issue #{issue_number}: no pending_clarification in checkpoint")
                 continue
 
             pending = result.pending_clarification
             question_comment_id = pending.get("question_comment_id")
             if not question_comment_id:
-                logger.info(f"[Watcher] Issue #{issue_number}: no question_comment_id, skipping")
+                _log.info(f"[Watcher] Issue #{issue_number}: no question_comment_id, skipping")
                 continue
 
             # Fetch comments and check for answers
             try:
                 comments = _get_issue_comments(tracker_repo, issue_number, github_token)
             except Exception as exc:
-                logger.warning(f"[Watcher] Issue #{issue_number}: could not fetch comments: {_sanitise(str(exc), github_token)}")
+                _log.warning(f"[Watcher] Issue #{issue_number}: could not fetch comments: {_sanitise(str(exc), github_token)}")
                 continue
 
             answers = extract_answers_from_comments(comments, question_comment_id, bot_login)
             if not answers:
-                logger.info(f"[Watcher] Issue #{issue_number}: no human reply yet")
+                _log.info(f"[Watcher] Issue #{issue_number}: no human reply yet")
                 continue
 
-            logger.info(f"[Watcher] Issue #{issue_number}: human replied ({len(answers)} answer(s)), resuming pipeline")
+            _log.info(f"[Watcher] Issue #{issue_number}: human replied ({len(answers)} answer(s)), resuming pipeline")
 
             # Inject answers into clarification_history
             stage = pending.get("stage", "unknown")
@@ -1113,7 +1178,7 @@ def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_
                 remove_label(tracker_repo, issue_number, LABEL_WAITING)
                 add_label(tracker_repo, issue_number, LABEL_RUNNING)
             except Exception as exc:
-                logger.warning(f"[Watcher] Issue #{issue_number}: could not update labels: {_sanitise(str(exc), github_token)}")
+                _log.warning(f"[Watcher] Issue #{issue_number}: could not update labels: {_sanitise(str(exc), github_token)}")
 
             # Trigger re-dispatch by appending to a simple queue file (watcher picks it up next cycle)
             _trigger_resume(issue_number, issue_title, result.requirement, workspace_dir)
@@ -1148,7 +1213,7 @@ def _get_issue_comments(repo: str, issue_number: int, token: str) -> list[GitHub
     return resp.json()
 
 
-def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_targets: dict[str, str], model: str, num_engineers: int, log_dir: Path, dry_run: bool, logger: logging.Logger) -> list[WatcherTask]:
+def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_targets: dict[str, str], model: str, num_engineers: int, log_dir: Path, dry_run: bool, logger: logging.Logger) -> list[WatcherTask]:  # noqa: ARG001 (logger) – body uses module _log
     """Process any resume triggers left by check_waiting_issues().
     
     Returns a list of task dicts to be dispatched.
@@ -1164,7 +1229,7 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
                 try:
                     fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
-                    logger.debug("[Watcher] Skipping locked resume file %s (another process holds it)", os.path.basename(trigger_path))
+                    _log.debug("[Watcher] Skipping locked resume file %s (another process holds it)", os.path.basename(trigger_path))
                     continue
                 try:
                     trigger = json.load(f)
@@ -1172,7 +1237,7 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
                     fcntl.flock(f, fcntl.LOCK_UN)
             issue_number = trigger["issue_number"]
             requirement = trigger.get("requirement", trigger.get("issue_title", ""))
-            logger.info(f"[Watcher] Resuming pipeline for issue #{issue_number}")
+            _log.info(f"[Watcher] Resuming pipeline for issue #{issue_number}")
 
             task_created = False
             for tracker_repo in tracker_repos:
@@ -1195,24 +1260,24 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
                             model=model,
                             num_engineers=num_engineers,
                         ))
-                        logger.info(f"  Queued resumed issue #{issue_number}: {issue.get('title', '')}")
+                        _log.info(f"  Queued resumed issue #{issue_number}: {issue.get('title', '')}")
                         task_created = True
                         break
                 except Exception as exc:
-                    logger.debug("Could not fetch issue #%d from %s: %s", issue_number, tracker_repo, _sanitise(str(exc), token))
+                    _log.debug("Could not fetch issue #%d from %s: %s", issue_number, tracker_repo, _sanitise(str(exc), token))
                     continue
 
             # Only delete trigger after task successfully created; keep for retry otherwise
             if task_created:
                 os.remove(trigger_path)
             else:
-                logger.warning(
+                _log.warning(
                     f"[Watcher] Could not fetch issue #{issue_number} from any repo — "
                     f"keeping trigger for retry"
                 )
         except (OSError, ValueError, json.JSONDecodeError, KeyError) as exc:
             _token = os.environ.get("GITHUB_TOKEN", "")
-            logger.warning(
+            _log.warning(
                 "Could not load watcher entry %s: %s",
                 trigger_path, _sanitise(str(exc), _token),
                 exc_info=True,
@@ -1232,12 +1297,12 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
     run_id = uuid.uuid4().hex[:8]
     logger = _setup_logging(log_dir, run_id=run_id)
     bind_run_id(run_id)
-    logger.info("Watcher starting", extra={"run_id": run_id})
+    _log.info("Watcher starting", extra={"run_id": run_id})
 
     max_parallel  = global_settings.get("max_parallel", 3)
 
     watchers = config.get("watchers", [])
-    logger.info("Loaded %d watcher(s) from %s", len(watchers), config_path)
+    _log.info("Loaded %d watcher(s) from %s", len(watchers), config_path)
 
     # Validate each watcher entry; skip invalid entries with a warning
     validated_watchers: list[dict] = []
@@ -1247,7 +1312,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
             validated_watchers.append(entry)
         except _ValidationError as exc:
             name = entry.get("tracker_repo", "?") if isinstance(entry, dict) else repr(entry)
-            logger.warning(
+            _log.warning(
                 "Skipping invalid watcher entry %r: %s",
                 name,
                 exc,
@@ -1328,7 +1393,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
         for name, colour in LABEL_COLOURS.items():
             ensure_label(tracker_repo, name, colour)
 
-        logger.info("Checking %s …", tracker_repo)
+        _log.info("Checking %s …", tracker_repo)
         try:
             for label_name, label_cfg in labels_cfg.items():
                 if isinstance(label_cfg, str):
@@ -1346,9 +1411,9 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                         model=model,
                         num_engineers=num_engineers,
                     ))
-                    logger.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
+                    _log.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
         except Exception as exc:  # noqa: BLE001
-            logger.error(
+            _log.error(
                 "Failed to fetch issues from %s: %s",
                 tracker_repo, _sanitise(str(exc), github_token),
                 exc_info=True,
@@ -1356,7 +1421,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
 
     try:
         if not tasks:
-            logger.info("Nothing to do.")
+            _log.info("Nothing to do.")
             return
 
         # Group tasks by tracker_repo so each gets its own thread pool
@@ -1364,7 +1429,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
         for t in tasks:
             by_repo.setdefault(t["tracker_repo"], []).append(t)
 
-        logger.info("Dispatching %d pipeline(s) across %d repo(s)…", len(tasks), len(by_repo))
+        _log.info("Dispatching %d pipeline(s) across %d repo(s)…", len(tasks), len(by_repo))
 
         # One executor per repo; each repo's parallel_issues bounds its concurrency.
         # A global semaphore enforces the overall max_parallel cap so the total
@@ -1405,7 +1470,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                     try:
                         fut.result()
                     except Exception as exc:  # noqa: BLE001
-                        logger.error(
+                        _log.error(
                             "Unhandled error for issue #%d: %s",
                             t["issue"]["number"],
                             _sanitise(str(exc), github_token),
@@ -1417,7 +1482,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                     for f in futures_to_task
                     if not f.done()
                 ]
-                logger.warning(
+                _log.warning(
                     "Pipeline timeout (%ds) exceeded — cancelling %d hung pipeline(s): %s",
                     pipeline_timeout_s, len(hung), ", ".join(hung),
                 )
@@ -1430,21 +1495,21 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                         t = futures_to_task[f]
                         issue_number = t["issue"]["number"]
                         tracker_repo = t["tracker_repo"]
-                        logger.warning(
+                        _log.warning(
                             "Issue #%d timed out before starting — marking as failed",
                             issue_number,
                         )
                         try:
                             remove_label(tracker_repo, issue_number, LABEL_QUEUED)
                         except Exception:  # noqa: BLE001
-                            logger.warning(
+                            _log.warning(
                                 "Could not remove %s for timed-out issue #%d",
                                 LABEL_QUEUED, issue_number, exc_info=True,
                             )
                         try:
                             add_label(tracker_repo, issue_number, LABEL_FAILED)
                         except Exception:  # noqa: BLE001
-                            logger.warning(
+                            _log.warning(
                                 "Could not add %s for timed-out issue #%d",
                                 LABEL_FAILED, issue_number, exc_info=True,
                             )
@@ -1563,10 +1628,10 @@ def run_once(repo: str, issue: int, label: str, logger: logging.Logger) -> int:
             log_file=issue_log,
             logger=logger,
         )
-        logger.info("✅ Issue #%d complete", issue)
+        _log.info("✅ Issue #%d complete", issue)
         return 0
     except Exception as exc:  # noqa: BLE001
-        logger.error("❌ Issue #%d failed: %s", issue, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
+        _log.error("❌ Issue #%d failed: %s", issue, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
         return 1
 
 
@@ -1627,7 +1692,7 @@ def main() -> None:
         retried = 0
         failed = 0
         for entry in dlq.drain():
-            logger.info("Retrying DLQ entry: issue #%d (%s)", entry.issue_number, entry.tracker_repo)
+            _log.info("Retrying DLQ entry: issue #%d (%s)", entry.issue_number, entry.tracker_repo)
             try:
                 ok = run_pipeline(
                     label=entry.label,
@@ -1641,7 +1706,7 @@ def main() -> None:
                     # Intentionally no dlq= to prevent re-enqueue loops
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("DLQ retry failed for issue #%d: %s", entry.issue_number, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
+                _log.warning("DLQ retry failed for issue #%d: %s", entry.issue_number, _sanitise(str(exc), os.environ.get("GITHUB_TOKEN", "")))
                 dlq.nack(entry.id)
                 failed += 1
             else:
@@ -1649,33 +1714,33 @@ def main() -> None:
                     dlq.ack(entry.id)
                     retried += 1
                 else:
-                    logger.warning("DLQ retry returned failure for issue #%d", entry.issue_number)
+                    _log.warning("DLQ retry returned failure for issue #%d", entry.issue_number)
                     dlq.nack(entry.id)
                     failed += 1
-        logger.info("DLQ drain complete: %d retried, %d failed", retried, failed)
+        _log.info("DLQ drain complete: %d retried, %d failed", retried, failed)
         sys.exit(0)
 
     if LOCK_FILE.exists():
         age = time.time() - LOCK_FILE.stat().st_mtime
         if age < 3600:
-            logger.warning("Lock file exists (age %.0fs) — previous run still in progress. Exiting.", age)
+            _log.warning("Lock file exists (age %.0fs) — previous run still in progress. Exiting.", age)
             sys.exit(0)
         else:
-            logger.warning("Stale lock file (age %.0fs) — removing and continuing.", age)
+            _log.warning("Stale lock file (age %.0fs) — removing and continuing.", age)
             LOCK_FILE.unlink()
 
     LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
     install_llm_pool_from_config(_load_pipeline_config())
-    logger.info("═" * 60)
-    logger.info("AI Software House Watcher — %s%s",
+    _log.info("═" * 60)
+    _log.info("AI Software House Watcher — %s%s",
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 " [DRY RUN]" if args.dry_run else "")
-    logger.info("Config: %s", config_path)
+    _log.info("Config: %s", config_path)
     try:
         watch(config_path, dry_run=args.dry_run)
     finally:
         LOCK_FILE.unlink(missing_ok=True)
-        logger.info("Done.")
+        _log.info("Done.")
 
 
 if __name__ == "__main__":

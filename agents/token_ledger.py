@@ -280,6 +280,8 @@ def estimate_tokens(
     Used as a fallback when response.usage is not available (streaming calls).
     Returns (prompt_tokens, completion_tokens).
 
+    Non-empty strings always return at least 1 token; empty strings return 0.
+
     Args:
         messages: List of message dicts with 'content' keys.
         reply: The completion text.
@@ -313,8 +315,8 @@ def estimate_tokens(
         divisor = 4.0
 
     return (
-        max(0, int(len(prompt_text) / divisor)),
-        max(0, int(len(reply) / divisor)),
+        max(1, round(len(prompt_text) / divisor)) if prompt_text.strip() else 0,
+        max(1, round(len(reply) / divisor)) if reply.strip() else 0,
     )
 
 

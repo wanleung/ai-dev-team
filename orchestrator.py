@@ -604,6 +604,9 @@ class Orchestrator(TestFixLoopMixin):
 
     # Class-level default so __new__-constructed instances have the attribute
     skill_loader: Optional["SkillLoader"] = None
+    # Class-level default so __new__-based stubs don't raise AttributeError
+    # when __init__ is bypassed; __init__ overwrites this with an instance dict.
+    _stage_timeouts: dict[str, float] | None = None
 
     def __init__(
         self,
@@ -1459,8 +1462,8 @@ class Orchestrator(TestFixLoopMixin):
         }
         # Wire per-stage timeouts from config
         for _name, _stage in _registry.items():
-            if _name in self._stage_timeouts:
-                _stage.timeout_s = self._stage_timeouts[_name]
+            if _name in (self._stage_timeouts or {}):
+                _stage.timeout_s = self._stage_timeouts[_name]  # type: ignore[index]
         return _registry
 
     def _load_pipeline_yaml(self, config_path: str) -> "list | None":
@@ -2357,8 +2360,9 @@ class Orchestrator(TestFixLoopMixin):
             for agent in (self.pm, self.architect, self.engineer,
                           self.junior_engineer, self.senior_engineer,
                           self.reviewer, self.qa, self.qa_planner):
-                if agent.system_prompt:
-                    agent.system_prompt = memory_context + "\n\n---\n\n" + agent.system_prompt
+                if agent.system_prompt is not None:
+                    original = self._original_system_prompts.get(agent, agent.system_prompt)
+                    agent.system_prompt = memory_context + "\n\n---\n\n" + original
 
         # ── Inject skills into agents ─────────────────────────────────────────
         if self.skill_loader:
@@ -2528,21 +2532,9 @@ class Orchestrator(TestFixLoopMixin):
                     # Parallel execution — Python copies context per thread so current_stage
                     # is isolated; each thread sets its own token inside _run_stage_safe.
                     stage_results: dict[str, bool] = {}  # checkpoint_key → succeeded
-                    with ThreadPoolExecutor(max_workers=min(len(runnable), MAX_PARALLEL_STAGES)) as executor:
-                        futures = {
-                            executor.submit(self._run_stage_safe, s, result): s
-                            for s in runnable
-                        }
-                        try:
-                            for future in as_completed(futures):
-                                s = futures[future]
-                                stage_results[s.checkpoint_key] = future.result()  # re-raises unexpected exceptions
-                        except _ShutdownRequested:
-                            # Cancel any futures that haven't started yet so we don't
-                            # wait for them inside the ThreadPoolExecutor __exit__.
-                            for f in futures:
-                                f.cancel()
-                            raise
+                    early_exit = self._run_parallel_batch(runnable, result, start_time, stage_results)
+                    if early_exit is not None:
+                        return early_exit
                 else:
                     s = runnable[0]
                     _stage_token = current_stage.set(s.checkpoint_key)
@@ -3715,6 +3707,67 @@ class Orchestrator(TestFixLoopMixin):
         finally:
             current_stage.reset(_token)
         return len(result.errors) == errors_before
+
+    def _run_parallel_batch(
+        self,
+        runnable: list,
+        result: "PipelineResult",
+        start_time: float,
+        stage_results: dict,
+    ) -> "PipelineResult | None":
+        """Execute a parallel batch of stages using a ThreadPoolExecutor.
+
+        Submits all *runnable* stages concurrently and collects results via
+        ``as_completed``.  On ``BudgetExceededError`` the in-flight futures are
+        cancelled, the triggering stage is marked failed, a checkpoint is saved,
+        and a finished ``PipelineResult`` is returned so the caller can propagate
+        the early exit.
+
+        Args:
+            runnable:      List of ``PipelineStage`` objects to run in parallel.
+            result:        Shared ``PipelineResult`` accumulator (thread-safe via locks).
+            start_time:    Wall-clock start time used by ``_finish``.
+            stage_results: Mutable dict populated with ``checkpoint_key → succeeded``
+                           entries.  Modified in-place so the caller can inspect
+                           per-stage outcomes after a normal (non-early-exit) return.
+
+        Returns:
+            A finished ``PipelineResult`` if the batch was aborted early (e.g. budget
+            exceeded), or ``None`` if all futures completed normally.
+        """
+        early_exit = False
+        with ThreadPoolExecutor(max_workers=min(len(runnable), MAX_PARALLEL_STAGES)) as executor:
+            futures = {
+                executor.submit(self._run_stage_safe, s, result): s
+                for s in runnable
+            }
+            try:
+                for future in as_completed(futures):
+                    s = futures[future]
+                    try:
+                        stage_results[s.checkpoint_key] = future.result()  # re-raises unexpected exceptions
+                    except BudgetExceededError:
+                        for pending in futures:
+                            pending.cancel()
+                        self._tracker.mark_failed(s.checkpoint_key, "budget exceeded")
+                        result.progress_comment_id = self._tracker.comment_id
+                        self._save_checkpoint(result)
+                        # Capture early-exit condition and break out of the loop.
+                        # Do NOT call _finish() here — the executor's __exit__ must
+                        # run first (shutdown/wait) so that any still-running futures
+                        # finish mutating `result` before _finish() is called below.
+                        early_exit = True
+                        break
+            except _ShutdownRequested:
+                # Cancel any futures that haven't started yet so we don't
+                # wait for them inside the ThreadPoolExecutor __exit__.
+                for f in futures:
+                    f.cancel()
+                raise
+        # Executor has fully shut down at this point; safe to call _finish().
+        if early_exit:
+            return self._finish(result, start_time)
+        return None
 
     def _run_stage(self, name: str, description: str, result: PipelineResult, fn, timeout_s: float | None = None, required_output_fields: list[str] | None = None, cb_key: str | None = None, is_critical: bool = False) -> None:
         """Run a pipeline stage with progress display, error handling, and optional timeout.
