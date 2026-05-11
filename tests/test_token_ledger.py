@@ -153,15 +153,18 @@ def test_no_budget_limit_never_raises():
 
 def test_openai_model_uses_tiktoken():
     """GPT model should use tiktoken encoding, not char-based estimation."""
+    tiktoken = pytest.importorskip("tiktoken", reason="tiktoken not installed")
     from agents.token_ledger import estimate_tokens
-    # Use a sentence where tiktoken count differs from chars // 4
-    text = "Hello world, this is a test sentence for token counting."
+    # Use repeated text so tiktoken and chars//4 reliably diverge:
+    # "The quick brown fox..." ×4 = ~180 chars → chars//4=45, tiktoken≈40
+    text = "The quick brown fox jumps over the lazy dog. " * 4
     messages = [{"role": "user", "content": text}]
     tiktoken_count, _ = estimate_tokens(messages, "", model="gpt-4")
     char_estimate = len(text) // 4
-    # tiktoken gives different (usually lower) counts than chars // 4
+    # tiktoken gives lower counts than chars // 4 for common English words
     assert tiktoken_count != char_estimate, (
-        "OpenAI path should use tiktoken, not char-based estimation"
+        f"OpenAI path should use tiktoken, not char-based estimation "
+        f"(tiktoken={tiktoken_count}, chars//4={char_estimate})"
     )
     assert tiktoken_count > 0
 
@@ -206,6 +209,8 @@ def test_no_model_arg_still_works():
     ("4", "claude-3-sonnet"),       # 1 char, Claude path: round(1/3.5) = 0 → fixed to 1
     ("hi", "gemini-pro"),           # 2 chars, Gemini path: round(0.5)→0 (banker's rounding), max(1,0)→1
     ("x", "llama3"),                # 1 char, fallback path: round(1/4) = 0 → fixed to 1
+    ("abc", "gemini-flash"),        # 3 chars, Gemini path: round(3/4) = 1
+    ("ok", "gpt-4"),                # 2 chars, OpenAI tiktoken path (if available, else char-based)
 ])
 def test_estimate_tokens_short_string_returns_at_least_one(text, model):
     """Non-empty short strings must yield >= 1 token. Guards against int() floor returning 0."""
@@ -246,3 +251,23 @@ def test_estimate_tokens_whitespace_only_returns_zero():
     )
     assert prompt_est == 0
     assert completion_est == 0
+
+
+_ISOLATION_CUSTOM_LEDGER: object = None
+
+
+def test_ledger_isolation_first():
+    """Set a custom ledger — should not bleed into the next test."""
+    global _ISOLATION_CUSTOM_LEDGER
+    from agents.token_ledger import set_ledger, get_ledger, TokenLedger
+    _ISOLATION_CUSTOM_LEDGER = TokenLedger(max_cost_usd=999.0)
+    set_ledger(_ISOLATION_CUSTOM_LEDGER)
+    assert get_ledger() is _ISOLATION_CUSTOM_LEDGER
+
+
+def test_ledger_isolation_second():
+    """Ledger must be a fresh instance, not the one set in test_ledger_isolation_first."""
+    from agents.token_ledger import get_ledger
+    assert get_ledger() is not _ISOLATION_CUSTOM_LEDGER, (
+        "Global ledger leaked from test_ledger_isolation_first — autouse fixture not working"
+    )

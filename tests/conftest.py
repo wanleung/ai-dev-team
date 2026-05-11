@@ -51,3 +51,13 @@ def _restore_root_handlers():
                 pass
     logging.root.handlers = original_handlers
     logging.root.setLevel(original_level)
+
+
+@pytest.fixture(autouse=True)
+def _restore_global_ledger():
+    """Ensure each test starts with a fresh TokenLedger and the global is restored after."""
+    from agents.token_ledger import get_ledger, set_ledger, TokenLedger
+    original = get_ledger()
+    set_ledger(TokenLedger())
+    yield
+    set_ledger(original)
