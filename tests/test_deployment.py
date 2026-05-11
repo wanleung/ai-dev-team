@@ -1,24 +1,42 @@
 """Deployment smoke tests for Multi-Business Booking System."""
 
 import os
+import sys
 
-import httpx
+# Must be set before importing backend modules so database.py picks up SQLite
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_deployment.db"
+
+# Add backend dir to path so `from main import app` resolves
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+from fastapi.testclient import TestClient
 import pytest
+from main import app
 
-BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
+
+@pytest.fixture(scope="module", autouse=True)
+def _clean_test_db():
+    """Remove leftover SQLite DB from previous test runs."""
+    db_path = os.path.join(os.path.dirname(__file__), "..", "test_deployment.db")
+    db_path = os.path.abspath(db_path)
+    if os.path.exists(db_path):
+        os.remove(db_path)
+    yield
+    if os.path.exists(db_path):
+        os.remove(db_path)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def client():
-    """Create an httpx client for the running app."""
-    with httpx.Client(base_url=BASE_URL, timeout=10.0) as c:
+    """Create a TestClient wrapping the FastAPI app with a fresh SQLite DB."""
+    with TestClient(app) as c:
         yield c
 
 
 class TestHealthCheck:
     """Verify the application is running and healthy."""
 
-    def test_health_endpoint(self, client: httpx.Client):
+    def test_health_endpoint(self, client: TestClient):
         """GET /health should return 200 with status healthy."""
         resp = client.get("/health")
         assert resp.status_code == 200
@@ -31,12 +49,12 @@ class TestHealthCheck:
 class TestUsersAPI:
     """Smoke test the users API endpoints."""
 
-    def test_get_nonexistent_user_returns_404(self, client: httpx.Client):
+    def test_get_nonexistent_user_returns_404(self, client: TestClient):
         """GET /api/v1/users/99999 should return 404."""
         resp = client.get("/api/v1/users/99999")
         assert resp.status_code == 404
 
-    def test_get_user_route_exists(self, client: httpx.Client):
+    def test_get_user_route_exists(self, client: TestClient):
         """GET /api/v1/users/1 should return 200 or 404 (route exists)."""
         resp = client.get("/api/v1/users/1")
         assert resp.status_code in (200, 404)
@@ -45,7 +63,7 @@ class TestUsersAPI:
 class TestGroupsAPI:
     """Smoke test the groups API endpoints."""
 
-    def test_list_groups(self, client: httpx.Client):
+    def test_list_groups(self, client: TestClient):
         """GET /api/v1/groups should return 200 with paginated response."""
         resp = client.get("/api/v1/groups")
         assert resp.status_code == 200
@@ -54,12 +72,12 @@ class TestGroupsAPI:
         assert "total" in data
         assert "page" in data
 
-    def test_get_nonexistent_group_returns_404(self, client: httpx.Client):
+    def test_get_nonexistent_group_returns_404(self, client: TestClient):
         """GET /api/v1/groups/99999 should return 404."""
         resp = client.get("/api/v1/groups/99999")
         assert resp.status_code == 404
 
-    def test_create_group(self, client: httpx.Client):
+    def test_create_group(self, client: TestClient):
         """POST /api/v1/groups should create a group and return 201."""
         payload = {
             "name": "Smoke Test Group",
@@ -71,7 +89,7 @@ class TestGroupsAPI:
         data = resp.json()
         assert data["name"] == "Smoke Test Group"
 
-    def test_create_and_get_group(self, client: httpx.Client):
+    def test_create_and_get_group(self, client: TestClient):
         """Create a group then retrieve it by ID."""
         payload = {
             "name": "Retrieve Test Group",
@@ -90,14 +108,14 @@ class TestGroupsAPI:
 class TestNotificationsAPI:
     """Smoke test the notifications API endpoints."""
 
-    def test_list_notifications(self, client: httpx.Client):
+    def test_list_notifications(self, client: TestClient):
         """GET /api/v1/notifications should return 200."""
         resp = client.get("/api/v1/notifications")
         assert resp.status_code == 200
         data = resp.json()
         assert "notifications" in data
 
-    def test_create_notification(self, client: httpx.Client):
+    def test_create_notification(self, client: TestClient):
         """POST /api/v1/notifications should create a notification."""
         payload = {
             "user_id": 1,
@@ -112,12 +130,12 @@ class TestNotificationsAPI:
 class TestNotFound:
     """Verify unknown routes return 404."""
 
-    def test_unknown_route_returns_404(self, client: httpx.Client):
+    def test_unknown_route_returns_404(self, client: TestClient):
         """GET /api/v1/nonexistent should return 404."""
         resp = client.get("/api/v1/nonexistent")
         assert resp.status_code == 404
 
-    def test_random_path_returns_404(self, client: httpx.Client):
+    def test_random_path_returns_404(self, client: TestClient):
         """GET /this/does/not/exist should return 404."""
         resp = client.get("/this/does/not/exist")
         assert resp.status_code == 404

@@ -19,6 +19,9 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+pytest.importorskip("kiota_abstractions", reason="outlook provider requires kiota_abstractions")
+pytest.importorskip("msgraph", reason="outlook provider requires msgraph-sdk")
+
 from src.calendar_provider.outlook_provider import (
     OutlookCalendarProvider,
     ProviderAPIError,

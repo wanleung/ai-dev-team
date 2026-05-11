@@ -14,6 +14,7 @@ workspace/
 logs/
 .watcher.lock
 repos-enabled/
+test_deployment.db
 
 # Local config overrides (private network settings, never commit)
 config.local.yaml
