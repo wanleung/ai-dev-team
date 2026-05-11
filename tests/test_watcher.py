@@ -959,3 +959,15 @@ def test_run_pipeline_no_dlq_enqueue_on_success(tmp_path, monkeypatch):
     )
 
     assert list(dlq.drain()) == []
+
+
+# ── _collect_issue_prior_context: error handling ──────────────────────────────
+
+def test_collect_issue_prior_context_swallows_exception_gracefully():
+    """_collect_issue_prior_context must return '' (not raise NameError) when fetching comments fails."""
+    mock_gh = MagicMock()
+    mock_gh.get_issue_comments.side_effect = RuntimeError("network failure")
+
+    from watcher import _collect_issue_prior_context
+    result = _collect_issue_prior_context(mock_gh, issue_number=42)
+    assert result == ""

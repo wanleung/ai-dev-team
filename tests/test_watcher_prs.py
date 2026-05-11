@@ -1,6 +1,7 @@
 """Tests for PR watcher helpers and logic."""
 from __future__ import annotations
 import pytest
+import requests
 from unittest.mock import patch, MagicMock
 
 
@@ -12,6 +13,9 @@ def _mock_response(json_data, status_code=200):
     m.status_code = status_code
     m.json.return_value = json_data
     m.text = str(json_data)
+    if status_code >= 400:
+        http_error = requests.HTTPError(response=m)
+        m.raise_for_status.side_effect = http_error
     return m
 
 
