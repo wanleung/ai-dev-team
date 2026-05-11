@@ -432,7 +432,7 @@ def _make_full_orch(mode: str = "standard"):
 
     o._prd_revision_loop = fake_prd_loop
     o._design_revision_loop = fake_design_loop
-    o._run_stage = MagicMock(side_effect=lambda label, desc, r, fn: fn())
+    o._run_stage = MagicMock(side_effect=lambda label, desc, r, fn, timeout_s=None, required_output_fields=None, cb_key=None, is_critical=False: fn())
 
     return o, called
 

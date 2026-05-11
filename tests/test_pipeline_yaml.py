@@ -389,7 +389,7 @@ def test_run_loop_stage_exits_early_on_verdict():
     result = PipelineResult(requirement="req")
 
     with patch.object(orch, '_make_stage_registry', return_value=registry), \
-         patch.object(orch, '_run_stage', side_effect=lambda lbl, desc, r, fn: fn()):
+         patch.object(orch, '_run_stage', side_effect=lambda lbl, desc, r, fn, timeout_s=None, required_output_fields=None, cb_key=None, is_critical=False: fn()):
         ok = orch._run_loop_stage(loop_stage, result)
 
     assert ok is True
@@ -417,7 +417,7 @@ def test_run_loop_stage_returns_false_on_inner_error():
     )
     result = PipelineResult(requirement="req")
     with patch.object(orch, '_make_stage_registry', return_value=registry), \
-         patch.object(orch, '_run_stage', side_effect=lambda lbl, desc, r, fn: fn()):
+         patch.object(orch, '_run_stage', side_effect=lambda lbl, desc, r, fn, timeout_s=None, required_output_fields=None, cb_key=None, is_critical=False: fn()):
         ok = orch._run_loop_stage(loop_stage, result)
 
     assert ok is False
@@ -446,7 +446,7 @@ def test_run_loop_stage_exhausts_without_verdict():
     )
     result = PipelineResult(requirement="req")
     with patch.object(orch, '_make_stage_registry', return_value=registry), \
-         patch.object(orch, '_run_stage', side_effect=lambda lbl, desc, r, fn: fn()):
+         patch.object(orch, '_run_stage', side_effect=lambda lbl, desc, r, fn, timeout_s=None, required_output_fields=None, cb_key=None, is_critical=False: fn()):
         ok = orch._run_loop_stage(loop_stage, result)
 
     assert ok is True
