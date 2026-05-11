@@ -5,8 +5,12 @@ import json
 import re
 from typing import Optional
 
+import structlog
+
 from agents.base_agent import BaseAgent
 from github_client import GitHubClient
+
+logger = structlog.get_logger(__name__)
 
 
 class DocumentationAgent(BaseAgent):
@@ -28,7 +32,8 @@ class DocumentationAgent(BaseAgent):
         try:
             info = gh._request("GET", f"/repos/{gh.repo}")
             return info.get("default_branch", "main")
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to detect default branch, using 'main'", error=str(exc))
             return "main"
 
     def _build_file_context(
@@ -46,8 +51,8 @@ class DocumentationAgent(BaseAgent):
             entries = gh.list_files("", ref=ref)
             listing = "\n".join(f"[{e['type']}] {e['path']}" for e in entries)
             sections.append(f"## Repository root\n{listing}")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to list repository root files", error=str(exc))
 
         # Determine which files to read
         if doc_targets:
@@ -56,7 +61,8 @@ class DocumentationAgent(BaseAgent):
             # Auto-discover markdown files (cap at 5)
             try:
                 paths_to_read = gh.search_files("**/*.md", ref=ref)[:5]
-            except Exception:
+            except Exception as exc:
+                logger.warning("Failed to auto-discover markdown files", error=str(exc))
                 paths_to_read = []
 
         # Read each file and include content
@@ -67,8 +73,8 @@ class DocumentationAgent(BaseAgent):
                     sections.append(f"## File: {path}\n```\n{content}\n```")
                 else:
                     sections.append(f"## File: {path}\n(does not exist yet — create it)")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to read file", path=path, error=str(exc))
 
         if not sections:
             return "No existing files found."

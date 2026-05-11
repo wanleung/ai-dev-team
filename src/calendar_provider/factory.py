@@ -6,13 +6,25 @@ based on configuration. Supports Google Calendar and Outlook Calendar.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from src.calendar_provider.base import CalendarProvider
 from src.calendar_provider.google_provider import GoogleCalendarProvider
-from src.calendar_provider.outlook_provider import OutlookCalendarProvider
 from src.config.settings import settings
 from src.models.calendar import ProviderConfig
 
+try:
+    from src.calendar_provider.outlook_provider import OutlookCalendarProvider as _OutlookCalendarProvider
+    _outlook_available = True
+except ImportError:
+    _outlook_available = False
+    _OutlookCalendarProvider = None  # type: ignore[assignment,misc]
 
-def create_provider(provider: str | None = None) -> GoogleCalendarProvider | OutlookCalendarProvider:
+if TYPE_CHECKING:
+    from src.calendar_provider.outlook_provider import OutlookCalendarProvider
+
+
+def create_provider(provider: str | None = None) -> CalendarProvider:
     """Create a calendar provider instance based on the specified or default provider.
 
     Reads configuration from the application settings and builds a
@@ -28,6 +40,7 @@ def create_provider(provider: str | None = None) -> GoogleCalendarProvider | Out
     Raises:
         ValueError: If the provider name is not recognized or required
             configuration is missing.
+        ImportError: If Outlook provider is requested but msgraph-sdk is not installed.
     """
     provider_name = (provider or settings.default_provider).lower()
 
@@ -44,6 +57,11 @@ def create_provider(provider: str | None = None) -> GoogleCalendarProvider | Out
         return GoogleCalendarProvider(config)
 
     if provider_name == "outlook":
+        if not _outlook_available:
+            raise ImportError(
+                "Outlook provider requires 'msgraph-sdk'. "
+                "Install with: pip install msgraph-sdk kiota-abstractions kiota-http"
+            )
         config = ProviderConfig(
             provider="outlook",
             client_id=settings.outlook_client_id or "",
@@ -53,6 +71,6 @@ def create_provider(provider: str | None = None) -> GoogleCalendarProvider | Out
             access_token=settings.outlook_access_token,
             refresh_token=settings.outlook_refresh_token,
         )
-        return OutlookCalendarProvider(config)
+        return _OutlookCalendarProvider(config)
 
     raise ValueError(f"Unknown provider: '{provider_name}'. Supported providers: google, outlook")

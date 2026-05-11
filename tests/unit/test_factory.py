@@ -13,6 +13,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytest.importorskip("kiota_abstractions", reason="outlook provider requires kiota_abstractions")
+pytest.importorskip("msgraph", reason="outlook provider requires msgraph-sdk")
+
 from src.calendar_provider.factory import create_provider
 from src.calendar_provider.google_provider import GoogleCalendarProvider
 from src.calendar_provider.outlook_provider import OutlookCalendarProvider
