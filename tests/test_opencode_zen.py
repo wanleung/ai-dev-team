@@ -151,14 +151,12 @@ def test_call_routes_zen_gpt_to_openai():
         with patch("agents.backends.opencode_zen.OpenAI") as mock_cls:
             mock_client = MagicMock()
             mock_cls.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.choices[0].message.content = "zen gpt reply"
+            mock_client.chat.completions.create.return_value = mock_response
             from agents.base_agent import BaseAgent
-            agent = BaseAgent(model="opencode-zen/gpt-5.3-codex")
-
-    mock_response = MagicMock()
-    mock_response.choices[0].message.content = "zen gpt reply"
-    agent.client.chat.completions.create.return_value = mock_response
-
-    result = agent.call("test prompt")
+            agent = BaseAgent(model="opencode-zen/gpt-5.3-codex", opencode_stream=False)
+            result = agent.call("test prompt")
     assert result == "zen gpt reply"
 
 

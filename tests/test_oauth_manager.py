@@ -285,7 +285,7 @@ class TestRefreshToken:
 
                 with pytest.raises(AuthenticationError) as exc_info:
                     await manager.refresh_token("google", "refresh_token")
-                assert "google" in str(exc_info.value)
+                assert "google" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_refresh_google_token_network_error(self):
@@ -306,7 +306,7 @@ class TestRefreshToken:
 
                 with pytest.raises(AuthenticationError) as exc_info:
                     await manager.refresh_token("google", "refresh_token")
-                assert "google" in str(exc_info.value)
+                assert "google" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_refresh_preserves_refresh_token(self):

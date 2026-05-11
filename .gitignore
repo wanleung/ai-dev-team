@@ -18,3 +18,4 @@ repos-enabled/
 # Local config overrides (private network settings, never commit)
 config.local.yaml
 **/config.local.yaml
+.worktrees/
