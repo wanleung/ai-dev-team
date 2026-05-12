@@ -17,6 +17,36 @@ from src.models.calendar import (
     RecurrenceRule,
 )
 
+# Import msgraph models if available (for Outlook Calendar support)
+try:
+    from msgraph.generated.models.attendee import Attendee
+    from msgraph.generated.models.attendee_type import AttendeeType
+    from msgraph.generated.models.body_type import BodyType
+    from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
+    from msgraph.generated.models.day_of_week import DayOfWeek
+    from msgraph.generated.models.email_address import EmailAddress
+    from msgraph.generated.models.event import Event as GraphEvent
+    from msgraph.generated.models.location import Location
+    from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
+    from msgraph.generated.models.recurrence_pattern import RecurrencePattern
+    from msgraph.generated.models.recurrence_range import RecurrenceRange
+    from msgraph.generated.models.response_type import ResponseType
+    _MSGRAPH_AVAILABLE = True
+except ImportError:
+    Attendee = None  # type: ignore[assignment,misc]
+    AttendeeType = None  # type: ignore[assignment,misc]
+    BodyType = None  # type: ignore[assignment,misc]
+    DateTimeTimeZone = None  # type: ignore[assignment,misc]
+    DayOfWeek = None  # type: ignore[assignment,misc]
+    EmailAddress = None  # type: ignore[assignment,misc]
+    GraphEvent = None  # type: ignore[assignment,misc]
+    Location = None  # type: ignore[assignment,misc]
+    PatternedRecurrence = None  # type: ignore[assignment,misc]
+    RecurrencePattern = None  # type: ignore[assignment,misc]
+    RecurrenceRange = None  # type: ignore[assignment,misc]
+    ResponseType = None  # type: ignore[assignment,misc]
+    _MSGRAPH_AVAILABLE = False
+
 
 class EventNormalizer:
     """Normalizes events between provider-specific and unified formats.
@@ -208,8 +238,10 @@ class EventNormalizer:
         Returns:
             A unified `Event` model.
         """
-        from msgraph.generated.models.event import Event as GraphEvent
-
+        if GraphEvent is None:
+            raise ImportError(
+                "msgraph-sdk is not installed; Outlook Calendar support requires it"
+            )
         if not isinstance(raw, GraphEvent):
             raise TypeError(f"Expected GraphEvent, got {type(raw)}")
 
@@ -303,14 +335,10 @@ class EventNormalizer:
         Returns:
             A GraphEvent object suitable for the Microsoft Graph API.
         """
-        from msgraph.generated.models.attendee import Attendee
-        from msgraph.generated.models.attendee_type import AttendeeType
-        from msgraph.generated.models.body_type import BodyType
-        from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
-        from msgraph.generated.models.email_address import EmailAddress
-        from msgraph.generated.models.event import Event as GraphEvent
-        from msgraph.generated.models.location import Location
-
+        if GraphEvent is None:
+            raise ImportError(
+                "msgraph-sdk is not installed; Outlook Calendar support requires it"
+            )
         body = GraphEvent()
         body.subject = event.title
         body.start = DateTimeTimeZone(
@@ -498,8 +526,10 @@ class EventNormalizer:
         Returns:
             Unified response status string.
         """
-        from msgraph.generated.models.response_type import ResponseType
-
+        if ResponseType is None:
+            raise ImportError(
+                "msgraph-sdk is not installed; Outlook Calendar support requires it"
+            )
         mapping = {
             ResponseType.NONE: None,
             ResponseType.ORGANIZER: None,
@@ -590,11 +620,10 @@ class EventNormalizer:
         Returns:
             A PatternedRecurrence object for the Microsoft Graph API.
         """
-        from msgraph.generated.models.day_of_week import DayOfWeek
-        from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
-        from msgraph.generated.models.recurrence_pattern import RecurrencePattern
-        from msgraph.generated.models.recurrence_range import RecurrenceRange
-
+        if RecurrencePattern is None:
+            raise ImportError(
+                "msgraph-sdk is not installed; Outlook Calendar support requires it"
+            )
         pattern = RecurrencePattern()
 
         freq_mapping = {

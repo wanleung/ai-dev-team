@@ -489,6 +489,16 @@ class TestDenormalizeGoogleEvent:
 class TestNormalizeOutlookEvent:
     """Tests for _normalize_outlook_event()."""
 
+    @pytest.fixture(autouse=True)
+    def patch_graph_event_class(self):
+        """Patch GraphEvent to MagicMock so the availability guard passes.
+
+        MagicMock instances (used as mock_graph_event) satisfy
+        isinstance(mock, MagicMock), so the type check also passes.
+        """
+        with patch("src.services.event_normalizer.GraphEvent", MagicMock):
+            yield
+
     def test_basic_fields(
         self, normalizer: EventNormalizer, mock_graph_event: MagicMock
     ) -> None:
@@ -604,8 +614,13 @@ class TestNormalizeOutlookEvent:
     def test_wrong_type_raises(
         self, normalizer: EventNormalizer
     ) -> None:
-        with pytest.raises(TypeError, match="Expected GraphEvent"):
-            normalizer._normalize_outlook_event({"not": "a graph event"}, "cal-001")
+        # Create a proper class mock for isinstance to work
+        class MockGraphEvent:
+            pass
+        
+        with patch("src.services.event_normalizer.GraphEvent", MockGraphEvent):
+            with pytest.raises(TypeError, match="Expected GraphEvent"):
+                normalizer._normalize_outlook_event({"not": "a graph event"}, "cal-001")
 
     def test_missing_start_defaults_to_now(
         self, normalizer: EventNormalizer, mock_graph_event: MagicMock
@@ -635,6 +650,32 @@ class TestNormalizeOutlookEvent:
 
 class TestDenormalizeOutlookEvent:
     """Tests for _denormalize_outlook_event()."""
+
+    @pytest.fixture(autouse=True)
+    def mock_msgraph_classes(self):
+        """Auto-patch all msgraph classes used by _denormalize_outlook_event.
+        
+        Only patches constructor classes, not enums like BodyType and AttendeeType.
+        """
+        with patch("src.services.event_normalizer.GraphEvent", return_value=MagicMock()):
+            with patch("src.services.event_normalizer.DateTimeTimeZone", return_value=MagicMock()):
+                with patch("src.services.event_normalizer.Location", return_value=MagicMock()):
+                    with patch("src.services.event_normalizer.Attendee", return_value=MagicMock()):
+                        with patch("src.services.event_normalizer.EmailAddress", return_value=MagicMock()):
+                            with patch("src.services.event_normalizer.PatternedRecurrence", return_value=MagicMock()):
+                                with patch("src.services.event_normalizer.RecurrencePattern", return_value=MagicMock()):
+                                    with patch("src.services.event_normalizer.RecurrenceRange", return_value=MagicMock()):
+                                        # Don't patch BodyType, AttendeeType, DayOfWeek - they're enums (attribute access only)
+                                        # Also need to patch them as None → MagicMock for attribute access
+                                        mock_body_type = MagicMock()
+                                        mock_body_type.HTML = MagicMock()
+                                        mock_attendee_type = MagicMock()
+                                        mock_attendee_type.REQUIRED = MagicMock()
+                                        mock_day_of_week = MagicMock()
+                                        with patch("src.services.event_normalizer.BodyType", mock_body_type):
+                                            with patch("src.services.event_normalizer.AttendeeType", mock_attendee_type):
+                                                with patch("src.services.event_normalizer.DayOfWeek", mock_day_of_week):
+                                                    yield
 
     def test_basic_fields(self, normalizer: EventNormalizer, now: datetime) -> None:
         event = Event(
@@ -714,7 +755,8 @@ class TestDenormalizeOutlookEvent:
         with patch("src.services.event_normalizer.GraphEvent", return_value=mock_body):
             with patch("src.services.event_normalizer.BodyType") as mock_body_type:
                 normalizer._denormalize_outlook_event(event)
-                mock_body_type.HTML.assert_called_once()
+                # Verify body_type was set to BodyType.HTML
+                assert mock_body.body_type == mock_body_type.HTML
 
     def test_location_set(self, normalizer: EventNormalizer, now: datetime) -> None:
         event = Event(

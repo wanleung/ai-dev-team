@@ -280,7 +280,8 @@ class TestGetService:
 class TestAuthenticate:
     """Tests for authenticate method."""
 
-    def test_authenticate_valid_token(
+    @pytest.mark.asyncio
+    async def test_authenticate_valid_token(
         self, google_config: ProviderConfig, mock_credentials: tuple
     ) -> None:
         mock_cls, mock_instance = mock_credentials
@@ -288,11 +289,12 @@ class TestAuthenticate:
         mock_instance.expired = False
 
         provider = GoogleCalendarProvider(google_config)
-        result = provider.authenticate()
+        result = await provider.authenticate()
 
         assert result is True
 
-    def test_authenticate_refreshes_expired_token(
+    @pytest.mark.asyncio
+    async def test_authenticate_refreshes_expired_token(
         self, google_config_expired: ProviderConfig, mock_credentials: tuple, mock_request: MagicMock
     ) -> None:
         mock_cls, mock_instance = mock_credentials
@@ -303,21 +305,23 @@ class TestAuthenticate:
         mock_instance.expiry = datetime.now(timezone.utc) + timedelta(hours=1)
 
         provider = GoogleCalendarProvider(google_config_expired)
-        result = provider.authenticate()
+        result = await provider.authenticate()
 
         mock_instance.refresh.assert_called_once()
         assert result is True
         assert provider.config.access_token == "refreshed-token"
 
-    def test_authenticate_returns_false_on_error(
+    @pytest.mark.asyncio
+    async def test_authenticate_returns_false_on_error(
         self, google_config: ProviderConfig
     ) -> None:
         with patch("src.calendar_provider.google_provider.Credentials", side_effect=Exception("auth error")):
             provider = GoogleCalendarProvider(google_config)
-            result = provider.authenticate()
+            result = await provider.authenticate()
             assert result is False
 
-    def test_authenticate_no_refresh_token_when_expired(
+    @pytest.mark.asyncio
+    async def test_authenticate_no_refresh_token_when_expired(
         self, google_config_expired: ProviderConfig
     ) -> None:
         config = ProviderConfig(
@@ -338,7 +342,7 @@ class TestAuthenticate:
 
         with patch("src.calendar_provider.google_provider.Credentials", return_value=mock_creds):
             provider = GoogleCalendarProvider(config)
-            result = provider.authenticate()
+            result = await provider.authenticate()
             assert result is False
 
 
@@ -359,7 +363,8 @@ class TestListCalendars:
         mock_service.calendarList.return_value = mock_cal_list
         return mock_service
 
-    def test_list_calendars_returns_calendars(
+    @pytest.mark.asyncio
+    async def test_list_calendars_returns_calendars(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -384,7 +389,7 @@ class TestListCalendars:
         self._setup_list_calendars_mock(mock_build, items)
 
         provider = GoogleCalendarProvider(google_config)
-        calendars = provider.list_calendars()
+        calendars = await provider.list_calendars()
 
         assert len(calendars) == 2
         assert calendars[0].id == "primary"
@@ -397,24 +402,26 @@ class TestListCalendars:
         assert calendars[1].is_primary is False
         assert calendars[1].access_role == "writer"
 
-    def test_list_calendars_empty_result(
+    @pytest.mark.asyncio
+    async def test_list_calendars_empty_result(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple
     ) -> None:
         self._setup_list_calendars_mock(mock_build, [])
 
         provider = GoogleCalendarProvider(google_config)
-        calendars = provider.list_calendars()
+        calendars = await provider.list_calendars()
 
         assert calendars == []
 
-    def test_list_calendars_handles_missing_fields(
+    @pytest.mark.asyncio
+    async def test_list_calendars_handles_missing_fields(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple
     ) -> None:
         items = [{"id": "minimal-cal"}]
         self._setup_list_calendars_mock(mock_build, items)
 
         provider = GoogleCalendarProvider(google_config)
-        calendars = provider.list_calendars()
+        calendars = await provider.list_calendars()
 
         assert len(calendars) == 1
         assert calendars[0].id == "minimal-cal"
@@ -423,7 +430,8 @@ class TestListCalendars:
         assert calendars[0].is_primary is False
         assert calendars[0].access_role == "reader"
 
-    def test_list_calendars_api_error(
+    @pytest.mark.asyncio
+    async def test_list_calendars_api_error(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, mock_http_error
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -434,12 +442,13 @@ class TestListCalendars:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(ProviderAPIError) as exc_info:
-            provider.list_calendars()
+            await provider.list_calendars()
 
         assert exc_info.value.status_code == 500
         assert "listing calendars" in str(exc_info.value)
 
-    def test_list_calendars_no_items_key(
+    @pytest.mark.asyncio
+    async def test_list_calendars_no_items_key(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -451,7 +460,7 @@ class TestListCalendars:
         mock_service.calendarList.return_value = mock_cal_list
 
         provider = GoogleCalendarProvider(google_config)
-        calendars = provider.list_calendars()
+        calendars = await provider.list_calendars()
 
         assert calendars == []
 
@@ -473,7 +482,8 @@ class TestGetEvents:
         mock_service.events.return_value = mock_events_list
         return mock_service
 
-    def test_get_events_returns_events(
+    @pytest.mark.asyncio
+    async def test_get_events_returns_events(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         items = [
@@ -490,7 +500,7 @@ class TestGetEvents:
         self._setup_events_mock(mock_build, items)
 
         provider = GoogleCalendarProvider(google_config)
-        events = provider.get_events(
+        events = await provider.get_events(
             calendar_id="primary",
             start_time=now,
             end_time=now + timedelta(hours=2),
@@ -501,57 +511,62 @@ class TestGetEvents:
         assert events[0].title == "Meeting"
         assert events[0].calendar_id == "primary"
 
-    def test_get_events_defaults_to_primary(
+    @pytest.mark.asyncio
+    async def test_get_events_defaults_to_primary(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         self._setup_events_mock(mock_build, [])
 
         provider = GoogleCalendarProvider(google_config)
-        provider.get_events(start_time=now, end_time=now + timedelta(hours=1))
+        await provider.get_events(start_time=now, end_time=now + timedelta(hours=1))
 
         mock_build_fn, mock_service = mock_build
         mock_service.events.return_value.list.assert_called_once()
         call_kwargs = mock_service.events.return_value.list.call_args[1]
         assert call_kwargs["calendarId"] == "primary"
 
-    def test_get_events_defaults_start_time_to_now(
+    @pytest.mark.asyncio
+    async def test_get_events_defaults_start_time_to_now(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple
     ) -> None:
         self._setup_events_mock(mock_build, [])
 
         provider = GoogleCalendarProvider(google_config)
-        provider.get_events()
+        await provider.get_events()
 
         mock_build_fn, mock_service = mock_build
         call_kwargs = mock_service.events.return_value.list.call_args[1]
         assert "timeMin" in call_kwargs
         assert "timeMax" in call_kwargs
 
-    def test_get_events_expands_recurring(
+    @pytest.mark.asyncio
+    async def test_get_events_expands_recurring(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         self._setup_events_mock(mock_build, [])
 
         provider = GoogleCalendarProvider(google_config)
-        provider.get_events(start_time=now, end_time=now + timedelta(hours=1), expand_recurring=True)
+        await provider.get_events(start_time=now, end_time=now + timedelta(hours=1), expand_recurring=True)
 
         call_kwargs = mock_build[1].events.return_value.list.call_args[1]
         assert call_kwargs["singleEvents"] is True
         assert call_kwargs["orderBy"] == "startTime"
 
-    def test_get_events_does_not_expand_recurring(
+    @pytest.mark.asyncio
+    async def test_get_events_does_not_expand_recurring(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         self._setup_events_mock(mock_build, [])
 
         provider = GoogleCalendarProvider(google_config)
-        provider.get_events(start_time=now, end_time=now + timedelta(hours=1), expand_recurring=False)
+        await provider.get_events(start_time=now, end_time=now + timedelta(hours=1), expand_recurring=False)
 
         call_kwargs = mock_build[1].events.return_value.list.call_args[1]
         assert call_kwargs["singleEvents"] is False
         assert call_kwargs["orderBy"] is None
 
-    def test_get_events_calendar_not_found(
+    @pytest.mark.asyncio
+    async def test_get_events_calendar_not_found(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, mock_http_error, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -562,11 +577,12 @@ class TestGetEvents:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(CalendarNotFoundError) as exc_info:
-            provider.get_events(calendar_id="nonexistent", start_time=now, end_time=now + timedelta(hours=1))
+            await provider.get_events(calendar_id="nonexistent", start_time=now, end_time=now + timedelta(hours=1))
 
         assert exc_info.value.status_code == 404
 
-    def test_get_events_api_error(
+    @pytest.mark.asyncio
+    async def test_get_events_api_error(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, mock_http_error, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -577,11 +593,12 @@ class TestGetEvents:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(ProviderAPIError) as exc_info:
-            provider.get_events(start_time=now, end_time=now + timedelta(hours=1))
+            await provider.get_events(start_time=now, end_time=now + timedelta(hours=1))
 
         assert exc_info.value.status_code == 500
 
-    def test_get_events_parses_all_day_events(
+    @pytest.mark.asyncio
+    async def test_get_events_parses_all_day_events(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         items = [
@@ -598,12 +615,13 @@ class TestGetEvents:
         self._setup_events_mock(mock_build, items)
 
         provider = GoogleCalendarProvider(google_config)
-        events = provider.get_events(start_time=now, end_time=now + timedelta(days=2))
+        events = await provider.get_events(start_time=now, end_time=now + timedelta(days=2))
 
         assert len(events) == 1
         assert events[0].timezone == "UTC"
 
-    def test_get_events_parses_attendees(
+    @pytest.mark.asyncio
+    async def test_get_events_parses_attendees(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         items = [
@@ -624,13 +642,14 @@ class TestGetEvents:
         self._setup_events_mock(mock_build, items)
 
         provider = GoogleCalendarProvider(google_config)
-        events = provider.get_events(start_time=now, end_time=now + timedelta(hours=2))
+        events = await provider.get_events(start_time=now, end_time=now + timedelta(hours=2))
 
         assert len(events[0].attendees) == 2
         assert events[0].attendees[0].is_organizer is True
         assert events[0].attendees[1].is_organizer is False
 
-    def test_get_events_parses_reminders(
+    @pytest.mark.asyncio
+    async def test_get_events_parses_reminders(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         items = [
@@ -654,13 +673,14 @@ class TestGetEvents:
         self._setup_events_mock(mock_build, items)
 
         provider = GoogleCalendarProvider(google_config)
-        events = provider.get_events(start_time=now, end_time=now + timedelta(hours=2))
+        events = await provider.get_events(start_time=now, end_time=now + timedelta(hours=2))
 
         assert len(events[0].reminders) == 2
         assert events[0].reminders[0].method == "email"
         assert events[0].reminders[0].minutes_before == 60
 
-    def test_get_events_parses_recurrence(
+    @pytest.mark.asyncio
+    async def test_get_events_parses_recurrence(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         items = [
@@ -678,14 +698,15 @@ class TestGetEvents:
         self._setup_events_mock(mock_build, items)
 
         provider = GoogleCalendarProvider(google_config)
-        events = provider.get_events(start_time=now, end_time=now + timedelta(hours=2))
+        events = await provider.get_events(start_time=now, end_time=now + timedelta(hours=2))
 
         assert events[0].recurrence is not None
         assert events[0].recurrence.frequency == "weekly"
         assert events[0].recurrence.by_day == ["MO", "WE", "FR"]
         assert events[0].is_recurring_master is True
 
-    def test_get_events_parses_recurring_instance(
+    @pytest.mark.asyncio
+    async def test_get_events_parses_recurring_instance(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         items = [
@@ -703,7 +724,7 @@ class TestGetEvents:
         self._setup_events_mock(mock_build, items)
 
         provider = GoogleCalendarProvider(google_config)
-        events = provider.get_events(start_time=now, end_time=now + timedelta(hours=2))
+        events = await provider.get_events(start_time=now, end_time=now + timedelta(hours=2))
 
         assert events[0].recurrence_id == "master-event-id"
         assert events[0].is_recurring_master is False
@@ -717,7 +738,8 @@ class TestGetEvents:
 class TestCreateEvent:
     """Tests for create_event method."""
 
-    def test_create_event_success(
+    @pytest.mark.asyncio
+    async def test_create_event_success(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime,
         sample_attendee: EventAttendee, sample_reminder: EventReminder
     ) -> None:
@@ -744,7 +766,7 @@ class TestCreateEvent:
         mock_service.events.return_value = mock_insert
 
         provider = GoogleCalendarProvider(google_config)
-        event = provider.create_event(
+        event = await provider.create_event(
             title="New Meeting",
             start=now,
             end=now + timedelta(hours=1),
@@ -759,31 +781,34 @@ class TestCreateEvent:
         assert event.title == "New Meeting"
         mock_service.events.return_value.insert.assert_called_once()
 
-    def test_create_event_validation_error_end_before_start(
+    @pytest.mark.asyncio
+    async def test_create_event_validation_error_end_before_start(
         self, google_config: ProviderConfig, now: datetime
     ) -> None:
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(ValidationError, match="end time must be after start time"):
-            provider.create_event(
+            await provider.create_event(
                 title="Bad Event",
                 start=now + timedelta(hours=1),
                 end=now,
                 timezone="UTC",
             )
 
-    def test_create_event_validation_error_same_time(
+    @pytest.mark.asyncio
+    async def test_create_event_validation_error_same_time(
         self, google_config: ProviderConfig, now: datetime
     ) -> None:
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(ValidationError, match="end time must be after start time"):
-            provider.create_event(
+            await provider.create_event(
                 title="Bad Event",
                 start=now,
                 end=now,
                 timezone="UTC",
             )
 
-    def test_create_event_calendar_not_found(
+    @pytest.mark.asyncio
+    async def test_create_event_calendar_not_found(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, mock_http_error, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -794,7 +819,7 @@ class TestCreateEvent:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(CalendarNotFoundError) as exc_info:
-            provider.create_event(
+            await provider.create_event(
                 title="Meeting",
                 start=now,
                 end=now + timedelta(hours=1),
@@ -804,7 +829,8 @@ class TestCreateEvent:
 
         assert exc_info.value.status_code == 404
 
-    def test_create_event_api_error(
+    @pytest.mark.asyncio
+    async def test_create_event_api_error(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, mock_http_error, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -815,7 +841,7 @@ class TestCreateEvent:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(ProviderAPIError) as exc_info:
-            provider.create_event(
+            await provider.create_event(
                 title="Meeting",
                 start=now,
                 end=now + timedelta(hours=1),
@@ -824,7 +850,8 @@ class TestCreateEvent:
 
         assert exc_info.value.status_code == 400
 
-    def test_create_event_with_recurrence(
+    @pytest.mark.asyncio
+    async def test_create_event_with_recurrence(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime,
         sample_recurrence: RecurrenceRule
     ) -> None:
@@ -848,7 +875,7 @@ class TestCreateEvent:
         mock_service.events.return_value = mock_insert
 
         provider = GoogleCalendarProvider(google_config)
-        event = provider.create_event(
+        event = await provider.create_event(
             title="Weekly Sync",
             start=now,
             end=now + timedelta(hours=1),
@@ -880,7 +907,8 @@ class TestUpdateEvent:
         mock_update.update.return_value = mock_update
         mock_service.events.return_value = mock_update
 
-    def test_update_event_success(
+    @pytest.mark.asyncio
+    async def test_update_event_success(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -917,14 +945,15 @@ class TestUpdateEvent:
         mock_service.events.side_effect = [mock_get, mock_update]
 
         provider = GoogleCalendarProvider(google_config)
-        event = provider.update_event(
+        event = await provider.update_event(
             event_id="event-123",
             title="New Title",
         )
 
         assert event.title == "New Title"
 
-    def test_update_event_not_found(
+    @pytest.mark.asyncio
+    async def test_update_event_not_found(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, mock_http_error, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -935,11 +964,12 @@ class TestUpdateEvent:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(EventNotFoundError) as exc_info:
-            provider.update_event(event_id="nonexistent", title="New Title")
+            await provider.update_event(event_id="nonexistent", title="New Title")
 
         assert exc_info.value.status_code == 404
 
-    def test_update_event_etag_conflict(
+    @pytest.mark.asyncio
+    async def test_update_event_etag_conflict(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -963,7 +993,7 @@ class TestUpdateEvent:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(ConflictError) as exc_info:
-            provider.update_event(
+            await provider.update_event(
                 event_id="event-123",
                 title="New Title",
                 etag="different-etag",
@@ -971,7 +1001,8 @@ class TestUpdateEvent:
 
         assert exc_info.value.status_code == 409
 
-    def test_update_event_validation_error(
+    @pytest.mark.asyncio
+    async def test_update_event_validation_error(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -994,13 +1025,14 @@ class TestUpdateEvent:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(ValidationError, match="end time must be after start time"):
-            provider.update_event(
+            await provider.update_event(
                 event_id="event-123",
                 start=now + timedelta(hours=2),
                 end=now + timedelta(hours=1),
             )
 
-    def test_update_event_http_error_on_update(
+    @pytest.mark.asyncio
+    async def test_update_event_http_error_on_update(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, mock_http_error, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -1027,7 +1059,7 @@ class TestUpdateEvent:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(ConflictError) as exc_info:
-            provider.update_event(event_id="event-123", title="New Title", etag="some-etag")
+            await provider.update_event(event_id="event-123", title="New Title", etag="some-etag")
 
         assert exc_info.value.status_code == 409
 
@@ -1040,7 +1072,8 @@ class TestUpdateEvent:
 class TestDeleteEvent:
     """Tests for delete_event method."""
 
-    def test_delete_event_success(
+    @pytest.mark.asyncio
+    async def test_delete_event_success(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -1052,11 +1085,12 @@ class TestDeleteEvent:
         mock_service.events.return_value = mock_delete
 
         provider = GoogleCalendarProvider(google_config)
-        result = provider.delete_event(event_id="event-123")
+        result = await provider.delete_event(event_id="event-123")
 
         assert result is True
 
-    def test_delete_event_not_found(
+    @pytest.mark.asyncio
+    async def test_delete_event_not_found(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, mock_http_error
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -1067,11 +1101,12 @@ class TestDeleteEvent:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(EventNotFoundError) as exc_info:
-            provider.delete_event(event_id="nonexistent")
+            await provider.delete_event(event_id="nonexistent")
 
         assert exc_info.value.status_code == 404
 
-    def test_delete_event_api_error(
+    @pytest.mark.asyncio
+    async def test_delete_event_api_error(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, mock_http_error
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -1082,11 +1117,12 @@ class TestDeleteEvent:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(ProviderAPIError) as exc_info:
-            provider.delete_event(event_id="event-123")
+            await provider.delete_event(event_id="event-123")
 
         assert exc_info.value.status_code == 500
 
-    def test_delete_event_defaults_to_primary(
+    @pytest.mark.asyncio
+    async def test_delete_event_defaults_to_primary(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -1098,12 +1134,13 @@ class TestDeleteEvent:
         mock_service.events.return_value = mock_delete
 
         provider = GoogleCalendarProvider(google_config)
-        provider.delete_event(event_id="event-123")
+        await provider.delete_event(event_id="event-123")
 
         call_kwargs = mock_service.events.return_value.delete.call_args[1]
         assert call_kwargs["calendarId"] == "primary"
 
-    def test_delete_event_send_notifications(
+    @pytest.mark.asyncio
+    async def test_delete_event_send_notifications(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -1115,7 +1152,7 @@ class TestDeleteEvent:
         mock_service.events.return_value = mock_delete
 
         provider = GoogleCalendarProvider(google_config)
-        provider.delete_event(event_id="event-123", send_notifications=False)
+        await provider.delete_event(event_id="event-123", send_notifications=False)
 
         call_kwargs = mock_service.events.return_value.delete.call_args[1]
         assert call_kwargs["sendNotifications"] is False
@@ -1129,7 +1166,8 @@ class TestDeleteEvent:
 class TestGetFreeBusy:
     """Tests for get_free_busy method."""
 
-    def test_get_free_busy_returns_slots(
+    @pytest.mark.asyncio
+    async def test_get_free_busy_returns_slots(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -1159,7 +1197,7 @@ class TestGetFreeBusy:
         mock_service.calendarList.return_value = mock_cal_list
 
         provider = GoogleCalendarProvider(google_config)
-        slots = provider.get_free_busy(
+        slots = await provider.get_free_busy(
             start_time=now,
             end_time=now + timedelta(hours=4),
             calendar_ids=["primary"],
@@ -1168,7 +1206,8 @@ class TestGetFreeBusy:
         assert len(slots) == 2
         assert slots[0].status == "busy"
 
-    def test_get_free_busy_defaults_to_all_calendars(
+    @pytest.mark.asyncio
+    async def test_get_free_busy_defaults_to_all_calendars(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -1194,7 +1233,7 @@ class TestGetFreeBusy:
         mock_service.calendarList.return_value = mock_cal_list
 
         provider = GoogleCalendarProvider(google_config)
-        slots = provider.get_free_busy(
+        slots = await provider.get_free_busy(
             start_time=now,
             end_time=now + timedelta(hours=1),
         )
@@ -1204,7 +1243,8 @@ class TestGetFreeBusy:
         body = mock_query.query.call_args[1]["body"]
         assert len(body["items"]) == 2
 
-    def test_get_free_busy_api_error(
+    @pytest.mark.asyncio
+    async def test_get_free_busy_api_error(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, mock_http_error, now: datetime
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -1215,7 +1255,7 @@ class TestGetFreeBusy:
 
         provider = GoogleCalendarProvider(google_config)
         with pytest.raises(ProviderAPIError) as exc_info:
-            provider.get_free_busy(
+            await provider.get_free_busy(
                 start_time=now,
                 end_time=now + timedelta(hours=1),
                 calendar_ids=["primary"],
@@ -1232,7 +1272,8 @@ class TestGetFreeBusy:
 class TestClose:
     """Tests for close method."""
 
-    def test_close_clears_resources(
+    @pytest.mark.asyncio
+    async def test_close_clears_resources(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple
     ) -> None:
         mock_cls, _ = mock_credentials
@@ -1242,7 +1283,7 @@ class TestClose:
         provider._service = mock_service
         provider._credentials = mock_cls.return_value
 
-        provider.close()
+        await provider.close()
 
         assert provider._service is None
         assert provider._credentials is None
