@@ -306,11 +306,12 @@ def test_auto_indexer_skips_when_no_rag_script(tmp_path):
     indexer.index(repo="owner/repo", github_token="tok", repo_dir=str(tmp_path))
 
 
-def test_orchestrator_calls_auto_index_when_rag_configured():
+def test_orchestrator_calls_auto_index_when_rag_configured(tmp_path):
     """repo_auto_indexer.index() should be called in run() when rag_registry is set."""
     from orchestrator import Orchestrator
 
     orch = Orchestrator(model="gpt-4.1", use_github=False)
+    orch.workspace_dir = tmp_path  # isolate from stale checkpoints
     # Inject a fake rag_registry and auto_indexer
     orch._rag_registry = MagicMock()
     orch.repo_auto_indexer = MagicMock()
