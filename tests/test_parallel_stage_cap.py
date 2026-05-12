@@ -1,5 +1,6 @@
 """Tests for parallel stage worker cap — Task 4 of T5-A concurrency plan."""
 import importlib
+import sys
 import os
 import pytest
 
@@ -22,24 +23,28 @@ def test_max_parallel_stages_default_is_8():
 
 def test_max_parallel_stages_env_override(monkeypatch):
     """AI_MAX_PARALLEL_STAGES env var overrides the default."""
-    monkeypatch.setenv("AI_MAX_PARALLEL_STAGES", "4")
     import orchestrator as orch_mod
-    importlib.reload(orch_mod)
-    assert orch_mod.MAX_PARALLEL_STAGES == 4
-    # Restore
-    monkeypatch.delenv("AI_MAX_PARALLEL_STAGES", raising=False)
-    importlib.reload(orch_mod)
+    saved_dict = dict(orch_mod.__dict__)
+    try:
+        monkeypatch.setenv("AI_MAX_PARALLEL_STAGES", "4")
+        importlib.reload(orch_mod)
+        assert orch_mod.MAX_PARALLEL_STAGES == 4
+    finally:
+        orch_mod.__dict__.clear()
+        orch_mod.__dict__.update(saved_dict)
 
 
 def test_max_parallel_stages_invalid_env_uses_default(monkeypatch):
     """Non-integer AI_MAX_PARALLEL_STAGES must not crash; falls back to 8."""
-    monkeypatch.setenv("AI_MAX_PARALLEL_STAGES", "not-a-number")
     import orchestrator as orch_mod
-    importlib.reload(orch_mod)
-    assert orch_mod.MAX_PARALLEL_STAGES >= 1
-    # Restore
-    monkeypatch.delenv("AI_MAX_PARALLEL_STAGES", raising=False)
-    importlib.reload(orch_mod)
+    saved_dict = dict(orch_mod.__dict__)
+    try:
+        monkeypatch.setenv("AI_MAX_PARALLEL_STAGES", "not-a-number")
+        importlib.reload(orch_mod)
+        assert orch_mod.MAX_PARALLEL_STAGES >= 1
+    finally:
+        orch_mod.__dict__.clear()
+        orch_mod.__dict__.update(saved_dict)
 
 
 def test_thread_pool_executor_receives_capped_max_workers(monkeypatch):
