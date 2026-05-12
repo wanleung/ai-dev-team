@@ -1,6 +1,5 @@
 """Tests for rate limiter service."""
 import pytest
-import asyncio
 from unittest.mock import patch, MagicMock
 
 from src.services.rate_limiter import (
@@ -14,16 +13,18 @@ class TestTokenBucket:
         bucket = TokenBucket(capacity=10, refill_rate=1.0)
         assert bucket.tokens == 10.0
 
-    def test_acquire_decrements_tokens(self):
+    @pytest.mark.asyncio
+    async def test_acquire_decrements_tokens(self):
         bucket = TokenBucket(capacity=10, refill_rate=1.0)
-        waited = asyncio.get_event_loop().run_until_complete(bucket.acquire())
+        waited = await bucket.acquire()
         assert bucket.tokens < 10.0
         assert waited >= 0
 
-    def test_acquire_multiple_times(self):
+    @pytest.mark.asyncio
+    async def test_acquire_multiple_times(self):
         bucket = TokenBucket(capacity=5, refill_rate=1.0)
         for _ in range(5):
-            asyncio.get_event_loop().run_until_complete(bucket.acquire())
+            await bucket.acquire()
         assert bucket.tokens < 1.0
 
     def test_available_tokens_property(self):
@@ -32,17 +33,19 @@ class TestTokenBucket:
         assert tokens >= 0
         assert tokens <= 10.0
 
-    def test_release_adds_tokens(self):
+    @pytest.mark.asyncio
+    async def test_release_adds_tokens(self):
         bucket = TokenBucket(capacity=10, refill_rate=1.0)
-        asyncio.get_event_loop().run_until_complete(bucket.acquire())
+        await bucket.acquire()
         initial = bucket.tokens
-        asyncio.get_event_loop().run_until_complete(bucket.release())
+        await bucket.release()
         assert bucket.tokens > initial
 
-    def test_release_does_not_exceed_capacity(self):
+    @pytest.mark.asyncio
+    async def test_release_does_not_exceed_capacity(self):
         bucket = TokenBucket(capacity=5, refill_rate=1.0)
         for _ in range(10):
-            asyncio.get_event_loop().run_until_complete(bucket.release())
+            await bucket.release()
         assert bucket.tokens <= 5.0
 
 
