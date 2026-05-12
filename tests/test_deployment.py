@@ -23,11 +23,11 @@ def _clean_test_db():
 @pytest.fixture(scope="module")
 def client(_clean_test_db):
     """Create a TestClient wrapping the FastAPI app with a fresh SQLite DB."""
-    # Insert backend on sys.path during tests only
-    sys.path.insert(0, _BACKEND_DIR)
-    original_db_url = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_DB_PATH}"
     try:
+        # Insert backend on sys.path during tests only
+        sys.path.insert(0, _BACKEND_DIR)
+        original_db_url = os.environ.get("DATABASE_URL")
+        os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_DB_PATH}"
         import main as _main_module  # noqa: E402
         with TestClient(_main_module.app) as c:
             yield c
