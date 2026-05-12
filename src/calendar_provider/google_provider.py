@@ -183,7 +183,7 @@ class GoogleCalendarProvider(CalendarProvider):
         if start_time is None:
             start_time = datetime.now(timezone.utc)
         if end_time is None:
-            end_time = start_time.replace(hour=start_time.hour + 24) if start_time else datetime.now(timezone.utc)
+            end_time = start_time + timedelta(hours=24)
 
         time_min = self._format_datetime(start_time)
         time_max = self._format_datetime(end_time)

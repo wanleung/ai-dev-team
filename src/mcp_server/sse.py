@@ -42,7 +42,10 @@ class SSEConnection:
             SSE-formatted string events.
         """
         try:
-            while not self._closed:
+            if self._closed and self._queue.empty():
+                yield ": keepalive\n\n"
+                return
+            while not self._closed or not self._queue.empty():
                 try:
                     event = await asyncio.wait_for(self._queue.get(), timeout=30.0)
                     yield event

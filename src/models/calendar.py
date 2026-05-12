@@ -28,7 +28,7 @@ class EventReminder(BaseModel):
     """Represents a reminder for a calendar event."""
 
     method: str = Field(description="email or popup")
-    minutes_before: int
+    minutes_before: int = Field(ge=0)
 
 
 class RecurrenceRule(BaseModel):
