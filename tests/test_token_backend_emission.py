@@ -7,17 +7,24 @@ from agents.token_ledger import TokenLedger, set_ledger, get_ledger, current_sta
 
 @pytest.fixture(autouse=True)
 def _reset_circuit_registry():
-    """Reset the global circuit breaker registry before each test.
+    """Reset the global circuit breaker registry before each test and restore after.
 
-    Orchestrator integration tests may leave the ``backend:gpt-4.1`` circuit
-    breaker OPEN (TierReviewerAgent fails with a mock LLM, and a prior test
-    sets threshold=1), causing ``CircuitOpenError`` in these tests.  Reinitialising
-    the registry with a very high threshold ensures the circuit never trips.
+    Prior tests (notably test_backend_circuit_breaker.py) leave the global
+    _REGISTRY with threshold=1. Orchestrator integration tests then trip the
+    backend:gpt-4.1 circuit via TierReviewerAgent failures. This fixture
+    ensures a clean high-threshold registry for each token backend test
+    and restores the original after to avoid outgoing contamination.
     """
+    import core.circuit_breaker_registry as _cb_mod
     from core.circuit_breaker_registry import init_registry
     from config_schema import CircuitBreakerConfig, CircuitBreakerScopeConfig
 
-    safe_scope = CircuitBreakerScopeConfig(threshold=10_000, recovery_timeout_s=0)
+    # Save original registry
+    with _cb_mod._REGISTRY_LOCK:
+        _original = _cb_mod._REGISTRY
+
+    # Install a safe high-threshold registry
+    safe_scope = CircuitBreakerScopeConfig(threshold=10_000, recovery_timeout_s=60)
     init_registry(
         CircuitBreakerConfig(
             enabled=True,
@@ -26,6 +33,12 @@ def _reset_circuit_registry():
             per_repo=safe_scope,
         )
     )
+
+    yield  # run the test
+
+    # Restore original registry
+    with _cb_mod._REGISTRY_LOCK:
+        _cb_mod._REGISTRY = _original
 
 
 def _make_response(prompt_tokens: int, completion_tokens: int, content: str) -> MagicMock:
