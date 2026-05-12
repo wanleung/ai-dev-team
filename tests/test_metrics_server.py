@@ -49,10 +49,12 @@ def _fresh_server():
             break
         except OSError:
             time.sleep(0.01)
+    else:
+        raise RuntimeError("metrics_server did not become ready within 2 seconds")
     return server, ms, port
 
 
-def _post_event(port: int, payload: dict) -> int:
+def _post_event(port: int, payload: object) -> int:
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/event",
