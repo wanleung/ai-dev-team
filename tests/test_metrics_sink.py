@@ -1,12 +1,11 @@
 # tests/test_metrics_sink.py
 import json
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from urllib.error import URLError
 
-import pytest
-
 from core.events import CircuitBreakerEvent, DLQEvent, DegradationEvent
+from core.metrics_sink import build_callback
 
 
 def test_build_callback_posts_correct_json(monkeypatch):
@@ -22,7 +21,6 @@ def test_build_callback_posts_correct_json(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    from core.metrics_sink import build_callback
     cb = build_callback("http://localhost:9091")
     event = CircuitBreakerEvent(name="backend", state="open", failure_count=3)
     cb(event)
@@ -46,7 +44,6 @@ def test_build_callback_strips_trailing_slash(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    from core.metrics_sink import build_callback
     cb = build_callback("http://localhost:9091/")  # trailing slash
     cb(DLQEvent(action="enqueue", entry_id="e1", backend="memory", attempt_count=1))
 
@@ -59,7 +56,6 @@ def test_callback_swallows_connection_error(monkeypatch, caplog):
         MagicMock(side_effect=URLError("Connection refused")),
     )
 
-    from core.metrics_sink import build_callback
     cb = build_callback("http://localhost:9091")
     event = DLQEvent(action="enqueue", entry_id="e1", backend="memory", attempt_count=1)
 
@@ -75,7 +71,6 @@ def test_callback_swallows_timeout(monkeypatch):
         MagicMock(side_effect=TimeoutError("timed out")),
     )
 
-    from core.metrics_sink import build_callback
     cb = build_callback("http://localhost:9091")
     cb(CircuitBreakerEvent(name="b", state="closed", failure_count=0))  # must not raise
 
@@ -89,7 +84,6 @@ def test_callback_posts_dlq_event(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    from core.metrics_sink import build_callback
     cb = build_callback("http://localhost:9091")
     cb(DLQEvent(action="discard", entry_id="e42", backend="file", attempt_count=5))
 
@@ -108,7 +102,6 @@ def test_callback_posts_degradation_event(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    from core.metrics_sink import build_callback
     cb = build_callback("http://localhost:9091")
     cb(DegradationEvent(trigger="cpu_high", actions_taken=["throttle_requests"]))
 
