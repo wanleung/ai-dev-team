@@ -1336,6 +1336,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
     # Wire Prometheus metrics sink if configured
     _metrics_url = global_settings.get("metrics_url")
     if _metrics_url:
+        # Lazy import: keeps watcher importable in deployments without the metrics stack.
         from core.events import set_emit_callback
         from core.metrics_sink import build_callback
         set_emit_callback(build_callback(_metrics_url))
