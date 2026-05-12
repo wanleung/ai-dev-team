@@ -1,6 +1,7 @@
 # tests/test_metrics_server.py
 """Tests for the standalone Prometheus metrics server."""
 import json
+import socket
 import sys
 import os
 import threading
@@ -11,8 +12,8 @@ import urllib.error
 import pytest
 
 
-def _fresh_server(port: int):
-    """Import metrics_server fresh (resetting counters) and start it on given port."""
+def _fresh_server():
+    """Import metrics_server fresh (resetting counters) and start it on an OS-assigned port."""
     # Remove cached module so counters re-initialise
     for mod_name in list(sys.modules.keys()):
         if mod_name == "metrics_server" or mod_name.startswith("metrics_server."):
@@ -36,11 +37,19 @@ def _fresh_server(port: int):
         sys.path.insert(0, root)
 
     import metrics_server as ms
-    server = ms.ThreadingServer(("127.0.0.1", port), ms.MetricsHandler)
+    server = ms.ThreadingServer(("127.0.0.1", 0), ms.MetricsHandler)
+    port = server.server_address[1]  # OS-assigned free port
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
-    time.sleep(0.05)
-    return server, ms
+    # Poll until ready instead of sleeping
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.05).close()
+            break
+        except OSError:
+            time.sleep(0.01)
+    return server, ms, port
 
 
 def _post_event(port: int, payload: dict) -> int:
@@ -65,8 +74,7 @@ def _get_metrics(port: int) -> str:
 
 @pytest.fixture()
 def metrics_server():
-    port = 19091
-    server, ms = _fresh_server(port)
+    server, ms, port = _fresh_server()
     yield port, ms
     server.shutdown()
 
@@ -133,3 +141,25 @@ def test_get_unknown_path_returns_404(metrics_server):
         assert False, "Expected 404"
     except urllib.error.HTTPError as e:
         assert e.code == 404
+
+
+def test_post_non_dict_json_returns_400(metrics_server):
+    port, _ = metrics_server
+    status = _post_event(port, [1, 2, 3])  # valid JSON but not a dict
+    assert status == 400
+
+
+def test_post_malformed_json_returns_400(metrics_server):
+    port, _ = metrics_server
+    # Send raw bytes that are not valid JSON
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/event",
+        data=b"not-json{{{",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=2)
+        assert resp.status == 400
+    except urllib.error.HTTPError as e:
+        assert e.code == 400

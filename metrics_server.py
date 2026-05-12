@@ -43,11 +43,23 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.send_response(400)
+            self.end_headers()
+            return
+        if length < 0:
+            length = 0
         body = self.rfile.read(length)
         try:
             event = json.loads(body)
         except (json.JSONDecodeError, ValueError):
+            self.send_response(400)
+            self.end_headers()
+            return
+
+        if not isinstance(event, dict):
             self.send_response(400)
             self.end_headers()
             return
