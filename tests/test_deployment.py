@@ -6,40 +6,45 @@ import pytest
 from fastapi.testclient import TestClient
 
 # Compute backend dir but do NOT insert into sys.path at module level
-_BACKEND_DIR = os.path.join(os.path.dirname(__file__), "..", "backend")
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _clean_test_db():
-    """Remove leftover SQLite DB from previous test runs."""
-    db_path = os.path.join(os.path.dirname(__file__), "..", "test_deployment.db")
-    db_path = os.path.abspath(db_path)
-    if os.path.exists(db_path):
-        os.remove(db_path)
-    yield
-    if os.path.exists(db_path):
-        os.remove(db_path)
+_BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend"))
+_DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "test_deployment.db"))
 
 
 @pytest.fixture(scope="module")
-def client():
+def _clean_test_db():
+    """Remove leftover SQLite DB from previous test runs."""
+    if os.path.exists(_DB_PATH):
+        os.remove(_DB_PATH)
+    yield
+    if os.path.exists(_DB_PATH):
+        os.remove(_DB_PATH)
+
+
+@pytest.fixture(scope="module")
+def client(_clean_test_db):
     """Create a TestClient wrapping the FastAPI app with a fresh SQLite DB."""
     # Insert backend on sys.path during tests only
     sys.path.insert(0, _BACKEND_DIR)
-    os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_deployment.db"
-    import main as _main_module  # noqa: E402
-    with TestClient(_main_module.app) as c:
-        yield c
-    # Cleanup: restore sys.path and sys.modules to avoid polluting other tests
+    original_db_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_DB_PATH}"
     try:
-        sys.path.remove(_BACKEND_DIR)
-    except ValueError:
-        pass
-    os.environ.pop("DATABASE_URL", None)
-    _prefixes = ("main", "database", "models", "routers")
-    for key in list(sys.modules):
-        if key in _prefixes or any(key.startswith(p + ".") for p in _prefixes):
-            del sys.modules[key]
+        import main as _main_module  # noqa: E402
+        with TestClient(_main_module.app) as c:
+            yield c
+    finally:
+        # Cleanup: restore sys.path and sys.modules to avoid polluting other tests
+        try:
+            sys.path.remove(_BACKEND_DIR)
+        except ValueError:
+            pass
+        if original_db_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = original_db_url
+        _prefixes = ("main", "database", "models", "routers")
+        for key in list(sys.modules):
+            if key in _prefixes or any(key.startswith(p + ".") for p in _prefixes):
+                del sys.modules[key]
 
 
 class TestHealthCheck:
