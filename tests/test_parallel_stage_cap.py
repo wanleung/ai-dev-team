@@ -1,7 +1,5 @@
 """Tests for parallel stage worker cap — Task 4 of T5-A concurrency plan."""
 import importlib
-import sys
-import os
 import pytest
 
 
