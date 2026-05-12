@@ -310,8 +310,9 @@ def test_orchestrator_calls_auto_index_when_rag_configured(tmp_path):
     """repo_auto_indexer.index() should be called in run() when rag_registry is set."""
     from orchestrator import Orchestrator
 
-    orch = Orchestrator(model="gpt-4.1", use_github=False)
-    orch.workspace_dir = tmp_path  # isolate from stale checkpoints
+    # Pass workspace_dir at construction so both checkpoint I/O and MemoryStore
+    # use tmp_path — prevents stale checkpoint.json from skipping rag_index stage
+    orch = Orchestrator(model="gpt-4.1", use_github=False, workspace_dir=str(tmp_path))
     # Inject a fake rag_registry and auto_indexer
     orch._rag_registry = MagicMock()
     orch.repo_auto_indexer = MagicMock()
