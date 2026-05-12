@@ -357,6 +357,11 @@ class BaseAgent:
 
         return prompt_file.read_text(encoding="utf-8")
 
+    def _record_exchange(self, user_msg: str, reply: str) -> None:
+        """Append a user/assistant exchange pair to conversation history."""
+        self._history.append({"role": "user", "content": user_msg})
+        self._history.append({"role": "assistant", "content": reply})
+
     def request_clarification(self, questions: list[str]) -> None:
         """Pause the pipeline and ask the human clarifying questions.
 
@@ -386,8 +391,7 @@ class BaseAgent:
         from llm_pool import get_pool
         with get_pool().acquire(self._backend):
             reply = self._llm.call(messages)
-        self._history.append({"role": "user", "content": full_message})
-        self._history.append({"role": "assistant", "content": reply})
+        self._record_exchange(full_message, reply)
         return reply
 
     def _call_opencode(self, prompt: str, max_retries: int = 2, timeout: int | None = None) -> str:
@@ -418,8 +422,7 @@ class BaseAgent:
             if timeout is not None:
                 self._llm._timeout = old_timeout
 
-        self._history.append({"role": "user", "content": prompt})
-        self._history.append({"role": "assistant", "content": reply})
+        self._record_exchange(prompt, reply)
         return reply
 
     # ── Core LLM interface ─────────────────────────────────────────────────────
@@ -460,8 +463,7 @@ class BaseAgent:
         from llm_pool import get_pool
         with get_pool().acquire(self._backend):
             reply = self._llm.call(messages)
-        self._history.append({"role": "user", "content": full_message})
-        self._history.append({"role": "assistant", "content": reply})
+        self._record_exchange(full_message, reply)
         return reply
 
     def call_with_tools(
@@ -509,8 +511,7 @@ class BaseAgent:
         from llm_pool import get_pool
         with get_pool().acquire(self._backend):
             reply = self._llm.call_with_tools(messages, tools, max_turns)
-        self._history.append({"role": "user", "content": full_message})
-        self._history.append({"role": "assistant", "content": reply})
+        self._record_exchange(full_message, reply)
         return reply
 
     # ── Utilities ──────────────────────────────────────────────────────────────
