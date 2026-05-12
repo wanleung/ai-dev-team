@@ -680,6 +680,33 @@ class TestGetEvents:
         assert events[0].reminders[0].minutes_before == 60
 
     @pytest.mark.asyncio
+    async def test_get_events_usedefault_ignores_overrides(
+        self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
+    ) -> None:
+        """Events with useDefault:true return empty reminders even when overrides are present."""
+        items = [
+            {
+                "id": "event-with-usedefault",
+                "summary": "Meeting",
+                "start": {"dateTime": now.isoformat(), "timeZone": "UTC"},
+                "end": {"dateTime": (now + timedelta(hours=1)).isoformat(), "timeZone": "UTC"},
+                "status": "confirmed",
+                "created": now.isoformat(),
+                "updated": now.isoformat(),
+                "reminders": {
+                    "useDefault": True,
+                    "overrides": [{"method": "popup", "minutes": 10}],
+                },
+            }
+        ]
+        self._setup_events_mock(mock_build, items)
+
+        provider = GoogleCalendarProvider(google_config)
+        events = await provider.get_events(start_time=now, end_time=now + timedelta(hours=2))
+
+        assert len(events[0].reminders) == 0
+
+    @pytest.mark.asyncio
     async def test_get_events_parses_recurrence(
         self, google_config: ProviderConfig, mock_credentials: tuple, mock_build: tuple, now: datetime
     ) -> None:

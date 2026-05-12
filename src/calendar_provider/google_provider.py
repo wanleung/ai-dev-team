@@ -6,6 +6,7 @@ Concrete implementation of the `CalendarProvider` interface using the
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -24,6 +25,8 @@ from src.models.calendar import (
     ProviderConfig,
     RecurrenceRule,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class GoogleCalendarProvider(CalendarProvider):
@@ -569,14 +572,15 @@ class GoogleCalendarProvider(CalendarProvider):
         reminders_list: list[EventReminder] = []
         reminders_override = raw.get("reminders", {})
         if reminders_override.get("useDefault", False):
-            pass
-        for override in reminders_override.get("overrides", []):
-            reminders_list.append(
-                EventReminder(
-                    method=override.get("method", "popup"),
-                    minutes_before=override.get("minutes", 0),
+            logger.debug("useDefault reminders requested; returning empty list (no calendar cache)")
+        else:
+            for override in reminders_override.get("overrides", []):
+                reminders_list.append(
+                    EventReminder(
+                        method=override.get("method", "popup"),
+                        minutes_before=override.get("minutes", 0),
+                    )
                 )
-            )
 
         recurrence_rule: RecurrenceRule | None = None
         rrules = raw.get("recurrence")
