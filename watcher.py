@@ -1333,6 +1333,14 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
     pr_defaults = {k: pipeline_section[k] for k in _PR_WATCH_KEYS if k in pipeline_section}
     global_settings = {**pr_defaults, **global_settings}
 
+    # Wire Prometheus metrics sink if configured
+    _metrics_url = global_settings.get("metrics_url")
+    if _metrics_url:
+        from core.events import set_emit_callback
+        from core.metrics_sink import build_callback
+        set_emit_callback(build_callback(_metrics_url))
+        _log.info("Metrics sink wired to %s", _metrics_url)
+
     # Build list of tracker repos for checking waiting issues
     tracker_repos = [w["tracker_repo"] for w in watchers if w.get("enabled", True)]
     default_targets = {w["tracker_repo"]: w.get("default_target") for w in watchers if w.get("enabled", True)}
