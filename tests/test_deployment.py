@@ -23,12 +23,29 @@ def _clean_test_db():
 @pytest.fixture(scope="module")
 def client(_clean_test_db):
     """Create a TestClient wrapping the FastAPI app with a fresh SQLite DB."""
+    import importlib
+
+    _prefixes = ("main", "database", "models", "routers")
+
+    # Snapshot any modules already in sys.modules under these names so they can
+    # be restored after teardown (another test may have imported the CLI main.py).
+    _saved_modules = {
+        k: v for k, v in sys.modules.items()
+        if k in _prefixes or any(k.startswith(p + ".") for p in _prefixes)
+    }
+
     try:
-        # Insert backend on sys.path during tests only
+        # Evict cached copies before inserting _BACKEND_DIR so that the bare
+        # `import main` below always loads backend/main.py, not a previously
+        # cached repo-root main.py.
+        for key in _saved_modules:
+            sys.modules.pop(key, None)
+
         sys.path.insert(0, _BACKEND_DIR)
         original_db_url = os.environ.get("DATABASE_URL")
         os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_DB_PATH}"
-        import main as _main_module  # noqa: E402
+
+        _main_module = importlib.import_module("main")
         with TestClient(_main_module.app) as c:
             yield c
     finally:
@@ -41,10 +58,13 @@ def client(_clean_test_db):
             os.environ.pop("DATABASE_URL", None)
         else:
             os.environ["DATABASE_URL"] = original_db_url
-        _prefixes = ("main", "database", "models", "routers")
+
+        # Remove all backend modules loaded during this fixture…
         for key in list(sys.modules):
             if key in _prefixes or any(key.startswith(p + ".") for p in _prefixes):
                 del sys.modules[key]
+        # …then restore whatever was there before.
+        sys.modules.update(_saved_modules)
 
 
 class TestHealthCheck:
