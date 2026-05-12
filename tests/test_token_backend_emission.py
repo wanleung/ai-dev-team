@@ -5,6 +5,29 @@ import pytest
 from agents.token_ledger import TokenLedger, set_ledger, get_ledger, current_stage
 
 
+@pytest.fixture(autouse=True)
+def _reset_circuit_registry():
+    """Reset the global circuit breaker registry before each test.
+
+    Orchestrator integration tests may leave the ``backend:gpt-4.1`` circuit
+    breaker OPEN (TierReviewerAgent fails with a mock LLM, and a prior test
+    sets threshold=1), causing ``CircuitOpenError`` in these tests.  Reinitialising
+    the registry with a very high threshold ensures the circuit never trips.
+    """
+    from core.circuit_breaker_registry import init_registry
+    from config_schema import CircuitBreakerConfig, CircuitBreakerScopeConfig
+
+    safe_scope = CircuitBreakerScopeConfig(threshold=10_000, recovery_timeout_s=0)
+    init_registry(
+        CircuitBreakerConfig(
+            enabled=True,
+            per_backend=safe_scope,
+            per_agent=safe_scope,
+            per_repo=safe_scope,
+        )
+    )
+
+
 def _make_response(prompt_tokens: int, completion_tokens: int, content: str) -> MagicMock:
     usage = MagicMock()
     usage.prompt_tokens = prompt_tokens
