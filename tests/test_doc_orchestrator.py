@@ -1,7 +1,7 @@
 """Tests for documentation pipeline stages in orchestrator (_stage_doc_*)."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import pytest
 
 from orchestrator import Orchestrator, PipelineResult
