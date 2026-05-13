@@ -12,6 +12,7 @@ Usage::
 import dataclasses
 import json
 import logging
+import threading
 import urllib.request
 from typing import Callable
 
@@ -37,6 +38,9 @@ def build_callback(metrics_url: str) -> Callable[[AnyEvent], None]:
     endpoint = metrics_url.rstrip("/") + "/event"
 
     def _callback(event: AnyEvent) -> None:
+        threading.Thread(target=_send, args=(event,), daemon=True).start()
+
+    def _send(event: AnyEvent) -> None:
         try:
             body = json.dumps(dataclasses.asdict(event)).encode()
             req = urllib.request.Request(

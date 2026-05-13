@@ -39,6 +39,12 @@ DEG_COUNTER = Counter(
     ["trigger"],
     registry=METRICS_REGISTRY,
 )
+UNKNOWN_COUNTER = Counter(
+    "aisw_unknown_events_total",
+    "Events with unrecognised event_type (indicates a schema gap)",
+    ["event_type"],
+    registry=METRICS_REGISTRY,
+)
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -89,9 +95,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 trigger=event.get("trigger", ""),
             ).inc()
         else:
-            self.send_response(400)
-            self.end_headers()
-            return
+            UNKNOWN_COUNTER.labels(event_type=event_type or "").inc()
 
         self.send_response(200)
         self.end_headers()

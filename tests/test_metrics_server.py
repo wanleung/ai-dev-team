@@ -112,10 +112,12 @@ def test_post_degradation_event_increments_counter(metrics_server):
     assert 'aisw_degradation_events_total{trigger="cpu_high"} 1.0' in metrics_text
 
 
-def test_post_unknown_event_returns_400(metrics_server):
+def test_post_unknown_event_returns_200_and_increments_unknown_counter(metrics_server):
     port, _ = metrics_server
     status = _post_event(port, {"event_type": "unknown_type", "data": "x"})
-    assert status == 400
+    assert status == 200
+    metrics_text = _get_metrics(port)
+    assert 'aisw_unknown_events_total{event_type="unknown_type"} 1.0' in metrics_text
 
 
 def test_get_metrics_content_type(metrics_server):
