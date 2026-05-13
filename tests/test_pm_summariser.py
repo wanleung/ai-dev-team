@@ -16,7 +16,6 @@ def _make_pm() -> ProductManagerAgent:
     agent.system_prompt = ""
     agent._history = []
     agent.model = "gpt-4"
-    agent.memory_store = None
     return agent
 
 
@@ -27,7 +26,6 @@ def _make_summariser() -> SummaryAgent:
     agent.system_prompt = ""
     agent._history = []
     agent.model = "gpt-4"
-    agent.memory_store = None
     return agent
 
 
@@ -78,7 +76,7 @@ class TestProductManagerRunWithGithub:
         assert result["issue_url"] == "https://github.com/owner/repo/issues/17"
         github_client.create_issue.assert_called_once()
         _, kwargs = github_client.create_issue.call_args
-        assert "My App" in kwargs.get("title", "") or "My App" in str(github_client.create_issue.call_args)
+        assert "My App" in kwargs.get("title", "")
 
     def test_run_with_github_passes_labels(self, monkeypatch):
         """run_with_github() creates the issue with 'prd' and 'requirements' labels."""
@@ -91,7 +89,9 @@ class TestProductManagerRunWithGithub:
         agent.run_with_github("Build X", github_client)
 
         call_kwargs = github_client.create_issue.call_args[1]
-        assert "prd" in call_kwargs.get("labels", [])
+        labels = call_kwargs.get("labels", [])
+        assert "prd" in labels
+        assert "requirements" in labels
 
 
 # ── ProductManagerAgent.run_revision ─────────────────────────────────────────
@@ -112,7 +112,7 @@ class TestProductManagerRunRevision:
         )
 
         assert result["prd"] == revised_prd
-        assert "Task Manager" in result["project_name"]
+        assert result["project_name"] == "Task Manager v2"
         assert result["issue_number"] is None
 
     def test_run_revision_includes_original_and_feedback_in_prompt(self, monkeypatch):
@@ -201,4 +201,4 @@ class TestSummaryAgentSummarise:
         agent.summarise(repo="r", requirement="r", prd="p", design="d", review="rv")
 
         prompt = mock_call.call_args[0][0]
-        assert "feature" in prompt
+        assert "## Mode: feature" in prompt
