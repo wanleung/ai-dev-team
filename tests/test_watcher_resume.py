@@ -27,15 +27,17 @@ def _default_kwargs(workspace: str) -> dict:
 
 
 def _write_trigger(workspace_dir: str, issue_number: int, issue_title: str = "Test issue") -> str:
-    """Write a minimal resume trigger JSON and return its path."""
+    """Write a minimal resume trigger JSON atomically and return its path."""
     trigger_dir = os.path.join(workspace_dir, "resume_queue")
     os.makedirs(trigger_dir, exist_ok=True)
     trigger_path = os.path.join(trigger_dir, f"resume_{issue_number}.json")
-    with open(trigger_path, "w") as f:
+    tmp = trigger_path + ".tmp"
+    with open(tmp, "w") as f:
         json.dump({
             "issue_number": issue_number,
             "issue_title": issue_title,
         }, f)
+    os.replace(tmp, trigger_path)
     return trigger_path
 
 
@@ -136,8 +138,8 @@ def test_incomplete_trigger_not_picked_up(tmp_path):
     os.makedirs(trigger_dir, exist_ok=True)
     
     # Write a .tmp file (incomplete trigger)
-    tmp_path_file = os.path.join(trigger_dir, "resume_42.tmp")
-    with open(tmp_path_file, "w") as f:
+    incomplete_file = os.path.join(trigger_dir, "resume_42.tmp")
+    with open(incomplete_file, "w") as f:
         json.dump({"issue_number": 42, "issue_title": "Test"}, f)
 
     from watcher import _process_resume_queue
@@ -145,7 +147,7 @@ def test_incomplete_trigger_not_picked_up(tmp_path):
 
     assert tasks == []
     # .tmp file should still exist (wasn't touched)
-    assert os.path.isfile(tmp_path_file)
+    assert os.path.isfile(incomplete_file)
 
 
 def test_multiple_triggers_all_processed(tmp_path, monkeypatch):
