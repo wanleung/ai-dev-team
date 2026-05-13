@@ -153,7 +153,8 @@ class TestRunDockerSmokeTests:
         agent = _make_agent()
         result = agent.run_docker_smoke_tests(tmp_path)
         assert result["skipped"] is True
-        assert result["passed"] is None
+        assert result["passed"] is False
+        assert result["output"] == ""
 
     def test_uses_script_when_deploy_sh_exists(self, tmp_path, monkeypatch):
         """run_docker_smoke_tests routes to _run_via_script when deploy_test.sh exists."""
@@ -174,10 +175,10 @@ class TestRunDockerSmokeTests:
     def test_uses_compose_when_both_files_exist(self, tmp_path, monkeypatch):
         """run_docker_smoke_tests routes to _run_via_compose when compose+test exist."""
         agent = _make_agent()
-        (tmp_path / "docker-compose.test.yml").write_text("version: '3'")
+        (tmp_path / "docker-compose.yml").write_text("version: '3'")
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
-        (tests_dir / "test_deployment.py").write_text("def test_health(): pass")
+        (tests_dir / "conftest.py").write_text("def test_health(): pass")
 
         mock_compose = MagicMock(return_value={"passed": True, "output": "ok", "skipped": False})
         monkeypatch.setattr(agent, "_run_via_compose", mock_compose)
