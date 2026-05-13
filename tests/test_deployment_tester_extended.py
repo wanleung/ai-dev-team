@@ -1,9 +1,7 @@
 """Extended tests for DeploymentTesterAgent — run_with_github, docker smoke tests."""
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -74,6 +72,7 @@ class TestDeploymentTesterRun:
         assert "main.py" in prompt
         assert "requirements.txt" in prompt
         assert "config.py" in prompt
+        assert "other.py" not in prompt
 
 
 # ── run_with_github ───────────────────────────────────────────────────────────
@@ -103,6 +102,8 @@ class TestDeploymentTesterRunWithGithub:
         )
 
         assert github_client.commit_file.call_count == 2
+        committed_paths = {c[1]["path"] for c in github_client.commit_file.call_args_list}
+        assert len(committed_paths) == 2
         github_client.add_pr_comment.assert_called_once()
         comment = github_client.add_pr_comment.call_args[0][1]
         assert "Deployment" in comment
@@ -198,10 +199,10 @@ class TestRunDockerSmokeTests:
         deploy_script = script_dir / "deploy_test.sh"
         deploy_script.write_text("#!/bin/bash\necho ok")
         
-        (tmp_path / "docker-compose.test.yml").write_text("version: '3'")
+        (tmp_path / "docker-compose.yml").write_text("version: '3'")
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
-        (tests_dir / "test_deployment.py").write_text("def test_health(): pass")
+        (tests_dir / "conftest.py").write_text("def test_health(): pass")
 
         mock_script = MagicMock(return_value={"passed": True, "output": "ok", "skipped": False})
         mock_compose = MagicMock(return_value={"passed": True, "output": "ok", "skipped": False})
@@ -276,7 +277,8 @@ class TestRunViaCompose:
         ]
 
         with patch("agents.deployment_tester.subprocess.run", side_effect=call_results):
-            result = agent._run_via_compose(compose_file, test_file, tmp_path)
+            with patch("agents.deployment_tester.time.sleep"):
+                result = agent._run_via_compose(compose_file, test_file, tmp_path)
 
         assert result["passed"] is True
         assert result["skipped"] is False
@@ -295,7 +297,8 @@ class TestRunViaCompose:
         ]
 
         with patch("agents.deployment_tester.subprocess.run", side_effect=call_results):
-            result = agent._run_via_compose(compose_file, test_file, tmp_path)
+            with patch("agents.deployment_tester.time.sleep"):
+                result = agent._run_via_compose(compose_file, test_file, tmp_path)
 
         assert result["passed"] is False
 
