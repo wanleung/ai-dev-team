@@ -75,9 +75,9 @@ class MemoryStore:
         """)
         # Migrate existing DB that may lack the new columns
         existing = {row[1] for row in self._conn.execute("PRAGMA table_info(runs)")}
-        for col, dflt in [("tier", "'run'"), ("period_label", "''"), ("consolidated", "0")]:
+        for col, dflt, col_type in [("tier", "'run'", "TEXT"), ("period_label", "''", "TEXT"), ("consolidated", "0", "INTEGER")]:
             if col not in existing:
-                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} TEXT DEFAULT {dflt}")
+                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type} DEFAULT {dflt}")
         self._conn.commit()
 
     # ── Write ─────────────────────────────────────────────────────────────────

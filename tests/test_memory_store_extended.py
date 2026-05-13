@@ -84,7 +84,7 @@ class TestConsolidateMonthly:
             "SELECT consolidated FROM runs WHERE repo=? AND tier='run'",
             ("owner/repo",),
         ).fetchall()
-        assert all(r[0] == "1" or r[0] == 1 for r in rows)
+        assert all(r[0] == 1 for r in rows)
 
     def test_monthly_snapshot_saved_with_correct_tier(self, store):
         """The monthly snapshot row has tier='monthly'."""
@@ -106,6 +106,18 @@ class TestConsolidateMonthly:
             "SELECT period_label FROM runs WHERE id=?", (new_id,)
         ).fetchone()
         assert row[0] == "2026-05"
+
+    def test_returns_none_when_all_runs_already_consolidated(self, store):
+        """A second call to consolidate_monthly returns None (no double-consolidation)."""
+        store.save("owner/repo", "run A", mode="feature")
+        store.save("owner/repo", "run B", mode="feature")
+        store.consolidate_monthly("owner/repo", MagicMock(return_value="first"))
+
+        llm2 = MagicMock(return_value="second")
+        result = store.consolidate_monthly("owner/repo", llm2)
+
+        assert result is None
+        llm2.assert_not_called()
 
 
 # ── consolidate_quarterly ─────────────────────────────────────────────────────
@@ -152,6 +164,22 @@ class TestConsolidateQuarterly:
             "SELECT tier FROM runs WHERE id=?", (new_id,)
         ).fetchone()
         assert row[0] == "quarterly"
+
+    def test_marks_source_rows_as_consolidated(self, store):
+        """After consolidate_quarterly, source monthly rows are marked consolidated=1."""
+        store._conn.execute(
+            "INSERT INTO runs (repo, summary, mode, tier, consolidated, created_at) VALUES (?,?,?,?,?,?)",
+            ("owner/repo", "monthly snap", "consolidation", "monthly", 0, "2026-04-01T12:00:00+00:00"),
+        )
+        store._conn.commit()
+
+        store.consolidate_quarterly("owner/repo", MagicMock(return_value="q"))
+
+        rows = store._conn.execute(
+            "SELECT consolidated FROM runs WHERE repo=? AND tier='monthly'",
+            ("owner/repo",),
+        ).fetchall()
+        assert all(r[0] == 1 for r in rows)
 
 
 # ── recall ────────────────────────────────────────────────────────────────────
