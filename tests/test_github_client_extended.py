@@ -1,6 +1,6 @@
 """Tests for github_client.py PR read, tree, and merge conflict paths.
 
-Tests for GithubClient API methods:
+Tests for GitHubClient API methods:
 - get_pr_review_comments: inline PR comments
 - get_pr_reviews: review-level submissions (APPROVED, CHANGES_REQUESTED, etc.)
 - get_pr_files: list of changed files in a PR
