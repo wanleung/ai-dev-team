@@ -20,17 +20,11 @@ def _make_orchestrator():
 
 def _make_result():
     """Build a minimal PipelineResult for testing."""
-    r = PipelineResult.__new__(PipelineResult)
-    r.errors = []
-    r.add_error = lambda msg: r.errors.append(msg)
-    r.all_files = {}
-    r.requirement = "Test requirement"
-    r.project_name = "test-project"
-    r.issue_number = 42
-    r.pr_number = None
-    r.pr_url = None
-    r.branch = None
-    return r
+    return PipelineResult(
+        requirement="Test requirement",
+        project_name="test-project",
+        issue_number=42,
+    )
 
 
 # ── _stage_doc_generate tests ────────────────────────────────────────────
@@ -75,7 +69,7 @@ def test_stage_doc_generate_no_github_adds_error():
     orch._stage_doc_generate(result)
     
     assert len(result.errors) == 1
-    assert "doc_generate requires a GitHub connection" in result.errors[0]
+    assert "doc_generate requires a GitHub connection" in result.errors[0].message
     assert result.all_files == {}
 
 

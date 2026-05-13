@@ -132,8 +132,9 @@ def test_validate_config_default_paths():
     # This will fail in tmp test dir but tests that defaults work
     code, out, err = _run_check("validate-config")
     # Exit code depends on whether default files exist in test env
-    # Just verify it doesn't crash
+    # Just verify it doesn't crash with an unhandled exception
     assert code in (0, 1)  # Either succeeds or fails, but doesn't crash
+    assert "Traceback" not in out + err  # Must not crash with a Python traceback
 
 
 # ── test-github tests ─────────────────────────────────────────────────────────
