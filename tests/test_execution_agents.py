@@ -1,6 +1,5 @@
 """Tests for DeploymentTesterAgent, QAPlannerAgent, MemoryBankUpdaterAgent, SeniorEngineerAgent."""
-from unittest.mock import MagicMock, call
-import pytest
+from unittest.mock import MagicMock
 
 
 class TestDeploymentTesterAgent:
