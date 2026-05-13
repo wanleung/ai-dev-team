@@ -35,6 +35,7 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - 💰 **Token usage & cost tracking** — per-run token counts and USD cost per model; flushed to SQLite; optional GitHub issue comment with per-stage breakdown; configurable pricing table in `config.yaml`
 - ⚡ **Streaming for all backends** — streaming responses from GitHub Models, Anthropic, OpenCode Go, and Ollama; configurable per-agent
 - 🧪 **TDD early-commit** — in TDD pipeline mode, test files can be committed to a branch early so engineers see failing tests before implementing
+- 📊 **Prometheus metrics** — standalone `metrics_server.py` exposes `aisw_circuit_breaker_events_total`, `aisw_dlq_events_total`, and `aisw_degradation_events_total` counters; wired via `metrics_url` in `watchers.yml` → events fire-and-forget to the sink so the watcher is never blocked
 
 ---
 
@@ -1020,6 +1021,31 @@ logs/watcher/
 A lock file (`.watcher.lock`) is created at startup and removed on exit.  
 If a run is still active when the next cron fires, the new run exits immediately.  
 Stale locks (>1 hour old) are cleared automatically.
+
+### 📊 Prometheus metrics
+
+Start the standalone metrics server, then set `metrics_url` in `watchers.yml`:
+
+```bash
+# Start the metrics server (default port 9091)
+METRICS_PORT=9091 python3 metrics_server.py
+```
+
+```yaml
+# watchers.yml
+settings:
+  metrics_url: http://localhost:9091   # watcher will POST events here
+```
+
+The server exposes counters at `GET /metrics` for Prometheus scraping:
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `aisw_circuit_breaker_events_total` | `name`, `state` | Circuit-breaker state transitions |
+| `aisw_dlq_events_total` | `action`, `backend` | Dead-letter-queue operations |
+| `aisw_degradation_events_total` | `trigger` | Degradation policy activations |
+
+Events are posted fire-and-forget from a daemon thread — the watcher is never blocked by a slow or unavailable metrics server.
 
 ---
 
