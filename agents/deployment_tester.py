@@ -93,11 +93,11 @@ class DeploymentTesterAgent(BaseAgent):
     def run_docker_smoke_tests(self, project_dir: Path) -> dict:
         """Run docker-compose deployment tests locally.
 
-        Starts docker-compose.yml, waits for health, runs pytest conftest.py,
+        Starts docker-compose.test.yml, waits for health, runs pytest tests/test_deployment.py,
         then tears down. Returns results dict.
         """
-        compose_file = project_dir / "docker-compose.yml"
-        test_file = project_dir / "tests" / "conftest.py"
+        compose_file = project_dir / "docker-compose.test.yml"
+        test_file = project_dir / "tests" / "test_deployment.py"
         deploy_script = project_dir / "scripts" / "deploy_test.sh"
 
         if deploy_script.exists():
