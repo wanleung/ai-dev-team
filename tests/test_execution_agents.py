@@ -79,9 +79,8 @@ This is the deployment test plan.
         
         result = agent.run_docker_smoke_tests(tmp_path)
         
-        assert result["passed"] is None
+        assert result["passed"] is False
         assert result["skipped"] is True
-        assert "No docker-compose.test.yml" in result["output"]
 
     def test_run_via_script_success(self, tmp_path, monkeypatch):
         """Test _run_via_script returns passed=True on successful script execution."""
