@@ -420,3 +420,31 @@ def test_run_sets_issue_number_from_parameter(tmp_path):
     
     assert captured_result is not None
     assert captured_result.issue_number == 42
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ClarificationNeeded pausing tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_run_pauses_on_clarification_needed_from_prd(tmp_path):
+    """run() stops pipeline when _prd_revision_loop returns False due to ClarificationNeeded."""
+    orch = _make_orchestrator(tmp_path)
+    
+    # Mock _prd_revision_loop to return False (simulating ClarificationNeeded was raised internally)
+    with patch.object(orch, "_prd_revision_loop", return_value=False), \
+         patch.object(orch, "_design_revision_loop") as mock_design, \
+         patch.object(orch, "_save_checkpoint"), \
+         patch.object(orch, "_clear_checkpoint"), \
+         patch.object(orch, "_build_stage_list", return_value=[]), \
+         patch.object(orch, "_expected_stages", return_value=[]), \
+         patch.object(orch, "_finish", return_value=_make_result()) as mock_finish, \
+         patch("orchestrator.console"), \
+         patch("orchestrator.ProgressTracker"), \
+         patch("orchestrator.get_ledger"):
+        orch.run("build a todo app", resume=False)
+    
+    # When _prd_revision_loop returns False, pipeline should stop
+    # and _design_revision_loop should NOT be called
+    mock_design.assert_not_called()
+    # _finish should be called to wrap up the pipeline
+    mock_finish.assert_called_once()
