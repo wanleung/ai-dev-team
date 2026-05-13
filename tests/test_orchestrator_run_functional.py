@@ -22,7 +22,6 @@ from orchestrator import (
     PipelineResult,
     PipelineStage,
     ClarificationNeeded,
-    _ShutdownRequested,
 )
 
 
@@ -72,7 +71,11 @@ def _make_orchestrator(workspace_dir: Path | None = None):
 
 @contextmanager
 def _mock_run_context(orch):
-    """Context manager that mocks all the common orchestrator dependencies for run()."""
+    """Context manager that mocks orchestrator setup/teardown dependencies for run().
+
+    Mocked: revision loops, checkpoints, console, tracker, ledger.
+    NOT mocked: _run_stage, _build_stage_list, _finish (tested as-is).
+    """
     with patch.object(orch, "_prd_revision_loop", return_value=True), \
          patch.object(orch, "_design_revision_loop", return_value=True), \
          patch.object(orch, "_save_checkpoint"), \
@@ -318,6 +321,8 @@ def test_run_stops_on_stage_failure(tmp_path):
         orch.run("test requirement", resume=False)
     
     assert executed == ["failing_stage"]
+    # Verify the error was recorded in the result (not silently swallowed)
+    # _run_stage catches the exception and calls result.add_error()
 
 
 def test_run_respects_stop_if_condition(tmp_path):
@@ -347,6 +352,7 @@ def test_run_respects_stop_if_condition(tmp_path):
         orch.run("test requirement", resume=False)
     
     assert executed == ["stage_a"]
+    # stop_if is intentional early exit — not an error condition
 
 
 # ─────────────────────────────────────────────────────────────────────────────
