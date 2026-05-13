@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -100,7 +100,7 @@ class MemoryStore:
             (
                 repo,
                 run_id or "",
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 summary,
                 json.dumps(tags or []),
                 mode,
