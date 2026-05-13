@@ -18,6 +18,15 @@ from tools.builtin import (
 from tools.registry import LocalToolRegistry, CombinedToolRegistry
 
 
+# ── builtin_tools ─────────────────────────────────────────────────────────────
+
+class TestBuiltinTools:
+    def test_builtin_tools_registers_expected_tools(self):
+        """builtin_tools singleton contains the four standard tools."""
+        names = {s["function"]["name"] for s in builtin_tools.schemas}
+        assert {"run_linter", "run_shell_command", "search_github_issues", "get_github_file"} <= names
+
+
 # ── run_linter ────────────────────────────────────────────────────────────────
 
 class TestRunLinter:
@@ -29,25 +38,42 @@ class TestRunLinter:
         assert "No lint errors" in result
 
     def test_returns_lint_errors_for_invalid_code(self):
-        """run_linter on code with undefined name returns ruff output."""
-        with patch("tools.builtin.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout="test_code.py:1:7: F821 Undefined name `undefined_var`\n",
-                stderr="",
-                returncode=1
+        """run_linter replaces the temp path with the given filename in the output."""
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            # The temp file path is at cmd[4] (after [python, -m, ruff, check, <tmp>, --output-format=text])
+            tmp_path = cmd[4]
+            captured["tmp"] = tmp_path
+            return MagicMock(
+                stdout=f"{tmp_path}:1:7: F821 Undefined name `undefined_var`\n",
+                stderr="", returncode=1,
             )
+
+        with patch("tools.builtin.subprocess.run", side_effect=fake_run):
             result = run_linter("print(undefined_var)\n", filename="test_code.py")
-        # ruff may report F821 (undefined name) or similar; result is non-empty
-        assert isinstance(result, str)
-        # The temp path is stripped and replaced with the given filename
+
         assert "test_code.py" in result
+        assert captured["tmp"] not in result
 
     def test_filename_suffix_used_for_tempfile(self):
         """run_linter respects the filename parameter (used for context)."""
-        with patch("tools.builtin.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            tmp_path = cmd[4]
+            captured["tmp"] = tmp_path
+            return MagicMock(
+                stdout=f"{tmp_path}:1:1: E999 SyntaxError\n",
+                stderr="",
+                returncode=1
+            )
+
+        with patch("tools.builtin.subprocess.run", side_effect=fake_run):
             result = run_linter("y: int = 'wrong'\n", filename="mymodule.py")
-        assert isinstance(result, str)
+        # The filename should appear in the output after path replacement
+        assert "mymodule.py" in result
+        assert captured["tmp"] not in result
 
 
 # ── run_shell_command ─────────────────────────────────────────────────────────
@@ -86,7 +112,7 @@ class TestRunShellCommand:
                 stdout=long_output, stderr="", returncode=0
             )
             result = run_shell_command(["python3", "-c", "print('x'*5000)"])
-        assert len(result) <= 4020  # 4000 + "… [truncated]"
+        assert len(result) <= 4015  # 4000 chars + newline + "… [truncated]" suffix
         assert "truncated" in result
 
     def test_cwd_passed_to_subprocess(self, tmp_path):
@@ -225,6 +251,12 @@ class TestLocalToolRegistry:
         assert "[ToolError]" in result
         assert "intentional error" in result
 
+    def test_call_registered_tool_returns_result(self):
+        """LocalToolRegistry.call() returns the tool's return value as string."""
+        reg = self._make_registry()
+        result = reg.call("echo_tool", '{"msg": "hello"}')
+        assert result == "hello"
+
     def test_repr_lists_tool_names(self):
         """LocalToolRegistry.__repr__() includes registered tool names."""
         reg = self._make_registry()
@@ -279,6 +311,12 @@ class TestCombinedToolRegistry:
             warnings.simplefilter("always")
             _ = combined.schemas
         assert any("shared_tool" in str(w.message) for w in caught)
+
+    def test_call_unknown_in_both_returns_error(self):
+        """CombinedToolRegistry returns ToolError for a tool not in either registry."""
+        combined = CombinedToolRegistry(self._make_reg("a"), self._make_reg("b"))
+        result = combined.call("ghost", "{}")
+        assert "[ToolError]" in result
 
     def test_repr_includes_both(self):
         """CombinedToolRegistry.__repr__() mentions primary and secondary."""
