@@ -1,6 +1,5 @@
 """Tests for ArchitectReviewerAgent, PMReviewerAgent, CodeReviewerAgent."""
 from unittest.mock import MagicMock
-import pytest
 
 
 class TestArchitectReviewer:

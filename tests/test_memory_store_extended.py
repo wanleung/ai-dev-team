@@ -1,5 +1,4 @@
 """Extended tests for memory_store.py covering previously-uncovered paths."""
-import pytest
 from memory_store import MemoryStore
 
 
@@ -27,7 +26,7 @@ class TestMemoryStoreReadWrite:
         store.close()
 
     def test_write_multiple_and_recall_ordering(self, tmp_path):
-        """Test that multiple entries are recalled in reverse chronological order."""
+        """Test that multiple entries are recalled in chronological order (oldest first)."""
         db_path = tmp_path / "test_memory.db"
         store = MemoryStore(db_path=db_path)
         
