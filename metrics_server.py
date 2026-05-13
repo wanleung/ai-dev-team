@@ -17,22 +17,27 @@ import os
 import socketserver
 from http.server import BaseHTTPRequestHandler
 
-from prometheus_client import Counter, generate_latest, REGISTRY
+from prometheus_client import CollectorRegistry, Counter, generate_latest
+
+METRICS_REGISTRY = CollectorRegistry()
 
 CB_COUNTER = Counter(
     "aisw_circuit_breaker_events_total",
     "Circuit breaker state-transition events",
     ["name", "state"],
+    registry=METRICS_REGISTRY,
 )
 DLQ_COUNTER = Counter(
     "aisw_dlq_events_total",
     "Dead-letter-queue operation events",
     ["action", "backend"],
+    registry=METRICS_REGISTRY,
 )
 DEG_COUNTER = Counter(
     "aisw_degradation_events_total",
     "Degradation policy events",
     ["trigger"],
+    registry=METRICS_REGISTRY,
 )
 
 
@@ -51,6 +56,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
             return
         if length < 0:
             length = 0
+        if length > 65_536:
+            self.send_response(413)
+            self.end_headers()
+            return
         body = self.rfile.read(length)
         try:
             event = json.loads(body)
@@ -93,7 +102,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        output = generate_latest(REGISTRY)
+        output = generate_latest(METRICS_REGISTRY)
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; version=0.0.4")
         self.end_headers()

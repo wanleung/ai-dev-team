@@ -59,7 +59,7 @@ def build_callback(metrics_url: str) -> Callable[[Event], None]:
             )
             urllib.request.urlopen(req, timeout=1)
         except Exception as exc:  # noqa: BLE001
-            _log.debug("metrics_sink: failed to post event %s: %s", event.type, exc)
+            _log.debug("metrics_sink: failed to post event %s: %s", event.event_type, exc)
 
     return _callback
 ```
@@ -78,12 +78,12 @@ No new dependencies — uses only stdlib `urllib.request`.
 |---|---|---|
 | `aisw_circuit_breaker_events_total` | `name`, `state` | `CircuitBreakerEvent` — state values: `"open"`, `"half_open"`, `"closed"` |
 | `aisw_dlq_events_total` | `action`, `backend` | `DLQEvent` — action values: `"enqueue"`, `"ack"`, `"nack"`, `"discard"` |
-| `aisw_degradation_events_total` | `service` | `DegradationEvent` — one increment per event |
+| `aisw_degradation_events_total` | `trigger` | `DegradationEvent` — one increment per event |
 
 **Endpoints:**
 
-- `POST /event` — JSON body `{"type": "<EventType>", "payload": {...}}`. Increments matching counter. Returns 200 on success, 400 on unknown event type (but still logs and continues).
-- `GET /metrics` — returns `prometheus_client.generate_latest(REGISTRY)` with content-type `text/plain; version=0.0.4`.
+- `POST /event` — JSON body is a flat dict with `event_type` key (e.g. `{"event_type": "circuit_breaker", "name": "backend", "state": "open", ...}`). Increments matching counter. Returns 200 on success, 400 on unknown event type or invalid JSON, 413 if payload exceeds 64 KiB.
+- `GET /metrics` — returns `prometheus_client.generate_latest(METRICS_REGISTRY)` with content-type `text/plain; version=0.0.4`.
 
 **Implementation notes:**
 - Use `socketserver.ThreadingTCPServer` + `http.server.BaseHTTPRequestHandler` — no new web framework dependency.

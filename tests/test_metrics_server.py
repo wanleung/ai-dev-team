@@ -14,22 +14,10 @@ import pytest
 
 def _fresh_server():
     """Import metrics_server fresh (resetting counters) and start it on an OS-assigned port."""
-    # Remove cached module so counters re-initialise
+    # Remove cached module so counters re-initialise on a new dedicated CollectorRegistry
     for mod_name in list(sys.modules.keys()):
         if mod_name == "metrics_server" or mod_name.startswith("metrics_server."):
             del sys.modules[mod_name]
-
-    # Reset prometheus registry to avoid "Duplicated timeseries" errors between tests
-    import prometheus_client
-    collectors_to_remove = [
-        c for name, c in list(prometheus_client.REGISTRY._names_to_collectors.items())
-        if name.startswith("aisw_")
-    ]
-    for c in set(collectors_to_remove):
-        try:
-            prometheus_client.REGISTRY.unregister(c)
-        except Exception:
-            pass
 
     # Add project root to path so metrics_server is importable
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -79,6 +67,7 @@ def metrics_server():
     server, ms, port = _fresh_server()
     yield port, ms
     server.shutdown()
+    server.server_close()
 
 
 def test_post_circuit_breaker_event_increments_counter(metrics_server):
@@ -165,3 +154,18 @@ def test_post_malformed_json_returns_400(metrics_server):
         assert resp.status == 400
     except urllib.error.HTTPError as e:
         assert e.code == 400
+
+
+def test_post_oversized_payload_returns_413(metrics_server):
+    port, _ = metrics_server
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/event",
+        data=b"x",
+        headers={"Content-Type": "application/json", "Content-Length": "99999"},
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=2)
+        assert resp.status == 413
+    except urllib.error.HTTPError as e:
+        assert e.code == 413
