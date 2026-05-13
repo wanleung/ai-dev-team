@@ -1,7 +1,7 @@
 """Tests for QAPlannerAgent and EngineerAgent."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -81,6 +81,8 @@ class TestQAPlannerRunWithGithub:
         )
 
         github_client.add_issue_comment.assert_called_once()
+        args = github_client.add_issue_comment.call_args[0]
+        assert args[0] == 5  # correct issue_number passed
         github_client.add_pr_comment.assert_not_called()
 
 
@@ -127,6 +129,7 @@ class TestEngineerRunModuleWithTestFiles:
 class TestEngineerRunAllModules:
     def test_run_all_modules_calls_run_module_for_each(self, monkeypatch):
         """run_all_modules calls run_module for each module in the list."""
+        monkeypatch.setattr("agents.engineer.time.sleep", lambda _: None)
         agent = _make_engineer()
         mock_run_module = MagicMock(return_value={
             "module_name": "mod",
@@ -147,6 +150,7 @@ class TestEngineerRunAllModules:
 
     def test_run_all_modules_merges_files(self, monkeypatch):
         """run_all_modules merges all module files into all_files dict."""
+        monkeypatch.setattr("agents.engineer.time.sleep", lambda _: None)
         agent = _make_engineer()
         calls = [
             {"module_name": "auth", "files": {"src/auth.py": "auth code"}, "raw_response": ""},
@@ -216,7 +220,7 @@ class TestEngineerRunWithGithub:
         # Check the body kwarg in the create_pull_request call
         call_args, call_kwargs = github_client.create_pull_request.call_args
         body = call_kwargs.get("body", "")
-        assert "42" in body
+        assert "Closes #42" in body
 
 
 # ── EngineerAgent.fix_failures ────────────────────────────────────────────────
