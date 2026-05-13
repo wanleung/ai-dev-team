@@ -10,7 +10,6 @@ Tests for GithubClient API methods:
 - search_files: glob pattern matching on file paths
 """
 import base64
-import json
 import pytest
 from unittest.mock import MagicMock, patch
 from github_client import GitHubClient
@@ -203,12 +202,11 @@ def test_get_full_tree_success(client):
         "/repos/owner/repo/git/trees/main",
         params={"recursive": "1"},
     )
-    assert len(tree) == 6  # includes both blobs and trees
-    # Check that all entries have required fields
-    for entry in tree:
-        assert "path" in entry
-        assert "type" in entry
-        assert "size" in entry
+    assert len(tree) == 6  # blobs + trees both returned
+    blobs = [e for e in tree if e["type"] == "blob"]
+    trees_in_result = [e for e in tree if e["type"] == "tree"]
+    assert all(e["size"] > 0 for e in blobs)
+    assert all(e["size"] == 0 for e in trees_in_result)
 
 
 def test_get_full_tree_with_ref(client):
@@ -268,12 +266,14 @@ def test_merge_base_into_branch_success(client):
         status = client.merge_base_into_branch("main", "feature-branch", "Merge main into feature")
     
     assert status == 201
-    mock_post.assert_called_once()
-    call_args = mock_post.call_args
-    assert call_args[0][0] == "https://api.github.com/repos/owner/repo/merges"
-    assert call_args[1]["json"]["base"] == "feature-branch"
-    assert call_args[1]["json"]["head"] == "main"
-    assert call_args[1]["json"]["commit_message"] == "Merge main into feature"
+    mock_post.assert_called_once_with(
+        "https://api.github.com/repos/owner/repo/merges",
+        json={
+            "base": "feature-branch",
+            "head": "main",
+            "commit_message": "Merge main into feature",
+        },
+    )
 
 
 def test_merge_base_into_branch_up_to_date(client):
