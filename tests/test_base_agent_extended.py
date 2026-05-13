@@ -9,7 +9,7 @@ Tests use pytest.skip() for features not yet implemented.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
