@@ -176,10 +176,10 @@ class TestRunDockerSmokeTests:
     def test_uses_compose_when_both_files_exist(self, tmp_path, monkeypatch):
         """run_docker_smoke_tests routes to _run_via_compose when compose+test exist."""
         agent = _make_agent()
-        (tmp_path / "docker-compose.yml").write_text("version: '3'")
+        (tmp_path / "docker-compose.test.yml").write_text("version: '3'")
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
-        (tests_dir / "conftest.py").write_text("def test_health(): pass")
+        (tests_dir / "test_deployment.py").write_text("def test_health(): pass")
 
         mock_compose = MagicMock(return_value={"passed": True, "output": "ok", "skipped": False})
         monkeypatch.setattr(agent, "_run_via_compose", mock_compose)
@@ -192,17 +192,17 @@ class TestRunDockerSmokeTests:
     def test_prefers_script_over_compose(self, tmp_path, monkeypatch):
         """run_docker_smoke_tests uses script even when compose files also exist."""
         agent = _make_agent()
-        
+
         # Create both script and compose files
         script_dir = tmp_path / "scripts"
         script_dir.mkdir()
         deploy_script = script_dir / "deploy_test.sh"
         deploy_script.write_text("#!/bin/bash\necho ok")
-        
-        (tmp_path / "docker-compose.yml").write_text("version: '3'")
+
+        (tmp_path / "docker-compose.test.yml").write_text("version: '3'")
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
-        (tests_dir / "conftest.py").write_text("def test_health(): pass")
+        (tests_dir / "test_deployment.py").write_text("def test_health(): pass")
 
         mock_script = MagicMock(return_value={"passed": True, "output": "ok", "skipped": False})
         mock_compose = MagicMock(return_value={"passed": True, "output": "ok", "skipped": False})
