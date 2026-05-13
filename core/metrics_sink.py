@@ -45,7 +45,8 @@ def build_callback(metrics_url: str) -> Callable[[AnyEvent], None]:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            urllib.request.urlopen(req, timeout=1)
+            with urllib.request.urlopen(req, timeout=1):
+                pass
         except Exception as exc:  # noqa: BLE001
             _log.debug("metrics_sink: failed to post event %s: %s", event.event_type, exc)
 
