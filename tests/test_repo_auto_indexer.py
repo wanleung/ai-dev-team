@@ -24,7 +24,6 @@ def test_index_calls_subprocess_with_workspace_path(tmp_path):
 def test_index_subprocess_exception_propagates(tmp_path):
     """Test that subprocess exceptions other than returncode are propagated."""
     from repo_context import RepoAutoIndexer
-    import subprocess
 
     indexer = RepoAutoIndexer(indexer_script="rag-mcp/indexer.py")
 
