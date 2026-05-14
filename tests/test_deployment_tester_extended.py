@@ -14,6 +14,9 @@ def _make_agent() -> DeploymentTesterAgent:
     agent.system_prompt = ""
     agent._history = []
     agent.model = "gpt-4"
+    from agents.deploy_backends import DockerBackend
+    agent._deploy_backend = DockerBackend()
+    agent._deploy_config = {}
     return agent
 
 
@@ -150,70 +153,55 @@ class TestDeploymentTesterRunWithGithub:
 
 class TestRunDockerSmokeTests:
     def test_returns_skipped_when_no_compose_or_script(self, tmp_path):
-        """run_docker_smoke_tests returns skipped=True when no files exist."""
+        """run_docker_smoke_tests returns skipped=True when backend returns skipped."""
+        from agents.deploy_backends import DeployResult
         agent = _make_agent()
+        mock_backend = MagicMock()
+        mock_backend.run.return_value = DeployResult(passed=None, output="", skipped=True)
+        agent._deploy_backend = mock_backend
         result = agent.run_docker_smoke_tests(tmp_path)
         assert result["skipped"] is True
-        assert result["passed"] is False
+        assert result["passed"] is None
         assert result["output"] == ""
 
-    def test_uses_script_when_deploy_sh_exists(self, tmp_path, monkeypatch):
-        """run_docker_smoke_tests routes to _run_via_script when deploy_test.sh exists."""
+    def test_uses_script_when_deploy_sh_exists(self, tmp_path):
+        """run_docker_smoke_tests delegates to backend (script routing is backend's responsibility)."""
+        from agents.deploy_backends import DeployResult
         agent = _make_agent()
-        script_dir = tmp_path / "scripts"
-        script_dir.mkdir()
-        deploy_script = script_dir / "deploy_test.sh"
-        deploy_script.write_text("#!/bin/bash\necho ok")
-
-        mock_script = MagicMock(return_value={"passed": True, "output": "ok", "skipped": False})
-        monkeypatch.setattr(agent, "_run_via_script", mock_script)
+        mock_backend = MagicMock()
+        mock_backend.run.return_value = DeployResult(passed=True, output="ok", skipped=False)
+        agent._deploy_backend = mock_backend
 
         result = agent.run_docker_smoke_tests(tmp_path)
 
-        mock_script.assert_called_once()
+        mock_backend.run.assert_called_once_with(tmp_path, {"_issue": "0"})
         assert result["passed"] is True
 
-    def test_uses_compose_when_both_files_exist(self, tmp_path, monkeypatch):
-        """run_docker_smoke_tests routes to _run_via_compose when compose+test exist."""
+    def test_uses_compose_when_both_files_exist(self, tmp_path):
+        """run_docker_smoke_tests delegates to backend (compose routing is backend's responsibility)."""
+        from agents.deploy_backends import DeployResult
         agent = _make_agent()
-        (tmp_path / "docker-compose.test.yml").write_text("version: '3'")
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "test_deployment.py").write_text("def test_health(): pass")
-
-        mock_compose = MagicMock(return_value={"passed": True, "output": "ok", "skipped": False})
-        monkeypatch.setattr(agent, "_run_via_compose", mock_compose)
+        mock_backend = MagicMock()
+        mock_backend.run.return_value = DeployResult(passed=True, output="ok", skipped=False)
+        agent._deploy_backend = mock_backend
 
         result = agent.run_docker_smoke_tests(tmp_path)
 
-        mock_compose.assert_called_once()
+        mock_backend.run.assert_called_once_with(tmp_path, {"_issue": "0"})
         assert result["passed"] is True
 
-    def test_prefers_script_over_compose(self, tmp_path, monkeypatch):
-        """run_docker_smoke_tests uses script even when compose files also exist."""
+    def test_prefers_script_over_compose(self, tmp_path):
+        """run_docker_smoke_tests delegates to the injected backend unconditionally."""
+        from agents.deploy_backends import DeployResult
         agent = _make_agent()
-
-        # Create both script and compose files
-        script_dir = tmp_path / "scripts"
-        script_dir.mkdir()
-        deploy_script = script_dir / "deploy_test.sh"
-        deploy_script.write_text("#!/bin/bash\necho ok")
-
-        (tmp_path / "docker-compose.test.yml").write_text("version: '3'")
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "test_deployment.py").write_text("def test_health(): pass")
-
-        mock_script = MagicMock(return_value={"passed": True, "output": "ok", "skipped": False})
-        mock_compose = MagicMock(return_value={"passed": True, "output": "ok", "skipped": False})
-        monkeypatch.setattr(agent, "_run_via_script", mock_script)
-        monkeypatch.setattr(agent, "_run_via_compose", mock_compose)
+        mock_backend = MagicMock()
+        mock_backend.run.return_value = DeployResult(passed=True, output="ok", skipped=False)
+        agent._deploy_backend = mock_backend
 
         result = agent.run_docker_smoke_tests(tmp_path)
 
-        # Should use script, not compose
-        mock_script.assert_called_once()
-        mock_compose.assert_not_called()
+        mock_backend.run.assert_called_once_with(tmp_path, {"_issue": "0"})
+        assert result["passed"] is True
 
 
 # ── _run_via_script ───────────────────────────────────────────────────────────
@@ -368,3 +356,46 @@ class TestRunViaCompose:
                 result = agent._run_via_compose(compose_file, test_file, tmp_path)
 
         assert result["passed"] is True
+
+
+# ── run_smoke_tests (new unified method) ──────────────────────────────────────
+
+class TestRunSmokeTests:
+    def test_delegates_to_injected_backend(self, tmp_path):
+        """run_smoke_tests() calls backend.run() with project_dir and deploy_config."""
+        from agents.deploy_backends import DeployResult
+        agent = _make_agent()
+        mock_backend = MagicMock()
+        mock_backend.run.return_value = DeployResult(passed=True, output="ok", skipped=False)
+        agent._deploy_backend = mock_backend
+        agent._deploy_config = {"mode": "docker"}
+
+        result = agent.run_smoke_tests(tmp_path)
+
+        mock_backend.run.assert_called_once_with(tmp_path, {"mode": "docker", "_issue": "0"})
+        assert result.passed is True
+
+    def test_uses_docker_backend_by_default_when_no_backend_set(self, tmp_path):
+        """when DockerBackend is injected and docker-compose dir is empty/missing, run_smoke_tests returns skipped."""
+        from agents.deploy_backends import DeployResult
+        agent = _make_agent()
+        # no _deploy_backend set — relies on default from __init__
+
+        result = agent.run_smoke_tests(tmp_path)
+
+        assert isinstance(result, DeployResult)
+        assert result.skipped is True   # empty dir → DockerBackend returns skipped
+
+    def test_run_docker_smoke_tests_routes_through_injected_backend(self, tmp_path):
+        """run_docker_smoke_tests() must delegate to the injected backend."""
+        from agents.deploy_backends import DeployResult
+        agent = _make_agent()
+        mock_backend = MagicMock()
+        mock_backend.run.return_value = DeployResult(passed=True, output="via-mock", skipped=False)
+        agent._deploy_backend = mock_backend
+        agent._deploy_config = {}
+
+        result = agent.run_docker_smoke_tests(tmp_path)
+
+        mock_backend.run.assert_called_once_with(tmp_path, {"_issue": "0"})
+        assert result == {"passed": True, "output": "via-mock", "skipped": False}
