@@ -1,6 +1,5 @@
 """Tests for server Pydantic models."""
-import pytest
-from server.models import RunRequest, RunSubmitted, JobRecord, RunDetail, RunSummary
+from server.models import RunRequest, RunSubmitted, JobRecord, RunDetail, RunSummary, CancelResponse, HealthResponse
 
 
 class TestRunRequest:
@@ -57,3 +56,39 @@ class TestRunSummary:
             created_at="t", updated_at="t",
         )
         assert s.run_id == "x"
+
+
+class TestRunDetail:
+    def test_defaults(self):
+        d = RunDetail(
+            run_id="abc", status="done", requirement="Build X",
+            repo="o/r", pipeline="p", engineers=2,
+            created_at="t", updated_at="t",
+        )
+        assert d.result is None
+        assert d.log_lines == 0
+
+    def test_with_result(self):
+        d = RunDetail(
+            run_id="abc", status="done", requirement="r",
+            repo="o/r", pipeline="p", engineers=1,
+            created_at="t", updated_at="t",
+            result={"verdict": "approved"}, log_lines=42,
+        )
+        assert d.result == {"verdict": "approved"}
+        assert d.log_lines == 42
+
+
+class TestCancelResponse:
+    def test_fields(self):
+        c = CancelResponse(run_id="abc", status="cancelled", message="Job cancelled.")
+        assert c.run_id == "abc"
+        assert c.status == "cancelled"
+        assert c.message == "Job cancelled."
+
+
+class TestHealthResponse:
+    def test_fields(self):
+        h = HealthResponse(status="ok", version="1.0.0")
+        assert h.status == "ok"
+        assert h.version == "1.0.0"

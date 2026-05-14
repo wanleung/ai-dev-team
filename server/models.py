@@ -1,7 +1,9 @@
 """Pydantic models for the AISW integration server."""
 from __future__ import annotations
-from typing import Optional
+from typing import Any, Dict, Literal, Optional
 from pydantic import BaseModel
+
+JobStatus = Literal["queued", "running", "done", "failed", "cancelled", "interrupted"]
 
 
 class RunRequest(BaseModel):
@@ -17,7 +19,7 @@ class RunSubmitted(BaseModel):
     """Response for POST /runs (202)."""
 
     run_id: str
-    status: str
+    status: JobStatus
     stream_url: str
 
 
@@ -25,7 +27,7 @@ class JobRecord(BaseModel):
     """Full job record as stored in SQLite and returned by GET /runs/{id}."""
 
     id: str
-    status: str          # queued | running | done | failed | cancelled | interrupted
+    status: JobStatus          # queued | running | done | failed | cancelled | interrupted
     requirement: str
     repo: str
     pipeline: str
@@ -40,7 +42,7 @@ class RunSummary(BaseModel):
     """Lightweight record returned by GET /runs list."""
 
     run_id: str
-    status: str
+    status: JobStatus
     requirement: str
     repo: str
     pipeline: str
@@ -52,14 +54,14 @@ class RunDetail(BaseModel):
     """Full detail returned by GET /runs/{id}."""
 
     run_id: str
-    status: str
+    status: JobStatus
     requirement: str
     repo: str
     pipeline: str
     engineers: int
     created_at: str
     updated_at: str
-    result: Optional[dict] = None
+    result: Optional[Dict[str, Any]] = None
     log_lines: int = 0
 
 
@@ -67,7 +69,7 @@ class CancelResponse(BaseModel):
     """Response for DELETE /runs/{id}."""
 
     run_id: str
-    status: str
+    status: JobStatus
     message: str
 
 
