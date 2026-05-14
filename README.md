@@ -1781,6 +1781,39 @@ deploy:
 
 ---
 
+### Integration Layer — REST API + MCP Server
+
+`aisw_server.py` exposes the pipeline as a REST API and MCP server, so Copilot CLI, Claude Code, OpenCode, web UIs, and `curl` can trigger and monitor pipelines without touching GitHub labels.
+
+```bash
+# Start the server
+python aisw_server.py
+
+# Submit a requirement via curl
+curl -X POST http://localhost:8765/runs \
+  -H "X-API-Key: your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"requirement": "Build a bookmark manager REST API", "repo": "me/my-repo"}'
+
+# Stream live logs
+curl -N http://localhost:8765/runs/{run_id}/stream -H "X-API-Key: your-key"
+```
+
+**Connect from MCP tools** (Copilot CLI, Claude Code, OpenCode):
+
+```yaml
+# ~/.copilot/config.yaml  (Copilot CLI)
+mcp_servers:
+  - name: ai-software-house
+    url: http://localhost:8765/mcp
+    headers:
+      X-API-Key: "your-key"
+```
+
+Configure in `aisw_server.yaml`. See `docs/superpowers/specs/2026-05-14-integration-layer-design.md` for the full API reference.
+
+---
+
 ## 📄 License
 
 GNU General Public License v3.0 or later (GPL-3.0-or-later). See [LICENSE](LICENSE) for details.
