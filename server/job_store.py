@@ -148,6 +148,10 @@ class JobStore:
     def set_result(self, run_id: str, status: JobStatus, result_json: str) -> None:
         """Persist a final result alongside a terminal status for a job.
 
+        If the job is already in a terminal cancelled/interrupted state the
+        update is silently skipped so that a late-finishing orchestrator thread
+        cannot overwrite a user-requested cancellation.
+
         Args:
             run_id: The job's unique identifier.
             status: Terminal status (e.g. ``"done"`` or ``"failed"``).
@@ -158,12 +162,16 @@ class JobStore:
         """
         with self._connect() as conn:
             with conn:
-                cur = conn.execute(
-                    "UPDATE jobs SET status = ?, result_json = ?, updated_at = ? WHERE id = ?",
+                exists = conn.execute(
+                    "SELECT 1 FROM jobs WHERE id = ?", (run_id,)
+                ).fetchone()
+                if exists is None:
+                    raise KeyError(f"No job with id={run_id!r}")
+                conn.execute(
+                    """UPDATE jobs SET status = ?, result_json = ?, updated_at = ?
+                       WHERE id = ? AND status NOT IN ('cancelled', 'interrupted')""",
                     (status, result_json, _now(), run_id),
                 )
-                if cur.rowcount == 0:
-                    raise KeyError(f"No job with id={run_id!r}")
 
     def cancel_job(self, run_id: str) -> bool:
         """Mark a job as cancelled if it is in a non-terminal state.

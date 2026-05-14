@@ -83,6 +83,17 @@ class TestUpdateStatus:
         with pytest.raises(KeyError):
             store.set_result("nonexistent", "done", "{}")
 
+    def test_set_result_does_not_overwrite_cancelled(self, store):
+        """set_result should not overwrite a cancelled job's status."""
+        job = JobRecord(
+            id="r4", status="cancelled", requirement="x", repo="o/r",
+            pipeline="p", engineers=1, created_at="t", updated_at="t",
+            log_path="/tmp/r4.log",
+        )
+        store.insert_job(job)
+        store.set_result("r4", "done", '{"verdict":"success"}')
+        assert store.get_job("r4").status == "cancelled"
+
 
 class TestListJobs:
     def test_list_ordered_by_created_desc(self, store):

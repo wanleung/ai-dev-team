@@ -38,10 +38,18 @@ def main() -> None:
     srv = cfg.get("server", {})
     defaults = cfg.get("defaults", {})
 
-    host = args.host or srv.get("host", "0.0.0.0")
-    port = args.port or srv.get("port", 8765)
-    api_key = os.environ.get("AISW_API_KEY") or srv.get("api_key", "")
+    host = args.host if args.host is not None else srv.get("host", "0.0.0.0")
+    port = args.port if args.port is not None else srv.get("port", 8765)
+    api_key = os.environ.get("AISW_API_KEY") or srv.get("api_key", "change-me")
 
+    import warnings as _warnings
+    if api_key == "change-me":
+        _warnings.warn(
+            "api_key is still the default 'change-me' placeholder — "
+            "set AISW_API_KEY before deploying",
+            UserWarning,
+            stacklevel=1,
+        )
     from server import auth as auth_mod
     auth_mod.set_api_key(api_key)
 
@@ -78,7 +86,10 @@ def main() -> None:
         print("Warning: fastapi-mcp not installed — MCP endpoint not available", file=_stderr, flush=True)
 
     print(f"AISW server starting on http://{host}:{port}", file=_stdout, flush=True)
-    uvicorn.run(app, host=host, port=port)
+    try:
+        uvicorn.run(app, host=host, port=port)
+    finally:
+        runner.shutdown()
 
 
 if __name__ == "__main__":
