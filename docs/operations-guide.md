@@ -801,3 +801,71 @@ Each fix attempt adds an `ai-pr-fix-N` label to the PR. When N reaches `max_pr_r
 the watcher stops and adds `agent-failed`.
 
 To reset and retry: remove all `ai-pr-fix-N` labels and `agent-failed` from the PR.
+
+## 7. Per-repo deploy backends
+
+Each repo can independently choose how its deployment smoke tests run. Configure via a `deploy:` block at the top level of `repos-available/<repo>.yaml` (or `repos-enabled/<repo>.yaml`).
+
+### Mode: `docker` (default)
+
+Runs local docker-compose smoke tests. If no `deploy:` block is present, this is the default.
+
+```yaml
+deploy:
+  mode: docker
+  compose_file: docker-compose.test.yml  # default
+  timeout_s: 300                          # default
+```
+
+Prefers `scripts/deploy_test.sh` if present; otherwise looks for `docker-compose.test.yml` + `tests/test_deployment.py`. Skips (returns `passed=None`) if neither exists.
+
+### Mode: `libvirt` — remote VM via SSH + CoW overlay
+
+Provisions a fresh VM on a remote libvirt host from a copy-on-write overlay of a read-only base image. Each run gets its own isolated overlay; the base image is never modified. Multiple repos can share the same base image safely.
+
+```yaml
+deploy:
+  mode: libvirt
+  virt_host: ubuntu@192.168.1.10         # required: SSH address of the libvirt host
+  base_image: /var/lib/libvirt/images/ubuntu-24.04.qcow2  # required
+  vm_user: ubuntu                        # default: ubuntu
+  ssh_key: ~/.ssh/id_ed25519             # default: SSH agent
+  vcpus: 2                               # default: 2
+  ram_mb: 2048                           # default: 2048
+  teardown: always                       # always | on_pass | keep  (default: always)
+  timeout_s: 600                         # default: 600
+```
+
+**Steps performed:**
+1. Create CoW overlay from `base_image` on the libvirt host
+2. Start VM with `virt-install --import`
+3. Wait for SSH reachability (polls via `virt_host` as jump proxy)
+4. `rsync` the project into `/opt/app/` on the VM
+5. Run `tests/test_deployment.py` via `pytest` over SSH
+6. Post result + duration + VM info as a PR comment
+7. Tear down based on `teardown` mode
+
+**Teardown modes:**
+- `always` — destroy VM after every run (default; safest for CI)
+- `on_pass` — keep VM alive when tests **fail** (lets you SSH in for debugging)
+- `keep` — never destroy (manual cleanup with `virsh destroy` / `virsh undefine`)
+
+**SSH key setup:** The libvirt host needs the orchestrator's public key in `~/.ssh/authorized_keys`. The VM base image should also trust the same key (or one derived from it via `ssh_key`). Set `ssh_key` to the private key path to specify which key to use.
+
+**VM name collision:** Each run derives a unique VM name from `{repo}-{issue_number}` (template configurable via `vm_name` in the deploy block). Concurrent runs for the same repo on different issues use different overlay paths and VM names.
+
+### Mode: `none`
+
+Skip deployment testing entirely. Useful for library-only repos or repos that have their own CI.
+
+```yaml
+deploy:
+  mode: none
+```
+
+### Checking the result
+
+The orchestrator posts a PR comment after every deploy run:
+- 🐳 Docker: `Deploy tests passed in X.Xs` / `Deploy tests FAILED`
+- 🚀 Libvirt: same + VM name and libvirt host info on failure
+- ⏭️ None / skipped: no comment posted
