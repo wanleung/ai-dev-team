@@ -6,7 +6,7 @@ from server.models import JobRecord
 
 
 @pytest.fixture
-def store(tmp_path):
+def store():
     """In-memory SQLite job store for tests."""
     s = JobStore(db_path=":memory:")
     s.init_db()
@@ -74,6 +74,14 @@ class TestUpdateStatus:
         fetched = store.get_job("j2")
         assert fetched.status == "done"
         assert json.loads(fetched.result_json)["verdict"] == "approved"
+
+    def test_update_status_missing_raises(self, store):
+        with pytest.raises(KeyError):
+            store.update_status("nonexistent", "running")
+
+    def test_set_result_missing_raises(self, store):
+        with pytest.raises(KeyError):
+            store.set_result("nonexistent", "done", "{}")
 
 
 class TestListJobs:
