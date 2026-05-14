@@ -165,6 +165,28 @@ class JobStore:
                 if cur.rowcount == 0:
                     raise KeyError(f"No job with id={run_id!r}")
 
+    def cancel_job(self, run_id: str) -> bool:
+        """Mark a job as cancelled if it is in a non-terminal state.
+
+        The guard is performed atomically inside SQLite so there is no
+        TOCTOU race between checking the status and updating it.
+
+        Args:
+            run_id: The job's unique identifier.
+
+        Returns:
+            ``True`` if the job was successfully cancelled, ``False`` if it
+            was already in a terminal state or does not exist.
+        """
+        with self._connect() as conn:
+            with conn:
+                cur = conn.execute(
+                    """UPDATE jobs SET status = 'cancelled', updated_at = ?
+                       WHERE id = ? AND status NOT IN ('done','failed','cancelled','interrupted')""",
+                    (_now(), run_id),
+                )
+                return cur.rowcount > 0
+
     def list_jobs(self, limit: int = 50) -> list[JobRecord]:
         """Return the most recently created jobs, newest first.
 

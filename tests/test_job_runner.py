@@ -78,7 +78,7 @@ class TestStreamLogs:
             pipeline="p", engineers=1, created_at="t", updated_at="t",
             log_path=str(log_path),
         ))
-        events = asyncio.get_event_loop().run_until_complete(_collect_events(runner, "done1"))
+        events = asyncio.run(_collect_events(runner, "done1"))
         log_events = [e for e in events if e[0] == "log"]
         assert len(log_events) == 2
         done_events = [e for e in events if e[0] == "done"]

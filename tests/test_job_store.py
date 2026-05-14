@@ -105,3 +105,25 @@ class TestListJobs:
                 log_path=f"/tmp/j{i}.log",
             ))
         assert len(store.list_jobs(limit=3)) == 3
+
+
+class TestCancelJob:
+    def test_cancel_non_terminal(self, store):
+        store.insert_job(JobRecord(
+            id="j1", status="queued", requirement="x", repo="o/r",
+            pipeline="p", engineers=1, created_at="t", updated_at="t",
+            log_path="/tmp/j1.log",
+        ))
+        assert store.cancel_job("j1") is True
+        assert store.get_job("j1").status == "cancelled"
+
+    def test_cancel_terminal_returns_false(self, store):
+        store.insert_job(JobRecord(
+            id="j2", status="done", requirement="x", repo="o/r",
+            pipeline="p", engineers=1, created_at="t", updated_at="t",
+            log_path="/tmp/j2.log",
+        ))
+        assert store.cancel_job("j2") is False
+
+    def test_cancel_missing_returns_false(self, store):
+        assert store.cancel_job("nonexistent") is False

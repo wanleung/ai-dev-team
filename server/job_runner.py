@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import sys
 import threading
@@ -19,6 +20,30 @@ from server.models import JobRecord, RunRequest
 def _now() -> str:
     """Return current UTC time as ISO 8601 string."""
     return datetime.now(timezone.utc).isoformat()
+
+
+_tls = threading.local()
+
+
+class _ThreadLocalWriter(io.TextIOBase):
+    """Routes writes to the calling thread's active log file.
+
+    A single instance is installed as ``sys.stdout`` / ``sys.stderr`` when the
+    runner starts.  Each worker thread sets ``_tls.log_fh`` to its open log
+    file before execution begins and clears it afterwards, so concurrent jobs
+    never corrupt each other's log output.
+    """
+
+    def write(self, s: str) -> int:
+        fh = getattr(_tls, "log_fh", None)
+        if fh is not None:
+            return fh.write(s)
+        return len(s)  # pretend written to avoid broken pipe errors
+
+    def flush(self) -> None:
+        fh = getattr(_tls, "log_fh", None)
+        if fh is not None:
+            fh.flush()
 
 
 class JobRunner:
@@ -61,13 +86,24 @@ class JobRunner:
     def start(self) -> None:
         """Initialise the log directory and thread-pool executor.
 
+        Installs a :class:`_ThreadLocalWriter` as the process-wide
+        ``sys.stdout`` / ``sys.stderr`` so that each worker thread's output is
+        routed to the correct per-job log file.
+
         Must be called before :meth:`submit`.
         """
         self._log_dir.mkdir(parents=True, exist_ok=True)
         self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
+        self._proxy_writer = _ThreadLocalWriter()
+        sys.stdout = sys.stderr = self._proxy_writer
 
     def shutdown(self) -> None:
-        """Shut down the thread-pool executor without waiting for running jobs."""
+        """Shut down the thread-pool executor without waiting for running jobs.
+
+        Restores the original ``sys.stdout`` / ``sys.stderr`` descriptors.
+        """
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
         if self._executor:
             self._executor.shutdown(wait=False)
 
@@ -99,15 +135,16 @@ class JobRunner:
         self.store.insert_job(job)
         cancel_event = threading.Event()
         self._cancel_flags[run_id] = cancel_event
-        self._executor.submit(self._run_job, run_id, job, cancel_event)
+        self._executor.submit(self._run_job, run_id, job)
         return run_id
 
     def cancel(self, run_id: str) -> bool:
         """Request cancellation of a queued or running job.
 
-        Sets the associated cancel flag and marks the job as ``"cancelled"``
-        in the store. If the job is already in a terminal state or does not
-        exist, returns ``False``.
+        Uses an atomic SQL UPDATE to guard against TOCTOU races: the job is
+        only marked ``"cancelled"`` if it is still in a non-terminal state.
+        Sets the associated cancel flag so the worker thread can detect the
+        request early.
 
         Args:
             run_id: The job's unique identifier.
@@ -119,25 +156,22 @@ class JobRunner:
         job = self.store.get_job(run_id)
         if job is None:
             return False
-        if job.status in ("done", "failed", "cancelled", "interrupted"):
-            return False
-        if run_id in self._cancel_flags:
+        cancelled = self.store.cancel_job(run_id)
+        if cancelled and run_id in self._cancel_flags:
             self._cancel_flags[run_id].set()
-        self.store.update_status(run_id, "cancelled")
-        return True
+        return cancelled
 
-    def _run_job(self, run_id: str, job: JobRecord, cancel_event: threading.Event) -> None:
+    def _run_job(self, run_id: str, job: JobRecord) -> None:
         """Execute an Orchestrator run in the current thread.
 
-        Redirects stdout/stderr to the job's log file for the duration of
-        execution. Updates the job store with final status and result on
-        completion.
+        Sets ``_tls.log_fh`` to the job's open log file for the duration of
+        execution so that the :class:`_ThreadLocalWriter` proxy routes all
+        stdout/stderr output to the correct file.  Updates the job store with
+        final status and result on completion.
 
         Args:
             run_id: The job's unique identifier (used for store updates).
             job: The :class:`~server.models.JobRecord` describing the job.
-            cancel_event: A :class:`threading.Event` that is set when
-                          cancellation is requested.
         """
         # Lazy import to avoid import-time side effects in tests
         from orchestrator import Orchestrator  # noqa: PLC0415
@@ -146,8 +180,7 @@ class JobRunner:
         self.store.update_status(run_id, "running")
         try:
             with open(log_path, "w", encoding="utf-8") as fh:
-                old_stdout, old_stderr = sys.stdout, sys.stderr
-                sys.stdout = sys.stderr = fh
+                _tls.log_fh = fh
                 try:
                     orch = Orchestrator.from_config(
                         self._config_yaml,
@@ -171,9 +204,11 @@ class JobRunner:
                     fh.write(f"\n--- EXCEPTION ---\n{traceback.format_exc()}\n")
                     self.store.update_status(run_id, "failed")
                 finally:
-                    sys.stdout, sys.stderr = old_stdout, old_stderr
+                    _tls.log_fh = None
+                    self._cancel_flags.pop(run_id, None)
         except OSError:
             self.store.update_status(run_id, "failed")
+            self._cancel_flags.pop(run_id, None)
 
     async def stream_logs(self, run_id: str) -> AsyncGenerator[tuple[str, str], None]:
         """Yield ``(event_type, data)`` pairs for SSE streaming of a job's output.
@@ -218,8 +253,19 @@ class JobRunner:
             return
 
         # Tail new lines until job completes
+        WAIT_FOR_LOG_TIMEOUT = 10.0  # seconds
+
+        # Wait for log file to appear (queued job may not have started yet)
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + WAIT_FOR_LOG_TIMEOUT
+        while not log_path.exists():
+            if loop.time() > deadline:
+                yield ("error", f"log file for {run_id!r} never appeared within {WAIT_FOR_LOG_TIMEOUT}s")
+                return
+            await asyncio.sleep(0.2)
+
         with open(log_path, encoding="utf-8", errors="replace") as fh:
-            fh.seek(0, 2)  # seek to end (already replayed above)
+            fh.seek(0, 2)
             while True:
                 line = fh.readline()
                 if line:
@@ -228,7 +274,6 @@ class JobRunner:
                     await asyncio.sleep(0.2)
                     current = self.store.get_job(run_id)
                     if current and current.status in ("done", "failed", "cancelled", "interrupted"):
-                        # Drain any remaining lines
                         for remaining in fh:
                             yield ("log", remaining.rstrip())
                         if current.status == "done":
