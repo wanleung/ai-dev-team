@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -15,7 +14,7 @@ from server.models import (
 )
 
 
-def create_app(runner=None) -> FastAPI:
+def create_app(runner) -> FastAPI:
     """Factory so tests can inject a mock runner.
 
     Args:
@@ -25,7 +24,12 @@ def create_app(runner=None) -> FastAPI:
 
     Returns:
         A configured :class:`fastapi.FastAPI` application instance.
+
+    Raises:
+        ValueError: If ``runner`` is ``None``.
     """
+    if runner is None:
+        raise ValueError("create_app() requires a non-None runner")
     app = FastAPI(
         title="AI Software House Integration API",
         version="1.0",

@@ -32,18 +32,27 @@ class _ThreadLocalWriter(io.TextIOBase):
     runner starts.  Each worker thread sets ``_tls.log_fh`` to its open log
     file before execution begins and clears it afterwards, so concurrent jobs
     never corrupt each other's log output.
+
+    For threads that have no active log file (e.g. the main uvicorn thread),
+    writes are forwarded to the original saved stream so that server logs
+    (access logs, startup messages) are not silently discarded.
     """
+
+    def __init__(self, fallback: io.TextIOBase) -> None:
+        self._fallback = fallback
 
     def write(self, s: str) -> int:
         fh = getattr(_tls, "log_fh", None)
         if fh is not None:
             return fh.write(s)
-        return len(s)  # pretend written to avoid broken pipe errors
+        return self._fallback.write(s)
 
     def flush(self) -> None:
         fh = getattr(_tls, "log_fh", None)
         if fh is not None:
             fh.flush()
+        else:
+            self._fallback.flush()
 
 
 class JobRunner:
@@ -94,9 +103,9 @@ class JobRunner:
         """
         self._log_dir.mkdir(parents=True, exist_ok=True)
         self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
-        self._proxy_writer = _ThreadLocalWriter()
         self._saved_stdout = sys.stdout  # save pytest capture pipe (not sys.__stdout__)
         self._saved_stderr = sys.stderr
+        self._proxy_writer = _ThreadLocalWriter(fallback=self._saved_stdout)
         sys.stdout = sys.stderr = self._proxy_writer
 
     def shutdown(self) -> None:
@@ -258,7 +267,7 @@ class JobRunner:
         WAIT_FOR_LOG_TIMEOUT = 10.0  # seconds
 
         # Wait for log file to appear (queued job may not have started yet)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + WAIT_FOR_LOG_TIMEOUT
         while not log_path.exists():
             if loop.time() > deadline:
