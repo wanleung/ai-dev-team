@@ -95,6 +95,8 @@ class JobRunner:
         self._log_dir.mkdir(parents=True, exist_ok=True)
         self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
         self._proxy_writer = _ThreadLocalWriter()
+        self._saved_stdout = sys.stdout  # save pytest capture pipe (not sys.__stdout__)
+        self._saved_stderr = sys.stderr
         sys.stdout = sys.stderr = self._proxy_writer
 
     def shutdown(self) -> None:
@@ -102,8 +104,8 @@ class JobRunner:
 
         Restores the original ``sys.stdout`` / ``sys.stderr`` descriptors.
         """
-        sys.stdout = sys.__stdout__
-        sys.stderr = sys.__stderr__
+        sys.stdout = getattr(self, "_saved_stdout", sys.__stdout__)
+        sys.stderr = getattr(self, "_saved_stderr", sys.__stderr__)
         if self._executor:
             self._executor.shutdown(wait=False)
 

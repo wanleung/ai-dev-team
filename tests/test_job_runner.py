@@ -17,9 +17,24 @@ def store(tmp_path):
 
 
 @pytest.fixture
-def runner(store, tmp_path):
+def runner(store, tmp_path, monkeypatch):
     r = JobRunner(store=store, log_dir=tmp_path / "logs", config_yaml="config.yaml",
                   default_repo="o/r", default_pipeline="ai-feature", default_engineers=2)
+
+    def _mock_run_job(run_id, job):
+        import time as _time
+        from pathlib import Path as _Path
+        try:
+            r.store.update_status(run_id, "running")
+            log = _Path(job.log_path)
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text("mock job output\n")
+            _time.sleep(0.01)
+            r.store.set_result(run_id, "done", '{"verdict": "success"}')
+        except Exception:
+            r.store.update_status(run_id, "failed")
+
+    monkeypatch.setattr(r, "_run_job", _mock_run_job)
     r.start()
     yield r
     r.shutdown()
