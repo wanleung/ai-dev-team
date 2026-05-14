@@ -425,6 +425,7 @@ def run_pipeline(
     issue_number: int | None = None,
     log_file: Path | None = None,
     dlq=None,          # DeadLetterQueue | None
+    deploy_cfg: dict | None = None,
 ) -> bool:
     """Run the appropriate orchestrator for a single issue. Returns True on success.
 
@@ -493,6 +494,7 @@ def run_pipeline(
             num_engineers=num_engineers,
             log_file=issue_log,
             logger=logger,
+            deploy_cfg=deploy_cfg,
         )
 
         # ── Pipeline chaining ─────────────────────────────────────────────────
@@ -751,6 +753,7 @@ def _dispatch(
     num_engineers: int,
     log_file: Path,
     logger: logging.Logger,  # noqa: ARG001 – forwarded by callers; body uses module _log
+    deploy_cfg: dict | None = None,
 ) -> "PipelineResult":
     """Run the unified Orchestrator with the pipeline file selected by ``label``.
 
@@ -804,6 +807,7 @@ def _dispatch(
                 retry_delay=retry_delay,
                 max_api_retries=max_api_retries,
                 inter_call_delay=inter_call_delay,
+                deploy_cfg=deploy_cfg,
             )
 
             # Resolve pipeline stages for this label (project override → builtin)
@@ -1419,6 +1423,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                         parallel_issues=w.get("parallel_issues", 1),
                         model=model,
                         num_engineers=num_engineers,
+                        deploy=w.get("deploy"),
                     ))
                     _log.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
         except Exception as exc:  # noqa: BLE001
@@ -1468,6 +1473,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                         _run_with_global_cap,
                         t["issue"], t["tracker_repo"], t["default_target"],
                         t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
+                        deploy_cfg=t.get("deploy"),
                     )
                     futures_to_task[fut] = t
 

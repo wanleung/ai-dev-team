@@ -46,6 +46,7 @@ from agents.memory_bank_updater import MemoryBankUpdaterAgent
 from agents.refactor_agent import RefactorAgent
 from agents.memory_consolidator import MemoryConsolidatorAgent
 from agents.conflict_resolver import ConflictResolverAgent, PRContext
+from agents.deploy_backends import build_deploy_backend
 from framework_docs import FrameworkDocsLoader
 from github_client import GitHubClient, parse_target_repo
 from config_schema import AppConfig as _AppConfig
@@ -663,6 +664,7 @@ class Orchestrator(TestFixLoopMixin):
         cost_tracking: dict | None = None,
         update_branch_enabled: bool = False,
         conflict_resolver_model: Optional[str] = None,
+        deploy_cfg: dict | None = None,
     ) -> None:
         self.model = model
         self.num_engineers = num_engineers
@@ -792,7 +794,14 @@ class Orchestrator(TestFixLoopMixin):
         self.reviewer = CodeReviewerAgent(tool_registry=tool_registry, **{**agent_kwargs, **_mk("code_reviewer")})
         self.qa_planner = QAPlannerAgent(tool_registry=tool_registry, **{**agent_kwargs, **_mk("qa_planner")})
         self.qa = QAEngineerAgent(tool_registry=rag_registry, **{**agent_kwargs, **_mk("qa_engineer")})
-        self.deployment_tester = DeploymentTesterAgent(**{**agent_kwargs, **_mk("deployment_tester")})
+        _deploy_cfg = deploy_cfg or {"mode": "docker"}
+        self._deploy_cfg = _deploy_cfg
+        _deploy_backend = build_deploy_backend(_deploy_cfg)
+        self.deployment_tester = DeploymentTesterAgent(
+            deploy_backend=_deploy_backend,
+            deploy_config=_deploy_cfg,
+            **{**agent_kwargs, **_mk("deployment_tester")},
+        )
 
         # Junior/Senior tier agents — model priority: llm.overrides > team.junior/senior_model > global
         # When an agent has a dict override entry, pass model_fallback=None so _mk routes to
@@ -1141,6 +1150,7 @@ class Orchestrator(TestFixLoopMixin):
             progress_tracker_mode=pipeline.get("progress_tracker", "summary"),
             tdd_commit_tests=pipeline.get("tdd_commit_tests", False),
             cost_tracking=cfg.get("cost_tracking", {}),
+            deploy_cfg=cfg.get("deploy", {"mode": "docker"}),
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
@@ -3545,30 +3555,36 @@ class Orchestrator(TestFixLoopMixin):
             )
 
     def _stage_deploy_test_runner(self, result: PipelineResult) -> None:
-        """Run docker-compose deployment smoke tests locally."""
+        """Run deployment smoke tests via the configured backend."""
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
         project_dir = self.workspace_dir / safe
 
-        # Check if docker is available
-        docker_check = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
-        if docker_check.returncode != 0:
-            console.print("    ⚠️  Docker not available — skipping deployment tests.")
-            result.deploy_test_results = "Docker not available in this environment."
+        deploy_result = self.deployment_tester.run_smoke_tests(
+            project_dir, issue_number=result.issue_number
+        )
+
+        if deploy_result.skipped:
             result.deploy_tests_passed = None
+            result.deploy_test_results = ""
             return
 
-        console.print("    🐳 Running docker deployment smoke tests…")
-        deploy_result = self.deployment_tester.run_docker_smoke_tests(project_dir)
+        passed = deploy_result.passed
+        output = deploy_result.output
+        vm_name = deploy_result.vm_name
+        vm_ip = deploy_result.vm_ip
+        duration = deploy_result.duration_s
 
-        if deploy_result.get("skipped"):
-            console.print(f"    ⏭️  {deploy_result['output']}")
-            result.deploy_tests_passed = None
-            return
+        status_emoji = "✅" if passed else "❌"
+        status_text = "Passed" if passed else "Failed"
 
-        output = deploy_result["output"]
-        passed = deploy_result["passed"]
-        status = "✅ Deployment tests passed" if passed else "❌ Deployment tests failed"
-        console.print(f"    {status}")
+        if vm_name is not None:
+            icon = "🚀"
+            backend_label = "libvirt"
+        else:
+            icon = "🐳"
+            backend_label = "docker"
+
+        console.print(f"    {icon} Deployment tests [{backend_label}]: {status_emoji} {status_text}")
 
         lines = output.strip().splitlines()
         for line in lines[-20:]:
@@ -3579,12 +3595,26 @@ class Orchestrator(TestFixLoopMixin):
 
         if self.target_github and result.pr_number:
             truncated = "\n".join(lines[-60:]) if len(lines) > 60 else output
-            self.target_github.add_pr_comment(
-                result.pr_number,
-                f"## 🐳 Deployment Smoke Test Results\n\n"
-                f"**Status:** {status}\n\n"
-                f"```\n{truncated}\n```",
+            duration_str = f"{int(duration // 60)}m {int(duration % 60)}s" if duration >= 60 else f"{int(duration)}s"
+
+            if vm_name and vm_ip:
+                virt_host = self._deploy_cfg.get("virt_host", "virt_host")
+                vm_user = self._deploy_cfg.get("vm_user", "ubuntu")
+                extra = (
+                    f"\n**VM:** `{vm_name}` @ `{vm_ip}`\n"
+                    f"**Access:** `ssh {virt_host}` then `ssh {vm_user}@{vm_ip}`\n"
+                )
+            elif vm_name:
+                extra = f"\n**VM:** `{vm_name}`  |  **Duration:** {duration_str}\n"
+            else:
+                extra = f"\n**Duration:** {duration_str}\n"
+
+            comment = (
+                f"## {icon} Deployment Test Results [{backend_label}]\n\n"
+                f"**Status:** {status_emoji} {status_text}{extra}\n"
+                f"```\n{truncated}\n```"
             )
+            self.target_github.add_pr_comment(result.pr_number, comment)
 
     def _stage_deploy_fix_loop(self, result: PipelineResult) -> None:
         """Run deployment tests and retry engineer fixes on failure.

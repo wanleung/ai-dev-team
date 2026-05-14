@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from .base_agent import BaseAgent
+from .deploy_backends import DeployBackend, DeployResult, DockerBackend
 
 
 class DeploymentTesterAgent(BaseAgent):
@@ -20,6 +21,19 @@ class DeploymentTesterAgent(BaseAgent):
     """
 
     role_name = "deployment_tester"
+
+    def __init__(self, *args, deploy_backend: "DeployBackend | None" = None,
+                 deploy_config: dict | None = None, **kwargs) -> None:
+        """Initialise the agent and wire up the deploy backend.
+
+        Args:
+            deploy_backend: Optional backend for running smoke tests.
+                            Defaults to ``DockerBackend()``.
+            deploy_config:  Config dict forwarded to the backend on each run.
+        """
+        super().__init__(*args, **kwargs)
+        self._deploy_backend: DeployBackend = deploy_backend or DockerBackend()
+        self._deploy_config: dict = deploy_config or {}
 
     def run(self, files: dict[str, str], prd: str, project_name: str = "Project") -> dict:
         """Generate deployment test artefacts.
@@ -90,26 +104,30 @@ class DeploymentTesterAgent(BaseAgent):
         )
         return result
 
-    def run_docker_smoke_tests(self, project_dir: Path) -> dict:
-        """Run docker-compose deployment tests locally.
+    def run_smoke_tests(self, project_dir: Path, issue_number: "int | str | None" = None) -> DeployResult:
+        """Run deployment smoke tests via the configured backend.
 
-        Starts docker-compose.test.yml, waits for health, runs pytest tests/test_deployment.py,
-        then tears down. Returns results dict.
+        Uses the ``DeployBackend`` injected at construction time (defaults to
+        ``DockerBackend``).  Callers that need a plain ``dict`` should use the
+        backward-compat :meth:`run_docker_smoke_tests` wrapper instead.
+
+        Args:
+            project_dir:  Root directory of the project to test.
+            issue_number: Issue number to inject into the config as ``_issue``
+                          so that backends (e.g. ``LibvirtBackend``) can
+                          generate unique VM names per issue.  Defaults to 0
+                          when not supplied, giving the previous behaviour.
+
+        Returns:
+            :class:`~agents.deploy_backends.DeployResult` from the backend.
         """
-        compose_file = project_dir / "docker-compose.test.yml"
-        test_file = project_dir / "tests" / "test_deployment.py"
-        deploy_script = project_dir / "scripts" / "deploy_test.sh"
+        cfg = {**self._deploy_config, "_issue": str(issue_number or 0)}
+        return self._deploy_backend.run(project_dir, cfg)
 
-        if deploy_script.exists():
-            return self._run_via_script(deploy_script, project_dir)
-        elif compose_file.exists() and test_file.exists():
-            return self._run_via_compose(compose_file, test_file, project_dir)
-        else:
-            return {
-                "passed": False,
-                "output": "",
-                "skipped": True,
-            }
+    def run_docker_smoke_tests(self, project_dir: Path) -> dict:
+        """Backward-compat alias — delegates to run_smoke_tests() and returns a plain dict."""
+        result = self.run_smoke_tests(project_dir)
+        return {"passed": result.passed, "output": result.output, "skipped": result.skipped}
 
     def _run_via_script(self, script: Path, project_dir: Path) -> dict:
         script = script.resolve()

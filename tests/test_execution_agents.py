@@ -7,10 +7,13 @@ class TestDeploymentTesterAgent:
 
     def _make_agent(self):
         from agents.deployment_tester import DeploymentTesterAgent
+        from agents.deploy_backends import DockerBackend
         agent = DeploymentTesterAgent.__new__(DeploymentTesterAgent)
         agent._backend = MagicMock()
         agent.model = "gpt-4"
         agent.config = {}
+        agent._deploy_backend = DockerBackend()
+        agent._deploy_config = {}
         return agent
 
     def test_run_returns_dict_with_deploy_files(self, monkeypatch):
@@ -79,7 +82,7 @@ This is the deployment test plan.
         
         result = agent.run_docker_smoke_tests(tmp_path)
         
-        assert result["passed"] is False
+        assert result["passed"] is None
         assert result["skipped"] is True
 
     def test_run_via_script_success(self, tmp_path, monkeypatch):

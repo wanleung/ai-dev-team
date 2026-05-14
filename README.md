@@ -1742,6 +1742,43 @@ framework_docs:
   frameworks: []
 ```
 
+### Per-repo deploy mode
+
+Each repo can independently choose how deployment smoke tests run by adding a `deploy:` block to its `repos-available/*.yaml` file:
+
+```yaml
+# repos-available/my-repo.yaml
+
+# Local docker-compose smoke tests (default if deploy: block is absent)
+deploy:
+  mode: docker
+  compose_file: docker-compose.test.yml  # optional, default shown
+  timeout_s: 300                          # optional, default shown
+
+# Remote VM via libvirt (SSH + virt-install + CoW overlay)
+deploy:
+  mode: libvirt
+  virt_host: ubuntu@192.168.1.10         # required: SSH address of libvirt host
+  base_image: /var/lib/libvirt/images/ubuntu-24.04.qcow2  # required: read-only base image
+  vm_user: ubuntu                        # default: ubuntu
+  ssh_key: ~/.ssh/id_ed25519             # default: SSH agent
+  vcpus: 2                               # default: 2
+  ram_mb: 2048                           # default: 2048
+  teardown: always                       # always | on_pass | keep  (default: always)
+  timeout_s: 600                         # default: 600
+
+# Skip deployment testing entirely
+deploy:
+  mode: none
+```
+
+**`mode: libvirt`** provisions a fresh VM from a CoW overlay of `base_image` (the base image is never modified), rsyncs the project into `/opt/app/`, runs `tests/test_deployment.py` via SSH ProxyJump through `virt_host`, then tears down based on `teardown`. Multiple repos safely share the same `base_image` — each run gets its own isolated overlay.
+
+**Teardown modes:**
+- `always` — destroy VM after every run (default, safest)
+- `on_pass` — keep VM alive when tests fail (useful for debugging via SSH)
+- `keep` — never destroy (manual cleanup required)
+
 ---
 
 ## 📄 License
