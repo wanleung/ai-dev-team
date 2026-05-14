@@ -88,10 +88,17 @@ def create_app(runner=None) -> FastAPI:
         job: Optional[JobRecord] = _runner.store.get_job(run_id)
         if job is None:
             raise HTTPException(status_code=404, detail=f"run_id {run_id!r} not found")
-        result = json.loads(job.result_json) if job.result_json else None
+        result = None
+        if job.result_json:
+            try:
+                result = json.loads(job.result_json)
+            except json.JSONDecodeError:
+                result = {"_parse_error": "result_json is corrupted"}
         log_lines = 0
         try:
-            log_lines = Path(job.log_path).read_text(errors="replace").count("\n")
+            with open(job.log_path, "rb") as _lf:
+                for _chunk in iter(lambda: _lf.read(65536), b""):
+                    log_lines += _chunk.count(b"\n")
         except OSError:
             pass
         return RunDetail(
@@ -139,7 +146,8 @@ def create_app(runner=None) -> FastAPI:
 
         async def _generate():
             async for event_type, data in _runner.stream_logs(run_id):
-                yield f"event: {event_type}\ndata: {data}\n\n"
+                safe_data = str(data).replace("\n", "\ndata: ")
+                yield f"event: {event_type}\ndata: {safe_data}\n\n"
 
         return StreamingResponse(_generate(), media_type="text/event-stream")
 

@@ -5,6 +5,13 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def reset_api_key():
+    from server import auth as auth_mod
+    yield
+    auth_mod.set_api_key("")
+
+
 def _make_client(api_key="test-key"):
     """Build a TestClient with a mocked job runner."""
     from server import auth as auth_mod
@@ -99,3 +106,49 @@ class TestDeleteRun:
         runner.cancel.return_value = False
         resp = client.delete("/runs/run-123", headers={"X-API-Key": "test-key"})
         assert resp.status_code == 409
+
+
+class TestStreamRun:
+    def test_stream_not_found_returns_404(self):
+        client, runner = _make_client()
+        runner.store.get_job.return_value = None
+        resp = client.get("/runs/missing/stream", headers={"X-API-Key": "test-key"})
+        assert resp.status_code == 404
+
+    def test_stream_no_auth_returns_401(self):
+        client, _ = _make_client()
+        resp = client.get("/runs/run-123/stream")
+        assert resp.status_code == 401
+
+    def test_stream_sse_format(self):
+        """SSE format: each event has 'event:' and 'data:' lines separated by blank lines."""
+        import asyncio
+        from server.models import JobRecord
+
+        async def _mock_stream(run_id):
+            yield ("log", "hello world")
+            yield ("done", '{"verdict":"success"}')
+
+        client, runner = _make_client()
+        runner.stream_logs.side_effect = _mock_stream
+
+        with client.stream("GET", "/runs/run-123/stream", headers={"X-API-Key": "test-key"}) as resp:
+            assert resp.status_code == 200
+            content = resp.read().decode()
+
+        assert "event: log\ndata: hello world\n\n" in content
+        assert "event: done\ndata:" in content
+
+    def test_stream_newline_in_data_is_escaped(self):
+        """Embedded newlines in data must produce multiple 'data:' lines."""
+        async def _mock_stream(run_id):
+            yield ("log", "line1\nline2")
+
+        client, runner = _make_client()
+        runner.stream_logs.side_effect = _mock_stream
+
+        with client.stream("GET", "/runs/run-123/stream", headers={"X-API-Key": "test-key"}) as resp:
+            content = resp.read().decode()
+
+        # Embedded newline should be escaped to "data: line1\ndata: line2"
+        assert "data: line1\ndata: line2" in content
