@@ -13,7 +13,7 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **Multi-repo routing** — agents push to a target repo; tracking issues live in a central `ai-software-house` repo
 - **Per-agent LLM config** — assign any GitHub Models model to each agent independently
 - **Actual test execution** — pytest runs locally; results posted back to the PR as a comment
-- **Docker smoke tests** — deployment tester generates and runs container health checks
+- **Pluggable deploy backends** — deployment tester generates smoke tests; each repo independently chooses `none`, `docker` (local docker-compose), or `libvirt` (remote VM via SSH + CoW overlay) for its deploy test strategy
 - **GitHub Actions integration** — label an issue to trigger the full pipeline automatically; 15-minute watcher catches pre-labelled issues too
 - **PR feedback loop** — humans post review comments on AI-generated PRs → Engineer + Code Reviewer + QA automatically re-run, push fixes, and update the PR (up to `max_revisions` rounds)
 - **Auto update-branch** — watcher detects `update-branch` PR comments and automatically merges the base branch into the PR branch, keeping it up to date without human intervention
@@ -121,7 +121,7 @@ GitHub:
 | Agents | 4 core agents | 9 agent types |
 | Reviewers | Code Reviewer only | PM Reviewer + Arch Reviewer + Code Reviewer |
 | Test planning | QA Engineer only | QA Planner → QA Engineer |
-| Deployment tests | ❌ | ✅ Docker smoke tests |
+| Deployment tests | ❌ | ✅ Docker / libvirt / none (per-repo) |
 | GitHub Actions | ❌ | ✅ Auto-trigger on issue labels |
 | Time to first PR | ~2–3 min | ~5–10 min |
 
@@ -295,7 +295,7 @@ python main.py --file requirements/my-app.txt --repo owner/target-repo --no-resu
 9.  🧪 QA Engineer        — implements tests guided by QA Planner's test plan → PR
 10. 🏃 Test Runner        — runs pytest locally → PR comment with results
 11. 🚀 Deployment Tester  — generates docker-compose.test.yml + smoke tests → PR
-12. 🐳 Deploy Test Runner — runs docker smoke tests → PR comment (skips if Docker unavailable)
+12. 🐳 Deploy Test Runner — runs deploy smoke tests via the repo's configured backend (docker / libvirt / none) → PR comment
 13. 🧠 Summariser         — writes compact memory entry (what was built, decisions, feedback, tech debt)
 
 **Bug-fix stages** (used in `ai-fix` pipeline):
@@ -1799,3 +1799,4 @@ For operational topics not covered above, see [`docs/operations-guide.md`](docs/
 | [§4](docs/operations-guide.md#4-rag-mcp--moving-to-a-new-machine-or-rebuilding) | RAG MCP — migration to a new machine or full rebuild |
 | [§5](docs/operations-guide.md#5-reading-github-issues-prs-and-comments) | Reading GitHub issues, PRs, and comments (3 methods) |
 | [§6](docs/operations-guide.md#6-pipeline-self-chaining-auto-re-label) | Pipeline self-chaining — auto re-label for follow-up runs |
+| [§7](docs/operations-guide.md#7-per-repo-deploy-backends) | Per-repo deploy backends — docker, libvirt VM, or none |
