@@ -245,9 +245,23 @@ llm:
 
 ## 4. RAG MCP — Moving to a New Machine or Rebuilding
 
-The RAG service stores embeddings in a PostgreSQL + pgvector Docker named volume (`pgdata`).
+The RAG service has two data stores with different migration strategies:
 
-### Check disk usage first
+| Store | File | What it contains | Migratable? |
+|---|---|---|---|
+| **SQLite memory** | `workspace/memory.db` | Tiered run summaries (run/monthly/quarterly) | ✅ Copy directly — this is the source of truth |
+| **pgvector embeddings** | Docker volume `rag-mcp_pgdata` | Vector index over memory + codebase + docs | ✅ Rebuild from memory.db + sources, or pg_dump |
+
+> **Most important:** `workspace/memory.db` holds all accumulated pipeline memory. Copy this first. The pgvector index is derived data — it can always be regenerated from `memory.db` and your source repos.
+
+### Step 0: Back up memory.db (always do this first)
+
+```bash
+# On old machine — copy memory.db to new machine
+scp /path/to/ai-software-house/workspace/memory.db user@new-machine:~/memory.db
+```
+
+### Check disk usage
 
 ```bash
 docker system df              # overall Docker disk usage
@@ -274,12 +288,22 @@ docker compose up -d
 docker exec $(docker compose ps -q postgres) \
   psql -U rag -d rag -f /dev/stdin < migrations/001_create_rag_embeddings.sql
 
-# Re-index your sources (repeat for each source)
-python indexer.py --source codebase --path /path/to/your/repo --ext py,ts,go
-python indexer.py --source docs --path /path/to/docs --ext md,txt,rst
-python indexer.py --source memory --db /path/to/memory.db
-python indexer.py --source url --url https://docs.example.com --depth 3
+# 1. Re-index memory from the copied memory.db (run this first)
+docker compose exec rag-mcp python indexer.py \
+  --source memory --db /path/to/memory.db
+
+# 2. Re-index codebase repos (repeat per repo)
+docker compose exec rag-mcp python indexer.py \
+  --source codebase --path /path/to/your/repo --ext py,ts,go,dart --clean
+
+# 3. Re-index docs / URLs if you had them
+docker compose exec rag-mcp python indexer.py \
+  --source docs --path /path/to/docs --ext md,txt,rst --clean
+docker compose exec rag-mcp python indexer.py \
+  --source url --url https://docs.example.com --depth 3
 ```
+
+> **Note:** Run the indexer via `docker compose exec rag-mcp` so it picks up the correct `DATABASE_URL` and embed backend environment variables defined in `docker-compose.yml`.
 
 ### Option B: Migrate Docker Volume (preserve existing index)
 
@@ -316,6 +340,26 @@ docker compose exec postgres \
 # Start the full stack
 docker compose up -d
 ```
+
+### Embed Backend for the RAG Indexer
+
+The indexer needs an embed model to generate vectors. Configure via `.env` in `rag-mcp/`:
+
+**Option A — Direct Ollama** (default):
+```bash
+EMBED_BACKEND=ollama
+OLLAMA_BASE_URL=http://10.100.1.30:11434
+OLLAMA_MODEL=nomic-embed-text
+```
+
+**Option B — Via LiteLLM proxy** (uses your `embed`/`embed-fast` pool):
+```bash
+EMBED_BACKEND=ollama
+OLLAMA_BASE_URL=http://10.100.1.30:4000    # LiteLLM proxy
+OLLAMA_MODEL=embed                          # matches model_name in LiteLLM config
+```
+
+> LiteLLM's `embed` alias (1024 dims) and `embed-fast` alias (768 dims) both work. Use `embed` for best quality RAG retrieval.
 
 ### Free Space on the Old Machine
 
