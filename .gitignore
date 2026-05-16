@@ -20,3 +20,6 @@ test_deployment.db
 config.local.yaml
 **/config.local.yaml
 .worktrees/
+
+# AI tooling memory (not source code)
+memory-bank/
