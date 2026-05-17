@@ -1890,7 +1890,7 @@ class Orchestrator(TestFixLoopMixin):
             if _name in (self._stage_timeouts or {}):
                 _stage.timeout_s = self._stage_timeouts[_name]  # type: ignore[index]
         # Auto-discover discussions/*.yaml and register as discuss_<name> stages
-        discussions_dir = self._discussions_dir
+        discussions_dir = getattr(self, "_discussions_dir", Path(__file__).parent / "discussions")
         if discussions_dir.is_dir():
             all_presets = sorted(
                 list(discussions_dir.glob("*.yaml")) + list(discussions_dir.glob("*.yml"))
