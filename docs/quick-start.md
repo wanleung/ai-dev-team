@@ -67,13 +67,34 @@ python main.py --file requirements.txt --repo owner/my-new-project
 
 ### Optional: Auto-trigger from GitHub issues
 
-Start the watcher and every issue you label on GitHub will automatically run the matching pipeline:
+Repos are configured individually under `repos-available/` and activated via symlinks in `repos-enabled/`.
+
+**1. Create a repo config file:**
 
 ```bash
-python watcher.py   # polls repos.yaml every 15 min
+# repos-available/my-new-project.yaml
+tracker_repo: owner/my-new-project
+parallel_issues: 2
+labels:
+  ai-feature: ai-feature
+  ai-fix: ai-fix
+  ai-smart-fix: ai-smart-fix
+  tdd: tdd
+  ai-docs: ai-docs
+enabled: true
+```
+
+**2. Enable it and start the watcher:**
+
+```bash
+python watcher.py repo enable my-new-project   # creates symlink in repos-enabled/
+python watcher.py repo list                    # verify it's active
+python watcher.py                              # polls every 15 min
 ```
 
 Create a GitHub issue → apply label `ai-feature` → watcher triggers the build automatically.
+
+> `repos-available/` is committed (source of truth). `repos-enabled/` is gitignored — each machine manages its own active set via symlinks.
 
 ### Tips
 
@@ -203,18 +224,27 @@ python main.py --repo owner/existing-repo
 
 > This creates `.github/copilot-instructions.md` in your target repo with real constructor signatures, method names, and patterns extracted from the existing code. Every subsequent agent run reads this file — engineers know the codebase from day one.
 
-2. **Add the repo to `repos.yaml`** (for watcher-based automation):
+2. **Register the repo in `repos-available/`** (for watcher-based automation):
+
+```bash
+# Create repos-available/existing-repo.yaml
+```
 
 ```yaml
-watchers:
-  - tracker_repo: owner/ai-software-house
-    target_repo: owner/existing-repo
-    labels:
-      ai-feature: ai-feature
-      ai-fix: ai-fix
-      ai-smart-fix: ai-smart-fix
-      tdd: tdd
-      ai-docs: ai-docs
+tracker_repo: owner/existing-repo
+parallel_issues: 2
+labels:
+  ai-feature: ai-feature
+  ai-fix: ai-fix
+  ai-smart-fix: ai-smart-fix
+  tdd: tdd
+  ai-docs: ai-docs
+enabled: true
+```
+
+```bash
+python watcher.py repo enable existing-repo   # activate it
+python watcher.py repo list                   # confirm
 ```
 
 3. **First agent run — start small and low-risk:**
