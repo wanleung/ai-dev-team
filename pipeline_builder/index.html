@@ -26,6 +26,15 @@
                   border: 1px solid transparent; user-select: none; }
   .palette-item:hover { border-color: #89b4fa; }
   .palette-item.loop-block { border-color: #f9e2af; color: #f9e2af; }
+  .palette-item.discuss-block { border-color: #a6e3a1; color: #a6e3a1; }
+  .discuss-item { border: 2px solid #a6e3a1; border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; }
+  .discuss-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-weight: bold; color: #a6e3a1; }
+  .discuss-form label { font-size: 11px; color: #cdd6f4; display: block; margin-top: 6px; }
+  .discuss-form input, .discuss-form select, .discuss-form textarea {
+    background: #1e1e2e; border: 1px solid #6c7086; border-radius: 4px;
+    color: #cdd6f4; padding: 3px 6px; width: 100%; box-sizing: border-box; font-size: 12px;
+  }
+  .discuss-form textarea { height: 60px; resize: vertical; }
   .canvas { flex: 1; padding: 16px; overflow-y: auto; }
   .canvas h3 { font-size: 11px; text-transform: uppercase; color: #6c7086;
                margin-bottom: 12px; letter-spacing: 0.05em; }
@@ -73,6 +82,8 @@
     <div style="margin-top:12px;border-top:1px solid #313244;padding-top:12px">
       <div class="palette-item loop-block" draggable="true"
            ondragstart="dragStartLoop(event)">🔁 Loop</div>
+      <div class="palette-item discuss-block" draggable="true"
+           ondragstart="dragStartDiscuss(event)">💬 Discuss</div>
     </div>
   </div>
   <div class="canvas">
@@ -139,6 +150,11 @@ function dragStartLoop(e) {
   e.dataTransfer.effectAllowed = 'copy';
 }
 
+function dragStartDiscuss(e) {
+  dragSource = {context:'palette', type:'discuss'};
+  e.dataTransfer.effectAllowed = 'copy';
+}
+
 function dragStartListItem(e, idx, loopIdx) {
   dragSource = {context:'list', index:idx, loopIndex:loopIdx};
   e.dataTransfer.effectAllowed = 'move';
@@ -172,6 +188,13 @@ function dropOnList(e) {
   if (dragSource.context === 'palette') {
     if (dragSource.type === 'loop') {
       stages.splice(toIndex, 0, {type:'loop', max:3, until:'APPROVED', stages:[]});
+    } else if (dragSource.type === 'discuss') {
+      stages.splice(toIndex, 0, {
+        type: 'discuss',
+        participants: 'analyst\nskeptic\noptimist',
+        max_rounds: 2,
+        output_mode: 'both',
+      });
     } else {
       stages.splice(toIndex, 0, {type:'stage', name:dragSource.name, label:dragSource.label});
     }
@@ -183,7 +206,8 @@ function dropOnList(e) {
 function dropOnLoop(e, loopIdx) {
   e.preventDefault(); e.stopPropagation();
   document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-  if (!dragSource || dragSource.context !== 'palette' || dragSource.type === 'loop') return;
+  if (!dragSource || dragSource.context !== 'palette' ||
+    dragSource.type === 'loop' || dragSource.type === 'discuss') return;
   stages[loopIdx].stages.push({name:dragSource.name, label:dragSource.label});
   dragSource = null;
   render();
@@ -215,6 +239,33 @@ function render() {
       div.innerHTML = `<span>${item.label}</span>
         <button class="remove-btn" onclick="removeItem(${idx})">×</button>`;
       list.appendChild(div);
+    } else if (item.type === 'discuss') {
+      const wrap = document.createElement('div');
+      wrap.className = 'discuss-item';
+      wrap.dataset.index = idx;
+      wrap.draggable = true;
+      wrap.ondragstart = e => dragStartListItem(e, idx);
+      wrap.innerHTML = `
+        <div class="discuss-header">
+          💬 Discuss
+          <button class="remove-btn" style="margin-left:auto" onclick="removeItem(${idx})">×</button>
+        </div>
+        <div class="discuss-form">
+          <label>Participants (one role per line)</label>
+          <textarea onchange="stages[${idx}].participants=this.value;updatePreview()"></textarea>
+          <label>Max rounds</label>
+          <input type="number" min="1" max="10" value="${item.max_rounds}"
+                 onchange="stages[${idx}].max_rounds=parseInt(this.value) || 1;updatePreview()">
+          <label>Output mode</label>
+          <select onchange="stages[${idx}].output_mode=this.value;updatePreview()">
+            <option value="both" ${item.output_mode==='both'?'selected':''}>both</option>
+            <option value="synthesis" ${item.output_mode==='synthesis'?'selected':''}>synthesis</option>
+            <option value="transcript" ${item.output_mode==='transcript'?'selected':''}>transcript</option>
+          </select>
+        </div>`;
+      wrap.querySelector('textarea').value = item.participants;
+      wrap.ondragend = clearDragOver;
+      list.appendChild(wrap);
     } else {
       const wrap = document.createElement('div');
       wrap.className = 'loop-item';
@@ -257,6 +308,13 @@ function toYaml() {
   stages.forEach(item => {
     if (item.type === 'stage') {
       out += `  - ${item.name}\n`;
+    } else if (item.type === 'discuss') {
+      const roles = item.participants.split('\n').map(r => r.trim()).filter(Boolean);
+      out += `  - discuss:\n`;
+      out += `      participants:\n`;
+      roles.forEach(r => { out += `        - role: ${r}\n`; });
+      out += `      max_rounds: ${item.max_rounds}\n`;
+      out += `      output_mode: ${item.output_mode}\n`;
     } else {
       out += `  - loop:\n`;
       out += `      max: ${item.max}\n`;
@@ -281,7 +339,8 @@ function parseYaml(text) {
     const line = lines[i];
     const stageMatch = line.match(/^\s{2}-\s+(\w+)\s*$/);
     const loopMatch = line.match(/^\s{2}-\s+loop:\s*$/);
-    if (stageMatch) {
+    const discussMatch = line.match(/^\s{2}-\s+discuss:\s*$/);
+    if (stageMatch && !discussMatch) {
       const name = stageMatch[1];
       const pal = palette.find(p => p.name === name);
       result.push({type:'stage', name, label: pal ? pal.label : name});
@@ -303,6 +362,24 @@ function parseYaml(text) {
         i++;
       }
       result.push(loop);
+      continue;
+    } else if (discussMatch) {
+      const disc = {type:'discuss', participants:'', max_rounds:2, output_mode:'both'};
+      i++;
+      const roleLines = [];
+      while (i < lines.length) {
+        const l = lines[i];
+        const roundsM = l.match(/^\s+max_rounds:\s+(\d+)/);
+        const modeM = l.match(/^\s+output_mode:\s+(\S+)/);
+        const roleM = l.match(/^\s+-\s+role:\s+(\S+)/);
+        if (roundsM) disc.max_rounds = parseInt(roundsM[1]);
+        else if (modeM) { const validModes = ['both', 'synthesis', 'transcript']; disc.output_mode = validModes.includes(modeM[1]) ? modeM[1] : 'both'; }
+        else if (roleM) roleLines.push(roleM[1]);
+        else if (l.match(/^\s{2}-/)) { i--; break; }
+        i++;
+      }
+      disc.participants = roleLines.join('\n');
+      result.push(disc);
       continue;
     }
     i++;
