@@ -60,7 +60,7 @@ def _make_agent(model="opencode/anthropic/claude-sonnet-4-5"):
 
 
 def test_call_opencode_runs_correct_command():
-    """_call_opencode invokes `opencode run --model <provider/model> <prompt>`."""
+    """_call_opencode invokes `opencode run --model <provider/model> --file <tmp> --`."""
     agent = _make_agent()
     mock_result = MagicMock()
     mock_result.returncode = 0
@@ -75,10 +75,12 @@ def test_call_opencode_runs_correct_command():
     assert call_args[1] == "run"
     assert call_args[2] == "--model"
     assert call_args[3] == "anthropic/claude-sonnet-4-5"
+    assert "--file" in call_args
 
 
 def test_call_opencode_embeds_system_prompt():
-    """_call_opencode prepends the system role prompt to the combined message."""
+    """_call_opencode writes system role prompt to the temp file passed via --file."""
+    import os
     from agents.base_agent import BaseAgent
     agent = BaseAgent(model="opencode/openai/gpt-4o")
     agent.system_prompt = "You are a senior architect."
@@ -87,14 +89,53 @@ def test_call_opencode_embeds_system_prompt():
     with patch("agents.backends.opencode.subprocess.run", return_value=mock_result) as mock_run:
         agent._call_opencode("Build a REST API")
 
-    combined_prompt = mock_run.call_args[0][0][-1]
-    assert "[SYSTEM ROLE]" in combined_prompt
-    assert "You are a senior architect." in combined_prompt
-    assert "Build a REST API" in combined_prompt
+    call_args = mock_run.call_args[0][0]
+    file_idx = call_args.index("--file") + 1
+    tmp_path = call_args[file_idx]
+    # temp file is deleted after call — read content was already written; verify via side-effect
+    # Instead, capture what was written by intercepting NamedTemporaryFile
+    # Re-run with a real capture to inspect file contents
+    written_content = []
+
+    import tempfile as _tf
+    real_ntf = _tf.NamedTemporaryFile
+    def capturing_ntf(**kwargs):
+        f = real_ntf(**kwargs)
+        original_write = f.write
+        def tracked_write(content):
+            written_content.append(content)
+            return original_write(content)
+        f.write = tracked_write
+        return f
+
+    mock_result2 = MagicMock(returncode=0, stdout="Design done.", stderr="")
+    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result2):
+        with patch("agents.backends.opencode.tempfile.NamedTemporaryFile", side_effect=capturing_ntf):
+            agent2 = BaseAgent(model="opencode/openai/gpt-4o")
+            agent2.system_prompt = "You are a senior architect."
+            agent2._call_opencode("Build a REST API")
+
+    combined = "".join(written_content)
+    assert "[SYSTEM ROLE]" in combined
+    assert "You are a senior architect." in combined
+    assert "Build a REST API" in combined
 
 
 def test_call_opencode_embeds_history():
-    """_call_opencode includes prior conversation turns in the combined prompt."""
+    """_call_opencode includes prior conversation turns in the temp file."""
+    import tempfile as _tf
+    written_content = []
+
+    real_ntf = _tf.NamedTemporaryFile
+    def capturing_ntf(**kwargs):
+        f = real_ntf(**kwargs)
+        original_write = f.write
+        def tracked_write(content):
+            written_content.append(content)
+            return original_write(content)
+        f.write = tracked_write
+        return f
+
     agent = _make_agent()
     agent._history = [
         {"role": "user", "content": "First question"},
@@ -102,13 +143,14 @@ def test_call_opencode_embeds_history():
     ]
 
     mock_result = MagicMock(returncode=0, stdout="Second answer.", stderr="")
-    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result) as mock_run:
-        agent._call_opencode("Second question")
+    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result):
+        with patch("agents.backends.opencode.tempfile.NamedTemporaryFile", side_effect=capturing_ntf):
+            agent._call_opencode("Second question")
 
-    combined_prompt = mock_run.call_args[0][0][-1]
-    assert "[CONVERSATION HISTORY]" in combined_prompt
-    assert "First question" in combined_prompt
-    assert "First answer" in combined_prompt
+    combined = "".join(written_content)
+    assert "[CONVERSATION HISTORY]" in combined
+    assert "First question" in combined
+    assert "First answer" in combined
 
 
 def test_call_opencode_strips_ansi_codes():

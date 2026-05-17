@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 import time
 from typing import TYPE_CHECKING
 
@@ -82,11 +83,26 @@ class OpenCodeBackend(LLMBackend):
         parts.append(user_message)
 
         full_prompt = "\n\n".join(parts)
-        # Fix 2 — add "--" separator to terminate option parsing before the prompt
-        cmd = [bin_path, "run", "--model", self.model, "--", full_prompt]
 
         for attempt in range(self._max_retries + 1):
+            tmp_path = None
             try:
+                # Write prompt to a temp file to avoid ARG_MAX (Errno 7) on large prompts.
+                # Pass it via --file so opencode reads the content as attached context,
+                # with a short trigger message instructing the agent to follow it.
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".md", delete=False, encoding="utf-8"
+                ) as tmp:
+                    tmp.write(full_prompt)
+                    tmp_path = tmp.name
+                cmd = [
+                    bin_path, "run",
+                    "--model", self.model,
+                    "--file", tmp_path,
+                    "--dangerously-skip-permissions",
+                    "--",
+                    "Follow the instructions in the attached file exactly.",
+                ]
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -100,7 +116,6 @@ class OpenCodeBackend(LLMBackend):
                 output = result.stdout.strip()
                 if not output:
                     raise RuntimeError("Empty response from opencode")
-                # Fix 3 — use broader ANSI escape regex
                 output = _ANSI_ESCAPE.sub("", output).strip()
                 if not output:
                     raise RuntimeError("Empty response from opencode after stripping ANSI codes")
@@ -109,9 +124,9 @@ class OpenCodeBackend(LLMBackend):
                 if attempt == self._max_retries:
                     raise
                 time.sleep(2 ** attempt)
-
-        # Fix 4 — removed unreachable RuntimeError("All opencode retries exhausted");
-        # the last loop iteration always does a bare raise, so this line is never reached.
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
 
     def call_with_tools(
         self,
