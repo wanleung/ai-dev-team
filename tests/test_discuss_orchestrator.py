@@ -91,3 +91,35 @@ class TestDiscussStageDiscovery:
 
         registry = orch._make_stage_registry()
         assert not any(k.startswith("discuss_") for k in registry)
+
+
+def test_stage_discuss_passes_memory_to_agent(tmp_path):
+    """_stage_discuss() passes self.memory to DiscussionAgent.run()."""
+    from unittest.mock import MagicMock, patch
+    from orchestrator import Orchestrator
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch._discussions_dir = tmp_path / "discussions"
+    orch._discussions_dir.mkdir()
+    orch.memory = MagicMock()
+    orch.model = "gpt-4.1"
+    orch._github_token = None
+    orch.ollama_url = "http://localhost:11434"
+
+    # Create a minimal discussion YAML
+    disc_yaml = orch._discussions_dir / "test_disc.yaml"
+    disc_yaml.write_text(
+        "participants:\n  - role: analyst\n    persona: You are an analyst.\nmax_rounds: 1\nhomework_round: false\n"
+    )
+
+    result = PipelineResult(requirement="hello world")
+
+    with patch("agents.discussion_agent.DiscussionAgent.run") as mock_run:
+        mock_run.return_value = MagicMock()  # return value unused by _stage_discuss
+        orch._stage_discuss(result, str(disc_yaml))
+
+    # Verify memory_store was passed
+    call_kwargs = mock_run.call_args.kwargs
+    assert "memory_store" in call_kwargs
+    assert call_kwargs["memory_store"] is orch.memory
+    assert "repo" in call_kwargs

@@ -52,6 +52,14 @@ class Turn:
 
 
 @dataclass
+class DiscussionResult:
+    """Return value from DiscussionAgent.run() when called with a context string."""
+
+    transcript: list["Turn"]
+    synthesis: str
+
+
+@dataclass
 class DiscussionConfig:
     """Parsed representation of a discussions/*.yaml preset file."""
 
@@ -63,6 +71,7 @@ class DiscussionConfig:
     output_mode: str = "both"  # "transcript" | "synthesis" | "both"
     context_fields: list[str] = field(default_factory=lambda: ["issue_body"])
     name: str = "discussion"
+    memory: bool = True  # persist transcript to MemoryStore after each run
 
     def __post_init__(self) -> None:
         if self.output_mode not in _VALID_OUTPUT_MODES:
@@ -336,13 +345,76 @@ class DiscussionAgent:
         if self.config.output_mode in ("synthesis", "both"):
             result.discussion_synthesis = synthesis
 
-    def run(self, result: "PipelineResult") -> None:
-        """Execute the full discussion and write results to result."""
-        context = self._build_context(result)
+    def run(
+        self,
+        result: "PipelineResult | None" = None,
+        *,
+        context: Optional[str] = None,
+        memory_store=None,
+        repo: str = "local",
+    ) -> "DiscussionResult":
+        """Execute the full discussion and write results to result.
+
+        Supports two call styles:
+
+        1. Legacy / orchestrator style::
+
+               agent.run(pipeline_result, memory_store=store)
+
+           ``result`` must be a ``PipelineResult``.  Context is extracted via
+           ``_build_context(result)`` and outputs are written back to ``result``.
+
+        2. Standalone / test style::
+
+               disc_result = agent.run(context="some text", memory_store=store)
+
+           ``context`` is used directly.  A ``DiscussionResult`` is always
+           returned by both styles.
+
+        Args:
+            result:       Optional PipelineResult (legacy style). When provided the
+                          context is built from its fields and outputs are written
+                          back to it.
+            context:      Optional raw context string (standalone style). Takes
+                          priority when ``result`` is None.
+            memory_store: Optional MemoryStore.  When ``config.memory`` is True and
+                          this is not None, the synthesis (or transcript) is
+                          persisted after the run.
+
+        Returns:
+            A :class:`DiscussionResult` with the raw transcript and synthesis.
+        """
+        # Resolve context string from whichever source was provided.
+        if context is None:
+            if result is None:
+                raise ValueError("DiscussionAgent.run() requires either 'result' or 'context'.")
+            context = self._build_context(result)
+
         transcript = self._run_homework_round(context) if self.config.homework_round else []
         transcript = self._run_discussion_rounds(context, transcript)
         synthesis = ""
         if self.config.output_mode in ("synthesis", "both"):
             synthesis = self._run_synthesis(context, transcript)
-        self._write_outputs(result, transcript, synthesis)
-        result.add_completed_stage(f"discuss_{self.config.name}")
+
+        disc_result = DiscussionResult(transcript=transcript, synthesis=synthesis)
+
+        # Write outputs back to PipelineResult when using the legacy call style.
+        if result is not None:
+            self._write_outputs(result, transcript, synthesis)
+            result.add_completed_stage(f"discuss_{self.config.name}")
+
+        # Persist to memory store if configured.
+        if self.config.memory and memory_store is not None:
+            summary = (
+                disc_result.synthesis
+                if disc_result.synthesis
+                else "\n".join(t.content for t in disc_result.transcript)
+            )
+            memory_store.save(
+                repo=repo,
+                summary=summary,
+                tags=["discussion", "transcript"],
+                mode="discussion",
+            )
+
+        return disc_result

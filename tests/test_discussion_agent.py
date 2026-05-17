@@ -314,6 +314,74 @@ class TestDiscussionAgentRun:
         assert "[Round 0 — Homework]" in result.discussion_transcript
 
 
+class TestDiscussionMemory:
+    """Tests for memory persistence in DiscussionAgent."""
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_memory_saved_when_enabled(self, mock_backend):
+        """When memory=True and memory_store provided, save() is called after run."""
+        backend = MagicMock()
+        backend.call.return_value = "A response."
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[Participant(role="analyst", persona="You are an analyst.")],
+            max_rounds=1,
+            homework_round=False,
+            memory=True,
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        memory_store = MagicMock()
+
+        agent.run(context="test topic", memory_store=memory_store, repo="test-repo")
+
+        memory_store.save.assert_called_once()
+        call_kwargs = memory_store.save.call_args.kwargs
+        assert call_kwargs["tags"] == ["discussion", "transcript"], f"Got tags: {call_kwargs.get('tags')}"
+        assert call_kwargs["mode"] == "discussion", f"Got mode: {call_kwargs.get('mode')}"
+        assert "repo" in call_kwargs
+        assert call_kwargs["repo"] == "test-repo"
+        assert "summary" in call_kwargs
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_memory_not_saved_when_disabled(self, mock_backend):
+        """When memory=False, save() is not called even if memory_store is provided."""
+        backend = MagicMock()
+        backend.call.return_value = "A response."
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[Participant(role="analyst", persona="You are an analyst.")],
+            max_rounds=1,
+            homework_round=False,
+            memory=False,
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        memory_store = MagicMock()
+
+        agent.run(context="test topic", memory_store=memory_store)
+
+        memory_store.save.assert_not_called()
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_memory_not_saved_when_store_is_none(self, mock_backend):
+        """When memory_store=None, no error is raised and save() is not called."""
+        backend = MagicMock()
+        backend.call.return_value = "A response."
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[Participant(role="analyst", persona="You are an analyst.")],
+            max_rounds=1,
+            homework_round=False,
+            memory=True,
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        # Should not raise
+        disc_result = agent.run(context="test topic", memory_store=None)
+        assert disc_result is not None
+
+
 class TestDiscussionAgentMentionRouting:
     """Tests for @mention-based turn order routing in discussion rounds."""
 

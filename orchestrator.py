@@ -1512,7 +1512,8 @@ class Orchestrator(TestFixLoopMixin):
             github_token=self._github_token,
             ollama_url=self.ollama_url,
         )
-        agent.run(result)
+        active_repo = str(getattr(self.target_github, "repo", None) or "local") if getattr(self, "target_github", None) else "local"
+        agent.run(result, memory_store=getattr(self, "memory", None), repo=active_repo)
 
     def _commit_and_open_pr(
         self,
