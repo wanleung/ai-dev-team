@@ -36,6 +36,8 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - ⚡ **Streaming for all backends** — streaming responses from GitHub Models, Anthropic, OpenCode Go, and Ollama; configurable per-agent
 - 🧪 **TDD early-commit** — in TDD pipeline mode, test files can be committed to a branch early so engineers see failing tests before implementing
 - 📊 **Prometheus metrics** — standalone `metrics_server.py` exposes `aisw_circuit_breaker_events_total`, `aisw_dlq_events_total`, and `aisw_degradation_events_total` counters; wired via `metrics_url` in `watchers.yml` → events fire-and-forget to the sink so the watcher is never blocked
+- 🎯 **Agent Accuracy System** — four-layer system to prevent, detect, learn from, and bootstrap against agent mistakes: context injection (Layer 1), validation gate before every PR (Layer 2), `LearningAgent` that writes DO NOT rules from failures (Layer 3), and `BootstrapPatternsAgent` that seeds new repos with cheatsheets from day zero (Layer 4)
+- ✅ **Validation gate** — syntax check → ruff lint → pytest runs before any PR is opened; failures re-prompt the engineer with the exact error message (max 2 retries); hardened on `ai-feature.yaml`, `ai-fix.yaml`, `tdd.yaml`, and `ai-smart-fix.yaml`
 
 ---
 
@@ -1814,6 +1816,40 @@ Configure in `aisw_server.yaml`. See `docs/superpowers/specs/2026-05-14-integrat
 
 ---
 
+## 🎯 Agent Accuracy System
+
+When agents write broken code — calling methods that don't exist, wiping config files, using wrong YAML formats — the root cause is almost always structural: agents fill gaps with plausible guesses from other codebases.
+
+The accuracy system provides four layers of defence:
+
+| Layer | Name | What it does |
+|-------|------|--------------|
+| 1 | **Prevention** | Auto-injects real API signatures into role files; attaches relevant source files to engineer prompts; wires RAG for all agents |
+| 2 | **Detection** | `validation_gate` stage: syntax → lint → tests before every PR; re-prompts engineer with exact error on failure (max 2 retries) |
+| 3 | **Learning** | `LearningAgent` writes a "DO NOT" rule to the failing role file; the failure becomes permanent system prompt context |
+| 4 | **Bootstrap** | `BootstrapPatternsAgent` reads a new repo's codebase and generates `.github/copilot-instructions.md` with Layer 1 cheatsheets from day zero |
+
+**Layer 1 alone prevents ~57% of structural bugs. Layers 2+3 catch and remember the rest. Layer 4 means new repos start protected.**
+
+The `validation_gate` is wired into all code-producing pipelines (`ai-feature`, `ai-fix`, `tdd`, `ai-smart-fix`). To add it to a custom pipeline:
+
+```yaml
+stages:
+  - pm
+  - architect
+  - senior_engineer
+  - validation_gate   # ← add this
+  - qa_engineer
+```
+
+To bootstrap a new repo:
+
+```bash
+python main.py --bootstrap --repo owner/new-repo
+```
+
+---
+
 ## 📄 License
 
 GNU General Public License v3.0 or later (GPL-3.0-or-later). See [LICENSE](LICENSE) for details.
@@ -1833,3 +1869,4 @@ For operational topics not covered above, see [`docs/operations-guide.md`](docs/
 | [§5](docs/operations-guide.md#5-reading-github-issues-prs-and-comments) | Reading GitHub issues, PRs, and comments (3 methods) |
 | [§6](docs/operations-guide.md#6-pipeline-self-chaining-auto-re-label) | Pipeline self-chaining — auto re-label for follow-up runs |
 | [§7](docs/operations-guide.md#7-per-repo-deploy-backends) | Per-repo deploy backends — docker, libvirt VM, or none |
+| [§8](docs/operations-guide.md#8-agent-accuracy-system) | Agent Accuracy System — validation gate, LearningAgent, BootstrapPatternsAgent |

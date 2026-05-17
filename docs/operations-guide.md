@@ -913,3 +913,104 @@ The orchestrator posts a PR comment after every deploy run:
 - 🐳 Docker: `Deploy tests passed in X.Xs` / `Deploy tests FAILED`
 - 🚀 Libvirt: same + VM name and libvirt host info on failure
 - ⏭️ None / skipped: no comment posted
+
+---
+
+## 8. Agent Accuracy System
+
+The accuracy system is a four-layer defence against structural agent mistakes — hallucinated APIs, wiped config files, missing registry wiring, and similar failures that produce code which looks right but cannot run.
+
+### Layer 1 — Prevention
+
+Before the engineer agent runs, the orchestrator:
+
+1. Reads the role file (`roles/<agent>.md`) and injects any `## API Cheatsheet` block found there directly into the system prompt
+2. Attaches the source files listed in the role file's `## Context Files` block to the prompt
+3. Ensures `tool_registry` is passed so the agent can query the codebase via RAG
+
+To add a cheatsheet manually:
+
+```markdown
+<!-- roles/engineer.md -->
+## API Cheatsheet
+
+- Call the LLM: `self.call(user_message)` — NOT `self.llm.generate()`
+- Load system prompt: already in BaseAgent — do NOT re-implement `_load_system_prompt()`
+- GitHubClient requires: `GitHubClient(repo="owner/repo", token="...")`
+```
+
+The `BootstrapPatternsAgent` generates these cheatsheets automatically when onboarding a new repo (see Layer 4).
+
+### Layer 2 — Detection (Validation Gate)
+
+The `validation_gate` pipeline stage runs three checks in order before any PR is opened:
+
+1. **Syntax** — `python -m py_compile` on all `.py` files in the PR
+2. **Lint** — `ruff check` on changed files
+3. **Tests** — `pytest` on the full test suite
+
+On failure, the exact error is injected back into the engineer agent's prompt and the engineer re-runs (up to `max_retries: 2`, configurable per pipeline YAML). After max retries, the gate posts a failure comment on the issue and stops — a human reviews.
+
+To check gate results:
+
+```bash
+# In pipeline logs
+grep "validation_gate" logs/pipeline-*.log
+
+# Gate result in PipelineResult
+result.stage_outputs["validation_gate"]
+```
+
+### Layer 3 — Learning
+
+`LearningAgent` runs after a `validation_gate` failure. It:
+
+1. Reads the error that caused the failure
+2. Identifies the agent role responsible
+3. Appends a `## DO NOT` rule to that role file
+
+Example rules written automatically:
+
+```markdown
+<!-- roles/engineer.md — appended by LearningAgent -->
+## DO NOT
+
+- DO NOT call `self.llm.generate()` — use `self.call(user_message)`
+- DO NOT rewrite `repos.yaml` from scratch — read it first, add only the new entry
+- DO NOT instantiate `GitHubClient()` with no arguments — it requires `repo` and `token`
+```
+
+These rules appear in the system prompt of every future agent run for that role. The more failures the system sees, the stronger the protection.
+
+### Layer 4 — Bootstrap
+
+`BootstrapPatternsAgent` generates Layer 1 cheatsheets automatically when a new repo is onboarded.
+
+**Automatic trigger** — runs when `validation_gate` detects that no `## API Cheatsheet` block exists in the engineer role file for a given repo.
+
+**Manual trigger:**
+
+```bash
+python main.py --bootstrap --repo owner/new-repo
+```
+
+The agent:
+1. Clones the target repo
+2. Reads key source files (`base_agent.py`, config schemas, constructor signatures)
+3. Writes `.github/copilot-instructions.md` with real method names, constructor signatures, and common patterns
+4. Optionally writes `## API Cheatsheet` blocks back to the relevant role files
+
+New repos start with Layer 1 protection before any failures have ever occurred.
+
+### Disabling layers
+
+Individual layers can be disabled in `config.yaml`:
+
+```yaml
+accuracy:
+  prevention: true      # Layer 1 — context injection
+  validation_gate: true # Layer 2 — syntax/lint/test gate
+  learning: true        # Layer 3 — LearningAgent rule writes
+  bootstrap: true       # Layer 4 — BootstrapPatternsAgent
+  max_retries: 2        # Gate retry limit before human escalation
+```
