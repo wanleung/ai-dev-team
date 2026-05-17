@@ -72,12 +72,21 @@ class DiscussionConfig:
     context_fields: list[str] = field(default_factory=lambda: ["issue_body"])
     name: str = "discussion"
     memory: bool = True  # persist transcript to MemoryStore after each run
+    auto_participants: dict | None = None
+    # Format: {"pool": ["role1", "role2", ...], "select": 3}
+    # "pool" = available role names (must have persona files in roles/)
+    # "select" = how many to pick
 
     def __post_init__(self) -> None:
         if self.output_mode not in _VALID_OUTPUT_MODES:
             raise ValueError(
                 f"output_mode must be one of {sorted(_VALID_OUTPUT_MODES)!r}, got {self.output_mode!r}"
             )
+        if self.auto_participants is not None:
+            if not isinstance(self.auto_participants.get("pool"), list):
+                raise ValueError("auto_participants['pool'] must be a list of role name strings")
+            if "select" in self.auto_participants and not isinstance(self.auto_participants["select"], int):
+                raise ValueError("auto_participants['select'] must be an integer")
 
     @classmethod
     def from_yaml(cls, config_path: str, base_dir: Path | None = None) -> "DiscussionConfig":
@@ -154,6 +163,7 @@ class DiscussionAgent:
         github_token: Optional[str] = None,
         ollama_url: str = "http://localhost:11434",
         console=None,
+        roles_dir: Optional[Path] = None,
     ) -> None:
         """Initialise with a resolved DiscussionConfig.
 
@@ -168,12 +178,19 @@ class DiscussionAgent:
                           only applies to sequential discussion rounds — the
                           homework round is always silent regardless of this
                           setting.
+            roles_dir:    Optional path to the directory containing role persona
+                          files (``{role}.md``).  Defaults to
+                          ``Path(__file__).parent.parent / "roles"`` (the repo
+                          root ``roles/`` folder).  Used by
+                          :meth:`_select_participants` when ``auto_participants``
+                          is configured.
         """
         self.config = config
         self.model = model
         self.github_token = github_token
         self.ollama_url = ollama_url
         self.console = console
+        self.roles_dir: Path = roles_dir if roles_dir is not None else Path(__file__).parent.parent / "roles"
         self._backend_cache: dict = {}
 
     @classmethod
@@ -306,14 +323,77 @@ class DiscussionAgent:
                     )
         return transcript
 
-    def _extract_mentions(self, text: str) -> list:
+    def _select_participants(self, context: str) -> list[Participant]:
+        """Use LLM to select participants from the auto_participants pool.
+
+        Sends a prompt to the backend asking it to choose the best subset of
+        roles for the given context.  If the LLM response contains no
+        recognisable role names (or the call fails), falls back to
+        ``config.participants``.
+
+        Args:
+            context: The discussion context string.
+
+        Returns:
+            A list of :class:`Participant` objects to use for the discussion.
+        """
+        cfg = self.config.auto_participants
+        pool: list[str] = cfg.get("pool", [])
+        n: int = cfg.get("select", len(pool))
+
+        prompt = (
+            f"You are selecting discussion participants. Given this context:\n{context}\n\n"
+            f"Choose {n} roles from this pool that would provide the most valuable perspectives:\n"
+            + "\n".join(f"- {r}" for r in pool)
+            + "\n\nReply with only the role names, one per line."
+        )
+        backend = self._make_backend(self.model)
+        try:
+            response = backend.call([
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt},
+            ])
+            selected = [
+                line.strip().lstrip("- ").lower()
+                for line in response.splitlines()
+                if line.strip()
+            ]
+            pool_lower = {r.lower() for r in pool}
+            valid = [r for r in selected if r in pool_lower][:n]
+            if not valid:
+                logger.warning(
+                    "auto_participants: no valid roles in LLM response, falling back"
+                )
+                return self.config.participants
+            participants: list[Participant] = []
+            for role in valid:
+                persona_file = self.roles_dir / f"{role}.md"
+                if not persona_file.exists():
+                    logger.warning(
+                        "auto_participants: persona file not found for role %s, skipping", role
+                    )
+                    continue
+                participants.append(Participant(role=role, persona=persona_file.read_text()))
+            return participants if participants else self.config.participants
+        except Exception as exc:
+            logger.warning(
+                "auto_participants: selection failed (%s), falling back", exc
+            )
+            return self.config.participants
+
+    def _extract_mentions(self, text: str, participants: list | None = None) -> list:
         """Return Participant objects for valid @role mentions in text."""
-        role_map = {p.role: p for p in self.config.participants}
+        source = participants if participants is not None else self.config.participants
+        role_map = {p.role: p for p in source}
         return [role_map[m] for m in _MENTION_RE.findall(text) if m in role_map]
 
     def _run_discussion_rounds(self, context: str, transcript: list[Turn]) -> list[Turn]:
         """Run N discussion rounds with @mention-based turn order routing."""
-        turn_order = list(self.config.participants)
+        if self.config.auto_participants:
+            effective_participants = self._select_participants(context)
+        else:
+            effective_participants = self.config.participants
+        turn_order = list(effective_participants)
         for round_num in range(1, self.config.max_rounds + 1):
             next_priority: list[Participant] = []
             consensus = False
@@ -329,7 +409,7 @@ class DiscussionAgent:
                         consensus = True
                         break
                     # Collect @mentions to reprioritise next round
-                    for p in self._extract_mentions(turn.content):
+                    for p in self._extract_mentions(turn.content, effective_participants):
                         if p is not participant and p not in next_priority:
                             next_priority.append(p)
                 except Exception as exc:
@@ -341,7 +421,7 @@ class DiscussionAgent:
                         Turn(role=participant.role, content=f"[Error: {exc}]", round_num=round_num)
                     )
             # Rebuild turn order: mentioned roles first, rest in original order
-            remaining = [p for p in self.config.participants if p not in next_priority]
+            remaining = [p for p in effective_participants if p not in next_priority]
             turn_order = next_priority + remaining
             if consensus:
                 break

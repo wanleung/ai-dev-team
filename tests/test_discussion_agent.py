@@ -698,3 +698,218 @@ class TestDiscussionStreaming:
         for call in backend.call.call_args_list:
             on_token = call.kwargs.get("on_token")
             assert on_token is None, f"Homework round should not stream, got on_token={on_token}"
+
+
+# ── Milestone E: Dynamic Participant Selection ─────────────────────────────────
+
+class TestDiscussionDynamicParticipants:
+    """Tests for auto_participants dynamic selection."""
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_auto_participants_selects_from_pool(self, mock_backend, tmp_path):
+        """When auto_participants is set, LLM selects roles from pool."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+
+        # Create temporary role files
+        roles_dir = tmp_path / "roles"
+        roles_dir.mkdir()
+        (roles_dir / "analyst.md").write_text("You are an analyst.")
+        (roles_dir / "skeptic.md").write_text("You are a skeptic.")
+        (roles_dir / "optimist.md").write_text("You are an optimist.")
+
+        call_count = [0]
+
+        def fake_call(messages, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call = participant selection
+                return "analyst\nskeptic"
+            return "A response."
+
+        backend = MagicMock()
+        backend.call.side_effect = fake_call
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[
+                Participant(role="optimist", persona="fallback optimist"),
+            ],
+            max_rounds=1,
+            homework_round=False,
+            auto_participants={
+                "pool": ["analyst", "skeptic", "optimist"],
+                "select": 2,
+            },
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1", roles_dir=roles_dir)
+        transcript = agent._run_discussion_rounds(context="test topic", transcript=[])
+
+        speakers = [t.role for t in transcript]
+        assert "analyst" in speakers
+        assert "skeptic" in speakers
+        assert "optimist" not in speakers  # not selected
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_auto_participants_falls_back_on_failure(self, mock_backend, tmp_path):
+        """Falls back to config.participants when LLM returns no valid roles."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+
+        call_count = [0]
+
+        def fake_call(messages, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return "unknown_role\ngarbage"  # no valid roles
+            return "A response."
+
+        backend = MagicMock()
+        backend.call.side_effect = fake_call
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[
+                Participant(role="analyst", persona="You are an analyst."),
+            ],
+            max_rounds=1,
+            homework_round=False,
+            auto_participants={
+                "pool": ["analyst", "skeptic"],
+                "select": 2,
+            },
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        transcript = agent._run_discussion_rounds(context="test topic", transcript=[])
+
+        speakers = [t.role for t in transcript]
+        assert "analyst" in speakers  # fell back to config.participants
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_auto_participants_falls_back_on_exception(self, mock_backend):
+        """Falls back to config.participants when backend raises an exception."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+
+        call_count = [0]
+
+        def fake_call(messages, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("LLM unavailable")
+            return "A response."
+
+        backend = MagicMock()
+        backend.call.side_effect = fake_call
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[
+                Participant(role="analyst", persona="You are an analyst."),
+            ],
+            max_rounds=1,
+            homework_round=False,
+            auto_participants={
+                "pool": ["analyst", "skeptic"],
+                "select": 2,
+            },
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        transcript = agent._run_discussion_rounds(context="test topic", transcript=[])
+
+        speakers = [t.role for t in transcript]
+        assert "analyst" in speakers  # fell back to config.participants
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_no_auto_participants_uses_config_list(self, mock_backend):
+        """Without auto_participants, uses config.participants unchanged."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+
+        backend = MagicMock()
+        backend.call.return_value = "A response."
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[
+                Participant(role="analyst", persona="A"),
+                Participant(role="skeptic", persona="B"),
+            ],
+            max_rounds=1,
+            homework_round=False,
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        transcript = agent._run_discussion_rounds(context="topic", transcript=[])
+
+        speakers = [t.role for t in transcript]
+        assert speakers == ["analyst", "skeptic"]
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_auto_participants_mention_routing_works(self, mock_backend, tmp_path):
+        """@mention routing uses effective (dynamic) participants, not static config list."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+
+        roles_dir = tmp_path / "roles"
+        roles_dir.mkdir()
+        (roles_dir / "analyst.md").write_text("You are an analyst.")
+        (roles_dir / "skeptic.md").write_text("You are a skeptic.")
+
+        call_sequence = []
+
+        def fake_call(messages, **kwargs):
+            n = len(call_sequence)
+            call_sequence.append(n)
+            if n == 0:  # selection call
+                return "analyst\nskeptic"
+            elif n == 1:  # analyst round 1 — mentions @skeptic
+                return "Great point, @skeptic what do you think?"
+            elif n == 2:  # skeptic round 1
+                return "Interesting."
+            elif n == 3:  # should be skeptic round 2 (reordered due to @mention)
+                return "Building on earlier..."
+            else:
+                return "Agreed."
+
+        backend = MagicMock()
+        backend.call.side_effect = fake_call
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[Participant(role="optimist", persona="fallback")],
+            max_rounds=2,
+            homework_round=False,
+            auto_participants={"pool": ["analyst", "skeptic"], "select": 2},
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1", roles_dir=roles_dir)
+        transcript = agent._run_discussion_rounds(context="topic", transcript=[])
+
+        round2_speakers = [t.role for t in transcript if t.round_num == 2]
+        assert round2_speakers[0] == "skeptic", f"Expected skeptic first in round 2, got {round2_speakers}"
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_auto_participants_select_count_enforced(self, mock_backend):
+        """LLM returning more roles than 'select' is capped to 'select'."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+
+        call_count = [0]
+
+        def fake_call(messages, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # LLM ignores instruction and returns 3 roles when select=2
+                return "analyst\nskeptic\noptimist"
+            return "A response."
+
+        backend = MagicMock()
+        backend.call.side_effect = fake_call
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[Participant(role="moderator", persona="fallback")],
+            max_rounds=1,
+            homework_round=False,
+            auto_participants={
+                "pool": ["analyst", "skeptic", "optimist"],
+                "select": 2,
+            },
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        transcript = agent._run_discussion_rounds(context="topic", transcript=[])
+
+        assert len(transcript) == 2, f"Expected 2 speakers (select=2), got {len(transcript)}: {[t.role for t in transcript]}"
