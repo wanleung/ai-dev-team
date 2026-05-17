@@ -404,6 +404,8 @@ class PipelineResult:
     validation_attempts: int = 0
     validation_errors: list[str] = field(default_factory=list)
     pr_draft: bool = False
+    # Bootstrap fields (Accuracy M4)
+    bootstrap_agents_md: Optional[str] = None
     # PRD/Design revision loop tracking
     prd_revision_count: int = 0
     design_revision_count: int = 0
@@ -471,6 +473,7 @@ class PipelineResult:
             "validation_attempts": self.validation_attempts,
             "validation_errors": self.validation_errors,
             "pr_draft": self.pr_draft,
+            "bootstrap_agents_md": self.bootstrap_agents_md,
             "progress_comment_id": self.progress_comment_id,
             "run_id": self.run_id,
             "total_cost_usd": self.total_cost_usd,
@@ -510,6 +513,7 @@ class PipelineResult:
                     "prd_reviewer_draft", "design_reviewer_draft",
                     "design_output", "last_verdict", "next_label",
                     "pipeline_label", "validation_attempts", "pr_draft",
+                    "bootstrap_agents_md",
                     "progress_comment_id",
                     "run_id", "total_cost_usd", "token_usage"]:
             setattr(r, key, data.get(key, getattr(r, key)))
@@ -1457,6 +1461,32 @@ class Orchestrator(TestFixLoopMixin):
 
     # ── Shared commit + PR helper (extracted from doc_orchestrator) ────────
 
+    def _stage_bootstrap_patterns(self, result: "PipelineResult") -> None:
+        """Generate .github/copilot-instructions.md for the target repo.
+
+        Uses self.target_github (set when 'Target repo: owner/repo' appears in trigger issue).
+        Commits the generated file directly to the target repo's default branch.
+        """
+        if not self.target_github:
+            result.add_error(_PipelineError(
+                code="BOOTSTRAP_NO_TARGET",
+                stage="bootstrap_patterns",
+                message="bootstrap_patterns: no target repo set — add 'Target repo: owner/repo' to trigger issue",
+                severity="fatal",
+            ))
+            return
+
+        from agents.bootstrap_patterns_agent import BootstrapPatternsAgent
+        agent = BootstrapPatternsAgent(
+            model=self.model,
+            github_token=self._github_token,
+            ollama_url=self.ollama_url,
+            tool_registry=getattr(self, "_rag_registry", None),
+        )
+        agents_md = agent.run(self.target_github, commit=True)
+        result.bootstrap_agents_md = agents_md
+        result.add_completed_stage("bootstrap_patterns")
+
     def _commit_and_open_pr(
         self,
         result: "PipelineResult",
@@ -1819,6 +1849,13 @@ class Orchestrator(TestFixLoopMixin):
                 description="Syntax-checking and linting generated code...",
                 checkpoint_key="validation_gate",
                 fn=lambda r: self._stage_validation_gate(r),
+            ),
+            "bootstrap_patterns": PipelineStage(
+                name="bootstrap_patterns",
+                label="🌱 Bootstrap Patterns",
+                description="Scanning repo and generating .github/AGENTS.md...",
+                checkpoint_key="bootstrap_patterns",
+                fn=lambda r: self._stage_bootstrap_patterns(r),
             ),
         }
         # Wire per-stage timeouts from config

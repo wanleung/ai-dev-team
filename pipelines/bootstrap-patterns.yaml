@@ -1,0 +1,6 @@
+# Bootstrap pipeline — label: bootstrap-patterns
+# One-shot pipeline: scan a target repo and generate .github/copilot-instructions.md.
+# Trigger by opening an issue with label "bootstrap-patterns" and body:
+#   Target repo: owner/repo-name
+stages:
+  - bootstrap_patterns
