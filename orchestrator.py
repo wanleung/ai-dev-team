@@ -406,6 +406,9 @@ class PipelineResult:
     pr_draft: bool = False
     # Bootstrap fields (Accuracy M4)
     bootstrap_agents_md: Optional[str] = None
+    # Discussion stage outputs
+    discussion_transcript: str = ""
+    discussion_synthesis: str = ""
     # PRD/Design revision loop tracking
     prd_revision_count: int = 0
     design_revision_count: int = 0
@@ -474,6 +477,8 @@ class PipelineResult:
             "validation_errors": self.validation_errors,
             "pr_draft": self.pr_draft,
             "bootstrap_agents_md": self.bootstrap_agents_md,
+            "discussion_transcript": self.discussion_transcript,
+            "discussion_synthesis": self.discussion_synthesis,
             "progress_comment_id": self.progress_comment_id,
             "run_id": self.run_id,
             "total_cost_usd": self.total_cost_usd,
@@ -514,6 +519,7 @@ class PipelineResult:
                     "design_output", "last_verdict", "next_label",
                     "pipeline_label", "validation_attempts", "pr_draft",
                     "bootstrap_agents_md",
+                    "discussion_transcript", "discussion_synthesis",
                     "progress_comment_id",
                     "run_id", "total_cost_usd", "token_usage"]:
             setattr(r, key, data.get(key, getattr(r, key)))
@@ -891,6 +897,8 @@ class Orchestrator(TestFixLoopMixin):
         self._mode: str = pipeline_mode
         self._stage_skips: dict[str, bool] = stage_skips or {}
         self._pipeline_yaml_stages: "list | None" = pipeline_yaml_stages
+        # Directory scanned for discussion preset YAMLs (discussions/*.yaml)
+        self._discussions_dir: Path = Path(__file__).parent / "discussions"
         self.progress_tracker_mode: str = progress_tracker_mode
         self.tdd_commit_tests: bool = tdd_commit_tests
         self._cost_tracking: dict = cost_tracking or {}
@@ -1487,6 +1495,25 @@ class Orchestrator(TestFixLoopMixin):
         result.bootstrap_agents_md = agents_md
         result.add_completed_stage("bootstrap_patterns")
 
+    def _stage_discuss(self, result: "PipelineResult", config_path: str) -> None:
+        """Run a discussion stage from a preset config file."""
+        if not Path(config_path).is_file():
+            result.add_error(_PipelineError(
+                code="DISCUSS_CONFIG_MISSING",
+                stage="discuss",
+                message=f"_stage_discuss: preset config not found: {config_path}",
+                severity="fatal",
+            ))
+            return
+        from agents.discussion_agent import DiscussionAgent
+        agent = DiscussionAgent.from_file(
+            config_path=config_path,
+            model=self.model,
+            github_token=self._github_token,
+            ollama_url=self.ollama_url,
+        )
+        agent.run(result)
+
     def _commit_and_open_pr(
         self,
         result: "PipelineResult",
@@ -1862,6 +1889,28 @@ class Orchestrator(TestFixLoopMixin):
         for _name, _stage in _registry.items():
             if _name in (self._stage_timeouts or {}):
                 _stage.timeout_s = self._stage_timeouts[_name]  # type: ignore[index]
+        # Auto-discover discussions/*.yaml and register as discuss_<name> stages
+        discussions_dir = self._discussions_dir
+        if discussions_dir.is_dir():
+            all_presets = sorted(
+                list(discussions_dir.glob("*.yaml")) + list(discussions_dir.glob("*.yml"))
+            )
+            for preset_path in all_presets:
+                stage_key = f"discuss_{preset_path.stem.replace('-', '_')}"
+                if stage_key in _registry:
+                    log.warning(
+                        "discuss stage key collision: '%s' from '%s' already registered; skipping.",
+                        stage_key, preset_path.name,
+                    )
+                    continue
+                label_name = preset_path.stem.replace("-", " ").replace("_", " ").title()
+                _registry[stage_key] = PipelineStage(
+                    name=stage_key,
+                    label=f"💬 Discuss: {label_name}",
+                    description=f"Multi-agent round-table discussion ({preset_path.name})",
+                    checkpoint_key=stage_key,
+                    fn=lambda r, p=str(preset_path): self._stage_discuss(r, p),
+                )
         return _registry
 
     def _load_pipeline_yaml(self, config_path: str) -> "list | None":

@@ -1,0 +1,30 @@
+# discussions/news-analysis.yaml
+# News and current events analysis preset.
+# Suitable for: social media commentary, news digest pipelines, opinion piece generation.
+#
+# Usage in pipeline.yaml:
+#   stages:
+#     - discuss_news_analysis
+#     - writer          # custom stage that reads discussion_synthesis
+
+participants:
+  - role: analyst
+    persona_file: roles/analyst.md
+
+  - role: skeptic
+    persona_file: roles/skeptic.md
+
+  - role: optimist
+    persona_file: roles/optimist.md
+
+homework_round: true    # participants each research the topic independently first
+max_rounds: 3
+early_exit: CONSENSUS_REACHED
+
+moderator:
+  persona_file: roles/moderator.md
+
+output_mode: both
+
+context_fields:
+  - issue_body          # issue body should contain the article URL or full text

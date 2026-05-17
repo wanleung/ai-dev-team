@@ -1,0 +1,35 @@
+# discussions/brainstorm.yaml
+# Generic multi-perspective brainstorm preset.
+# Suitable for: proposal generation, feature ideation, architecture decisions.
+#
+# Usage in pipeline.yaml:
+#   stages:
+#     - pm
+#     - architect
+#     - discuss_brainstorm
+#     - reviewer
+#     - engineer
+
+participants:
+  - role: analyst
+    persona_file: roles/analyst.md
+
+  - role: skeptic
+    persona_file: roles/skeptic.md
+
+  - role: optimist
+    persona_file: roles/optimist.md
+
+homework_round: true    # each participant thinks independently before the group discussion
+max_rounds: 2           # up to 2 discussion rounds after homework
+early_exit: CONSENSUS_REACHED
+
+moderator:
+  persona_file: roles/moderator.md
+
+output_mode: both       # downstream stages get both transcript and synthesis
+
+context_fields:
+  - spec
+  - design
+  - issue_body

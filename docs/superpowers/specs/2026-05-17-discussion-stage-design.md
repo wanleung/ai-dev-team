@@ -103,12 +103,14 @@ context_fields:           # PipelineResult fields fed into the opening context
 stages:
   - pm
   - architect
-  - discuss:brainstorm        # references discussions/brainstorm.yaml
+  - discuss_brainstorm        # references discussions/brainstorm.yaml
   - reviewer
   - engineer
 ```
 
-The `discuss:` prefix is the convention. `brainstorm` maps to `discussions/brainstorm.yaml`.
+# Note: underscores, not colons — discuss:brainstorm is YAML invalid (parsed as a dict key)
+
+The `discuss_` prefix is the convention. `brainstorm` maps to `discussions/brainstorm.yaml`.
 
 ---
 

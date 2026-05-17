@@ -8,10 +8,13 @@ import pytest
 
 def _make_orch():
     """Create a minimal stub Orchestrator for CB cascade tests."""
+    from pathlib import Path
+
     from orchestrator import Orchestrator
     o = Orchestrator.__new__(Orchestrator)
     o._agent_health = MagicMock()
     o._stage_timeouts = {}
+    o._discussions_dir = Path(__file__).parent.parent / "discussions"
     return o
 
 
