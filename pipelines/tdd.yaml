@@ -10,6 +10,7 @@ stages:
   - tier_review
   - junior_engineer
   - senior_engineer
+  - validation_gate
   - test_fix
   - reviewer
   - deploy_tester

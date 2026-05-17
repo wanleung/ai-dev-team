@@ -5,6 +5,7 @@ stages:
   - diagnose
   - architect
   - bug_fix
+  - validation_gate
   - reviewer
   - test_fix
   - deploy_tester
