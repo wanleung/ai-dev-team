@@ -61,6 +61,11 @@ from utils import sanitise as _sanitise, deep_merge as _deep_merge
 from core.errors import PipelineError as _PipelineError
 from core.exceptions import ConfigurationError
 
+try:
+    from agents.learning_agent import LearningAgent as LearningAgent  # noqa: F401
+except ImportError:
+    LearningAgent = None  # type: ignore
+
 log = logging.getLogger(__name__)
 
 console = Console()
@@ -1421,6 +1426,28 @@ class Orchestrator(TestFixLoopMixin):
                 "validation_gate: %d errors after %d attempts — marking as draft PR",
                 len(errors), result.validation_attempts,
             )
+            # Trigger LearningAgent to write anti-patterns from these errors
+            try:
+                from agents.failure_record import FailureRecord
+                from datetime import datetime
+                target_repo = getattr(self.target_github, "repo", None) if getattr(self, "target_github", None) else None
+                failure = FailureRecord(
+                    agent_role="engineer",
+                    error="\n".join(errors[:5]),
+                    fix="Human review required — see PR draft",
+                    pipeline=result.pipeline_label,
+                    timestamp=datetime.utcnow().isoformat(),
+                    target_repo=target_repo,
+                )
+                if LearningAgent is not None:
+                    learning_agent = LearningAgent(
+                        model=self.model,
+                        github_token=self._github_token,
+                        ollama_url=getattr(self, "ollama_url", None),
+                    )
+                    learning_agent.run(failure)
+            except Exception as e:
+                log.warning("LearningAgent failed to run: %s", e)
         else:
             result.validation_attempts += 1
             log.warning(
