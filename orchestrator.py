@@ -394,6 +394,11 @@ class PipelineResult:
     test_fix_history: list[str] = field(default_factory=list)
     deploy_retry_count: int = 0
     deploy_fix_history: list[str] = field(default_factory=list)
+    # Validation gate fields (Accuracy M2)
+    pipeline_label: str = "unknown"
+    validation_attempts: int = 0
+    validation_errors: list[str] = field(default_factory=list)
+    pr_draft: bool = False
     # PRD/Design revision loop tracking
     prd_revision_count: int = 0
     design_revision_count: int = 0
@@ -457,6 +462,10 @@ class PipelineResult:
             "design_output": self.design_output,
             "last_verdict": self.last_verdict,
             "next_label": self.next_label,
+            "pipeline_label": self.pipeline_label,
+            "validation_attempts": self.validation_attempts,
+            "validation_errors": self.validation_errors,
+            "pr_draft": self.pr_draft,
             "progress_comment_id": self.progress_comment_id,
             "run_id": self.run_id,
             "total_cost_usd": self.total_cost_usd,
@@ -495,6 +504,7 @@ class PipelineResult:
                     "prd_revision_count", "design_revision_count",
                     "prd_reviewer_draft", "design_reviewer_draft",
                     "design_output", "last_verdict", "next_label",
+                    "pipeline_label", "validation_attempts", "pr_draft",
                     "progress_comment_id",
                     "run_id", "total_cost_usd", "token_usage"]:
             setattr(r, key, data.get(key, getattr(r, key)))
@@ -508,6 +518,7 @@ class PipelineResult:
             return _PipelineError(code="UNKNOWN", stage="unknown", message=str(item), severity="error")
 
         r.errors = [_to_pipeline_error(item) for item in data.get("errors", [])]
+        r.validation_errors = data.get("validation_errors", [])
         return r
 
 
@@ -1324,6 +1335,99 @@ class Orchestrator(TestFixLoopMixin):
         if proposal.get("branch_name"):
             result.branch = proposal["branch_name"]
 
+    def _stage_validation_gate(self, result: "PipelineResult") -> None:
+        """Validate generated files before opening a PR.
+
+        Runs syntax check (py_compile) then lint (ruff F,E errors only) on all
+        .py files in result.all_files. On failure, if validation_attempts < 2,
+        appends errors to result.validation_errors for the re-prompt loop.
+        If validation_attempts >= 2, marks result.pr_draft = True so the PR
+        is opened as a draft with the needs-human-fix label.
+        """
+        import py_compile
+        import subprocess
+        import sys
+        import tempfile
+        import os
+
+        errors: list[str] = []
+        py_files = {p: c for p, c in (result.all_files or {}).items() if p.endswith(".py")}
+
+        if not py_files:
+            return  # nothing to validate
+
+        with tempfile.TemporaryDirectory(prefix="validation_gate_") as tmpdir:
+            # Write files to temp dir
+            for rel_path, content in py_files.items():
+                safe_rel = os.path.normpath(rel_path)
+                if safe_rel.startswith("..") or os.path.isabs(safe_rel):
+                    log.warning("validation_gate: skipping unsafe path %r", rel_path)
+                    continue
+                dest = os.path.join(tmpdir, safe_rel)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "w") as f:
+                    f.write(content)
+
+            # Step 1: syntax check
+            for rel_path in py_files:
+                abs_path = os.path.join(tmpdir, rel_path)
+                try:
+                    py_compile.compile(abs_path, doraise=True)
+                except py_compile.PyCompileError as e:
+                    errors.append(f"SyntaxError in {rel_path}: {e}")
+
+            # Step 2: lint (ruff F + E codes — errors and undefined names only)
+            if not errors:
+                try:
+                    proc = subprocess.run(
+                        [sys.executable, "-m", "ruff", "check", "--select", "F,E", "--output-format", "concise", tmpdir],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if proc.returncode != 0:
+                        lint_output = proc.stdout.replace(tmpdir + "/", "").replace(tmpdir + os.sep, "")
+                        errors.extend([
+                            line for line in lint_output.splitlines()
+                            if line.strip() and not line.startswith("Found")
+                        ])
+                except FileNotFoundError:
+                    log.warning("ruff not found — skipping lint check in validation_gate")
+                except subprocess.TimeoutExpired:
+                    log.warning("ruff timed out in validation_gate — skipping lint")
+
+        if not errors:
+            return  # all good
+
+        result.validation_errors = errors
+
+        result.add_error(_PipelineError(
+            code="VALIDATION_FAILED",
+            stage="validation_gate",
+            message=f"Validation failed with {len(errors)} error(s): {'; '.join(errors[:3])}",
+            severity="warning",
+        ))
+
+        if result.validation_attempts >= 2:
+            result.pr_draft = True
+            # Convert existing PR to draft if already open
+            if result.pr_number and getattr(self, "target_github", None):
+                try:
+                    self.target_github.convert_pull_request_to_draft(result.pr_number)
+                    log.info("validation_gate: converted PR #%d to draft", result.pr_number)
+                except Exception as e:
+                    log.warning("validation_gate: failed to convert PR to draft: %s", e)
+            log.warning(
+                "validation_gate: %d errors after %d attempts — marking as draft PR",
+                len(errors), result.validation_attempts,
+            )
+        else:
+            result.validation_attempts += 1
+            log.warning(
+                "validation_gate: %d errors on attempt %d — errors stored for re-prompt",
+                len(errors), result.validation_attempts,
+            )
+
     # ── Shared commit + PR helper (extracted from doc_orchestrator) ────────
 
     def _commit_and_open_pr(
@@ -1681,6 +1785,13 @@ class Orchestrator(TestFixLoopMixin):
                 description="Assembling proposal and opening PR...",
                 checkpoint_key="pr_proposal",
                 fn=lambda r: self._stage_pr_proposal(r),
+            ),
+            "validation_gate": PipelineStage(
+                name="validation_gate",
+                label="🔍 Validation Gate",
+                description="Syntax-checking and linting generated code...",
+                checkpoint_key="validation_gate",
+                fn=lambda r: self._stage_validation_gate(r),
             ),
         }
         # Wire per-stage timeouts from config

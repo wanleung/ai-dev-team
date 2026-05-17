@@ -296,6 +296,17 @@ class GitHubClient:
                     return prs[0]
             raise
 
+    def convert_pull_request_to_draft(self, pull_number: int) -> None:
+        """Convert an open PR to draft state via PATCH.
+
+        GitHub supports draft=True on PATCH since 2023. Raises RuntimeError on failure.
+        """
+        self._request(
+            "PATCH",
+            f"/repos/{self.repo}/pulls/{pull_number}",
+            json={"draft": True},
+        )
+
     def add_pr_review(self, pr_number: int, body: str, event: str = "COMMENT") -> dict:
         """Add a review to a pull request.
 

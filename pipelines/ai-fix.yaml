@@ -4,5 +4,6 @@
 stages:
   - diagnose
   - bug_fix
+  - validation_gate
   - reviewer
   - test_fix

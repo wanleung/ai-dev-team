@@ -8,6 +8,7 @@ stages:
   - tier_review
   - junior_engineer
   - senior_engineer
+  - validation_gate
   - reviewer
   - qa_planner
   - qa_engineer
