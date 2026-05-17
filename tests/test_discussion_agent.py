@@ -312,3 +312,202 @@ class TestDiscussionAgentRun:
         agent.run(result)
 
         assert "[Round 0 — Homework]" in result.discussion_transcript
+
+
+class TestDiscussionAgentMentionRouting:
+    """Tests for @mention-based turn order routing in discussion rounds."""
+
+    def test_extract_mentions_finds_role_names(self):
+        """@role tags in output are extracted correctly."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+        config = DiscussionConfig(participants=[
+            Participant(role="analyst", persona="You are an analyst."),
+            Participant(role="skeptic", persona="You are a skeptic."),
+        ])
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        mentions = agent._extract_mentions("I agree with @analyst but @skeptic raises good points.")
+        roles = [p.role for p in mentions]
+        assert "analyst" in roles
+        assert "skeptic" in roles
+
+    def test_extract_mentions_ignores_unknown_roles(self):
+        """@mentions for roles not in participants are filtered out."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+        config = DiscussionConfig(participants=[
+            Participant(role="analyst", persona="You are an analyst."),
+        ])
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        mentions = agent._extract_mentions("@unknown_role should answer this.")
+        assert mentions == []
+
+    def test_extract_mentions_empty_string(self):
+        """No mentions in plain text."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+        config = DiscussionConfig(participants=[
+            Participant(role="analyst", persona="You are an analyst."),
+        ])
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        assert agent._extract_mentions("No mentions here.") == []
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_mentioned_participant_goes_first_next_round(self, mock_backend):
+        """If analyst mentions @skeptic in round 1, skeptic speaks first in round 2."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+
+        call_sequence = []
+
+        def fake_call(messages):
+            n = len(call_sequence)
+            call_sequence.append(n)
+            # Round 1: analyst(0), skeptic(1) — analyst mentions @skeptic
+            # Round 2: skeptic(2) goes first (was mentioned), then analyst(3)
+            if n == 0:  # analyst round 1
+                return "Great point, @skeptic what do you think?"
+            elif n == 1:  # skeptic round 1
+                return "Interesting."
+            elif n == 2:  # should be skeptic round 2 (reordered)
+                return "Building on earlier..."
+            else:  # analyst round 2
+                return "Agreed."
+
+        backend = MagicMock()
+        backend.call.side_effect = fake_call
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[
+                Participant(role="analyst", persona="You are an analyst."),
+                Participant(role="skeptic", persona="You are a skeptic."),
+            ],
+            max_rounds=2,
+            homework_round=False,
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        transcript = agent._run_discussion_rounds(context="test topic", transcript=[])
+
+        round1_speakers = [t.role for t in transcript if t.round_num == 1]
+        round2_speakers = [t.role for t in transcript if t.round_num == 2]
+
+        # Round 1 follows original config order
+        assert round1_speakers[0] == "analyst"
+        # Round 2: skeptic was @mentioned by analyst, so skeptic goes first
+        assert round2_speakers[0] == "skeptic", f"Expected skeptic first in round 2, got {round2_speakers}"
+        assert round2_speakers[1] == "analyst"
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_no_mentions_preserves_original_order(self, mock_backend):
+        """Without @mentions, turn order stays the same each round."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+
+        backend = MagicMock()
+        backend.call.return_value = "Thoughtful response, no mentions."
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[
+                Participant(role="analyst", persona="A"),
+                Participant(role="skeptic", persona="B"),
+                Participant(role="optimist", persona="C"),
+            ],
+            max_rounds=2,
+            homework_round=False,
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        transcript = agent._run_discussion_rounds(context="topic", transcript=[])
+
+        round1 = [t.role for t in transcript if t.round_num == 1]
+        round2 = [t.role for t in transcript if t.round_num == 2]
+        assert round1 == ["analyst", "skeptic", "optimist"]
+        assert round2 == ["analyst", "skeptic", "optimist"]
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_self_mention_is_ignored(self, mock_backend):
+        """A participant mentioning their own @role doesn't boost themselves."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+
+        call_sequence = []
+
+        def fake_call(messages):
+            n = len(call_sequence)
+            call_sequence.append(n)
+            if n == 0:  # analyst round 1 — self-mentions
+                return "I @analyst think this is clear."
+            return "OK."
+
+        backend = MagicMock()
+        backend.call.side_effect = fake_call
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[
+                Participant(role="analyst", persona="analyst"),
+                Participant(role="skeptic", persona="skeptic"),
+            ],
+            max_rounds=2,
+            homework_round=False,
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        transcript = agent._run_discussion_rounds(context="topic", transcript=[])
+
+        round2_speakers = [t.role for t in transcript if t.round_num == 2]
+        # analyst self-mentioned — should NOT be boosted; order stays original
+        assert round2_speakers == ["analyst", "skeptic"], f"Got {round2_speakers}"
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_duplicate_mentions_appear_once(self, mock_backend):
+        """Multiple speakers mentioning the same @role only boosts it once."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+
+        call_sequence = []
+
+        def fake_call(messages):
+            n = len(call_sequence)
+            call_sequence.append(n)
+            if n == 0:  # analyst mentions optimist
+                return "@optimist what do you think?"
+            elif n == 1:  # skeptic also mentions optimist
+                return "@optimist please weigh in."
+            return "OK."
+
+        backend = MagicMock()
+        backend.call.side_effect = fake_call
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[
+                Participant(role="analyst", persona="A"),
+                Participant(role="skeptic", persona="B"),
+                Participant(role="optimist", persona="C"),
+            ],
+            max_rounds=2,
+            homework_round=False,
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        transcript = agent._run_discussion_rounds(context="topic", transcript=[])
+
+        round2_speakers = [t.role for t in transcript if t.round_num == 2]
+        assert round2_speakers.count("optimist") == 1, "optimist should appear exactly once"
+        assert round2_speakers[0] == "optimist"
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_mention_in_final_round_does_not_crash(self, mock_backend):
+        """@mentions in the last round are harmlessly ignored (no extra rounds)."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+
+        backend = MagicMock()
+        backend.call.return_value = "@skeptic what do you think?"  # always mentions
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[
+                Participant(role="analyst", persona="A"),
+                Participant(role="skeptic", persona="B"),
+            ],
+            max_rounds=1,
+            homework_round=False,
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        transcript = agent._run_discussion_rounds(context="topic", transcript=[])
+
+        # Should have exactly max_rounds * n_participants turns, no extra
+        assert len(transcript) == 2  # 1 round × 2 participants

@@ -15,6 +15,7 @@ Usage in pipeline.yaml (Milestone A — preset files):
 from __future__ import annotations
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 EARLY_EXIT_DEFAULT = "CONSENSUS_REACHED"
 _VALID_OUTPUT_MODES = frozenset({"transcript", "synthesis", "both"})
+_MENTION_RE = re.compile(r'@([A-Za-z_][A-Za-z0-9_]*)\b')
 
 
 @dataclass
@@ -261,14 +263,18 @@ class DiscussionAgent:
                     )
         return transcript
 
-    def _run_discussion_rounds(self, context: str, transcript: list[Turn]) -> list[Turn]:
-        """Run sequential discussion rounds with early exit support.
+    def _extract_mentions(self, text: str) -> list:
+        """Return Participant objects for valid @role mentions in text."""
+        role_map = {p.role: p for p in self.config.participants}
+        return [role_map[m] for m in _MENTION_RE.findall(text) if m in role_map]
 
-        Note: transcript is mutated in place and returned.
-        """
+    def _run_discussion_rounds(self, context: str, transcript: list[Turn]) -> list[Turn]:
+        """Run N discussion rounds with @mention-based turn order routing."""
+        turn_order = list(self.config.participants)
         for round_num in range(1, self.config.max_rounds + 1):
+            next_priority: list[Participant] = []
             consensus = False
-            for participant in self.config.participants:
+            for participant in turn_order:
                 try:
                     turn = self._call_participant(participant, context, transcript, round_num)
                     transcript.append(turn)
@@ -279,6 +285,10 @@ class DiscussionAgent:
                         )
                         consensus = True
                         break
+                    # Collect @mentions to reprioritise next round
+                    for p in self._extract_mentions(turn.content):
+                        if p is not participant and p not in next_priority:
+                            next_priority.append(p)
                 except Exception as exc:
                     logger.warning(
                         "DiscussionAgent: %s failed in round %d: %s",
@@ -287,6 +297,9 @@ class DiscussionAgent:
                     transcript.append(
                         Turn(role=participant.role, content=f"[Error: {exc}]", round_num=round_num)
                     )
+            # Rebuild turn order: mentioned roles first, rest in original order
+            remaining = [p for p in self.config.participants if p not in next_priority]
+            turn_order = next_priority + remaining
             if consensus:
                 break
         return transcript
