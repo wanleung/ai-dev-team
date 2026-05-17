@@ -1246,6 +1246,81 @@ class Orchestrator(TestFixLoopMixin):
             commit_msg_prefix="docs",
         )
 
+    # ── PR/Marketing Campaign pipeline stages ──────────────────────────────
+
+    def _stage_pr_analyst(self, result: "PipelineResult") -> None:
+        """Run the PR Analyst agent to produce structured research from the campaign brief."""
+        from agents.pr_analyst import PRAnalystAgent
+
+        agent = PRAnalystAgent(
+            model=self.model,
+            github_token=self._github_token,
+            ollama_url=self.ollama_url,
+        )
+        context = {
+            "issue_body": result.requirement or "",
+            "issue_number": result.issue_number,
+        }
+        updated = agent.run(context)
+        setattr(result, "pr_analyst_output", updated.get("pr_analyst"))
+
+    def _stage_pr_creative(self, result: "PipelineResult") -> None:
+        """Run the PR Creative agent to generate campaign concepts from analyst research."""
+        from agents.pr_creative import PRCreativeAgent
+
+        analyst_output = getattr(result, "pr_analyst_output", None)
+        if not analyst_output:
+            result.add_error("pr_creative stage: missing pr_analyst_output from previous stage")
+            return
+
+        agent = PRCreativeAgent(
+            model=self.model,
+            github_token=self._github_token,
+            ollama_url=self.ollama_url,
+        )
+        context = {
+            "pr_analyst": analyst_output,
+        }
+        updated = agent.run(context)
+        setattr(result, "pr_creative_output", updated.get("pr_creative"))
+
+    def _stage_pr_proposal(self, result: "PipelineResult") -> None:
+        """Run the PR Proposal agent to assemble and submit the campaign proposal PR."""
+        from agents.pr_proposal import PRProposalAgent
+
+        analyst_output = getattr(result, "pr_analyst_output", None)
+        creative_output = getattr(result, "pr_creative_output", None)
+
+        if not analyst_output or not creative_output:
+            result.add_error(
+                "pr_proposal stage: missing analyst or creative output from previous stages"
+            )
+            return
+
+        gh = self.target_github or self.github
+        agent = PRProposalAgent(
+            model=self.model,
+            github_token=self._github_token,
+            ollama_url=self.ollama_url,
+        )
+        context = {
+            "pr_analyst": analyst_output,
+            "pr_creative": creative_output,
+            "issue_number": result.issue_number,
+            "github_client": gh,
+        }
+        updated = agent.run(context)
+        proposal = updated.get("pr_proposal", {})
+        setattr(result, "pr_proposal_output", proposal)
+        if proposal.get("pr_url"):
+            logger.info("Campaign proposal PR opened: %s", proposal["pr_url"])
+        if proposal.get("pr_url"):
+            result.pr_url = proposal["pr_url"]
+        if proposal.get("pr_number"):
+            result.pr_number = proposal["pr_number"]
+        if proposal.get("branch_name"):
+            result.branch = proposal["branch_name"]
+
     # ── Shared commit + PR helper (extracted from doc_orchestrator) ────────
 
     def _commit_and_open_pr(
@@ -1468,6 +1543,27 @@ class Orchestrator(TestFixLoopMixin):
                 description="Committing docs and opening PR...",
                 checkpoint_key="doc_commit_pr",
                 fn=lambda r: self._stage_doc_commit_pr(r),
+            ),
+            "pr_analyst": PipelineStage(
+                name="pr_analyst",
+                label="🔍 PR Analyst",
+                description="Analysing campaign brief...",
+                checkpoint_key="pr_analyst",
+                fn=lambda r: self._stage_pr_analyst(r),
+            ),
+            "pr_creative": PipelineStage(
+                name="pr_creative",
+                label="🎨 PR Creative",
+                description="Generating campaign concepts...",
+                checkpoint_key="pr_creative",
+                fn=lambda r: self._stage_pr_creative(r),
+            ),
+            "pr_proposal": PipelineStage(
+                name="pr_proposal",
+                label="📋 PR Proposal",
+                description="Assembling proposal and opening PR...",
+                checkpoint_key="pr_proposal",
+                fn=lambda r: self._stage_pr_proposal(r),
             ),
         }
         # Wire per-stage timeouts from config

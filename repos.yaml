@@ -51,6 +51,16 @@ watchers:
     # Additional watcher entries have been migrated to repos-available/.
     # Use `python watcher.py repo enable <name>` to activate them.
 
+    # ── Watcher 2: PR/Marketing Campaign Pipeline ──────────────────────────
+    # Monitors wanleung/pr-campaigns for issues labelled "pr-campaign".
+    # Runs the pr-campaign pipeline (pipelines/pr-campaign.yaml).
+  - tracker_repo: wanleung/pr-campaigns
+    default_target: wanleung/pr-campaigns
+    parallel_issues: 1
+    labels:
+      pr-campaign: pr-campaign
+    enabled: true
+
 settings:
   # Maximum parallel pipeline runs (one per issue)
   max_parallel: 3
@@ -63,7 +73,3 @@ settings:
 
   # Default LLM model (overridden by config.yaml per-agent settings)
   model: "gpt-4.1"
-
-  # Optional: model used by the conflict resolver agent when fixing merge conflicts.
-  # Falls back to senior_model (if set) or the default model above.
-  # conflict_resolver_model: "gpt-4o"

@@ -10,6 +10,15 @@
 - CORS middleware configured for frontend-backend separation
 - Local filesystem image storage (MVP only, not CDN)
 
+## PR/Marketing Campaign Pipeline
+- Three-agent sequential pipeline: PRAnalystAgent → PRCreativeAgent → PRProposalAgent
+- All agents extend `BaseAgent` with synchronous GitHub-driven flow
+- Human posts issue → watcher dispatches pipeline → PR opened for approval
+- JSON-strict output contracts with validation and fallback retry prompts
+- Exponential backoff on LLM timeouts (2^attempt seconds, max 3 retries)
+- Branch naming convention: `campaign/{issue_number}-{slugified_big_idea}`
+- Watcher monitors `wanleung/pr-campaigns` repo, triggers on `pr-campaign` label
+
 ## Data Model
 - Core entities: Product, Category, Cart, CartItem, Order, OrderItem, Review, User
 - PostgreSQL JSONB for flexible product specifications and shipping addresses

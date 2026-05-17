@@ -13,6 +13,11 @@
 - Stripe PaymentIntents integration configured
 - CORS middleware and async lifespan configured
 - Pillow integrated for image processing
+- PR/Marketing Campaign Pipeline agents: PRAnalystAgent, PRCreativeAgent, PRProposalAgent
+- PR/Marketing Campaign Pipeline config: `pipelines/pr-campaign.yaml`
+- PR/Marketing Campaign Watcher config: `repos.yaml`
+- PR/Marketing Campaign issue template: `.github/ISSUE_TEMPLATE/campaign-brief.md`
+- PR/Marketing Campaign role prompts: `roles/pr_analyst.md`, `roles/pr_creative.md`, `roles/pr_proposal.md`
 
 ## In Progress
 - None
@@ -28,6 +33,15 @@
 ## Known Issues / Tech Debt
 - **Product→Review relationship asymmetry** (`backend/app/models/product.py:38-43`): filtered `primaryjoin` with `back_populates` creates asymmetric bidirectional relationship that will break admin moderation workflow — blocks merge
 - **Guest cart Redis implementation unverified**: cart model and service files omitted from code review — critical path for checkout, still unresolved from previous runs
+- Known Issue: None at this time — all agent LLM calls use BaseAgent.call() correctly.
+- **No unit tests for PR/Marketing Campaign agents**: only watcher PR tests exist in `tests/test_watcher_prs.py`
+- **`repos.yaml` not integrated**: not added to `repos-enabled/` — pipeline won't trigger until configured
+- **`GitHubClient.create_pull_request()` return structure assumed**: not verified against actual implementation
+- **Missing integration tests**: no end-to-end pipeline execution tests
+- **Companion repo `wanleung/pr-campaigns` not created**: required for watcher to function
+- **LLM provider fallback untested**: only GPT-4.1 assumed, Ollama/OpenCode/Nvidia not verified
+- **No rate-limit handling for GitHub API**: beyond 60s wait in PRProposalAgent
+- **Role prompt files lack character limit enforcement**: in LLM output validation
 - Product catalog & CMS: no product pages, categories, or media upload endpoints
 - Review system: incomplete (blocked by model relationship issue)
 - Cart & checkout: not implemented (UK VAT/GBP handling pending)

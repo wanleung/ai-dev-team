@@ -1,19 +1,25 @@
 # Active Context
 
 ## Current Focus
-- Architecture design document creation (missing module breakdown, data flows, security model, acceptance matrix)
-- Decision needed: build fresh MVP vs evolve existing codebase
+- PR/Marketing Campaign Pipeline integration and testing
+- Resolve flagged issues: `pr_proposal.py` LLM call signature mismatch, `pr_creative.py` prompt separation inconsistency
+- Add `repos.yaml` to `repos-enabled/` and configure watcher
 
 ## Recent Changes
-- Pipeline run completed brainstorming/design phase for MCP Email Service errors module
+- PR/Marketing Campaign Pipeline built in `workspace/pr_marketing_campaign_pipeline/`
+  - Three agents extending `BaseAgent`: PRAnalystAgent, PRCreativeAgent, PRProposalAgent
+  - Pipeline config: `pipelines/pr-campaign.yaml` (3 sequential stages)
+  - Watcher config: `repos.yaml` monitoring `wanleung/pr-campaigns` repo
+  - Issue template: `.github/ISSUE_TEMPLATE/campaign-brief.md`
+  - Role prompts: `roles/pr_analyst.md`, `roles/pr_creative.md`, `roles/pr_proposal.md`
+- Architecture design document creation for MCP Email Service (missing module breakdown, data flows, security model, acceptance matrix)
 - Error handling strategy selected: Option B (Consolidate + MCP mapping)
 - PRD drafted defining MCP tools for email operations
 
 ## Immediate Next Steps
-1. Produce architecture design document with all required sections
-2. Decide on MVP vs evolution approach
-3. Implement Python source files: `main.py`, `imap/client.py`, tool handlers, errors module
-4. Implement IMAP connection validation and status reporting
-5. Implement MCP tools: read inbox, search, fetch attachments
-6. Add security: TLS enforcement, credential handling, input validation
-7. Run linter and code review on actual source code
+1. Create `wanleung/pr-campaigns` companion repo with issue template (campaign-brief.md removed from this repo — belongs there)
+2. Add `repos.yaml` to `repos-enabled/` and configure watcher
+3. Verify `GitHubClient.create_pull_request()` signature and return value
+4. Add pipeline to orchestrator's available pipelines list
+5. Test with alternative LLM backends (Ollama, etc.)
+6. Resume MCP Email Service architecture design document

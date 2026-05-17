@@ -1,0 +1,6 @@
+# PR/Marketing Campaign Pipeline
+# Stages: analyst research → creative concepts → proposal PR
+stages:
+  - pr_analyst
+  - pr_creative
+  - pr_proposal
