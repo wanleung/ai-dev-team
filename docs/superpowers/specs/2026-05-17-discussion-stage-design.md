@@ -231,9 +231,34 @@ When implemented, the pipeline builder UI will support an inline `discuss` block
 
 ---
 
-## Out of Scope (Milestone A)
+## Milestone C — Direct Agent-to-Agent Replies
 
-- Agents responding to each other with @mentions (each participant sees the full transcript, not individual messages)
-- Persistent discussion history across pipeline runs (memory bank integration is future)
-- Dynamic participant count based on issue content
-- Streaming output during discussion (log is written after each turn, but no live UI update)
+Agents respond to each other by @mention rather than addressing the whole group. Each participant's prompt includes the transcript but also highlights messages directed at them specifically. Enables more natural back-and-forth and reduces noise in large groups.
+
+- Parser extracts `@role:` tags from participant output
+- Targeted participant is moved to the front of the next turn order
+- Non-targeted participants still see the full transcript but are not prompted to respond unless the round reaches them normally
+
+## Milestone D — Persistent Discussion Memory
+
+Discussion transcripts and syntheses are stored in the memory bank (tiered SQLite + pgvector) and surfaced as RAG context in future runs on the same repo or topic. Enables agents to recall past debates and avoid repeating resolved arguments.
+
+- `discussion_transcript` and `discussion_synthesis` written to memory bank after each run
+- Future discuss stages query memory for similar past discussions as additional context
+- Configurable via `memory: true/false` in preset YAML
+
+## Milestone E — Dynamic Participant Count
+
+The discussion stage infers the right number and type of participants from the issue content or pipeline context rather than using a fixed list from the preset. For example, a security-related issue automatically includes a security-reviewer persona.
+
+- `auto_participants` config option in preset YAML
+- Orchestrator calls a lightweight LLM to select participant roles from a defined pool before the discussion starts
+- Falls back to preset participant list if auto-selection fails
+
+## Milestone F — Live Streaming Output
+
+Discussion turns are streamed to the Rich console in real time as agents speak, rather than the transcript appearing only after the stage completes.
+
+- Each `Turn` is printed to the console as it is returned from the LLM backend
+- Progress tracker shows current speaker and round number
+- Transcript still written to `PipelineResult` at end of stage (no change to downstream behaviour)
