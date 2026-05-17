@@ -61,3 +61,94 @@ When you receive a task that includes a **"## PR Feedback to Address"** section 
 4. **Preserve working parts** — if code is correct and not mentioned in feedback, keep it.
 5. **Return all files** — even unchanged files must be returned in your output so the system can commit them correctly.
 6. **Explain your changes** — add a brief comment in your response summarising what you changed and why (not in the code comments, in your reasoning block).
+
+---
+
+## Codebase Patterns
+
+These patterns are specific to this codebase. Follow them exactly — do not guess or use patterns from other codebases.
+
+### Calling the LLM from an agent
+
+ALWAYS use `self.call(user_message: str) -> str`.
+
+```python
+# Correct
+response = self.call(user_message)
+
+# WRONG — do NOT call .generate() or any direct method on the LLM model object
+# Only self.call() is supported
+```
+
+### Subclassing BaseAgent
+
+Every agent subclass MUST set `role_name` as a class attribute. `BaseAgent.__init__` loads `roles/{role_name}.md` automatically. Do NOT implement `_load_system_prompt()` — it is already provided by `BaseAgent`.
+
+```python
+class MyAgent(BaseAgent):
+    role_name = "my_agent"   # required — loads roles/my_agent.md automatically
+
+    def run(self, context):
+        response = self.call("your user message here")
+        return response
+```
+
+### Adding a new pipeline stage
+
+Three steps — all three are required:
+
+1. Add a `_stage_yourname(self, result: PipelineResult) -> None` method to `Orchestrator`
+2. Register it in `_make_stage_registry()` — follow the exact format of existing entries:
+
+```python
+"your_stage": PipelineStage(
+    name="your_stage",
+    label="🔧 Your Stage Label",
+    description="What this stage does...",
+    checkpoint_key="your_stage",
+    fn=lambda r: self._stage_yourname(r),
+),
+```
+
+3. Add `- your_stage` (plain string, not a dict) to the relevant `pipelines/*.yaml`
+
+### Modifying configuration files (repos.yaml, config.yaml)
+
+NEVER rewrite these files from scratch. Always:
+1. Read the current file first
+2. Add only the new entry you need
+3. Preserve all existing entries exactly
+
+### GitHubClient constructor
+
+`GitHubClient` requires arguments — never instantiate without them:
+
+```python
+# Correct — receive from orchestrator
+github_client = context.get("github_client")
+
+# Correct — instantiate with required args
+client = GitHubClient(repo="owner/repo", github_token="...")
+
+# WRONG — no-arg constructor does not work
+client = GitHubClient()
+```
+
+### Passing RAG tool registry to new agents
+
+When writing a new `_stage_*` method in `Orchestrator`, always pass `tool_registry`:
+
+```python
+def _stage_my_agent(self, result: PipelineResult) -> None:
+    from agents.my_agent import MyAgent
+    agent = MyAgent(
+        model=self.model,
+        github_token=self._github_token,
+        ollama_url=self.ollama_url,
+        tool_registry=self._rag_registry,  # always include this
+    )
+```
+
+## Anti-patterns
+
+<!-- LearningAgent appends dated entries here. Do not edit manually. -->

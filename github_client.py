@@ -361,14 +361,17 @@ class GitHubClient:
         """Return list of files changed in a pull request."""
         return self._request("GET", f"/repos/{self.repo}/pulls/{pr_number}/files")
 
-    def get_file_content(self, path: str, ref: str) -> Optional[str]:
+    def get_file_content(self, path: str, ref: Optional[str] = None) -> Optional[str]:
         """Fetch decoded text content of a file at a given ref (branch/sha).
 
         Returns None if the file does not exist or cannot be decoded.
         """
         try:
+            params: dict = {}
+            if ref is not None:
+                params["ref"] = ref
             data = self._request(
-                "GET", f"/repos/{self.repo}/contents/{path}", params={"ref": ref}
+                "GET", f"/repos/{self.repo}/contents/{path}", params=params or None
             )
         except RuntimeError:
             return None

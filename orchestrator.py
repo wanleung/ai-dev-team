@@ -1246,7 +1246,7 @@ class Orchestrator(TestFixLoopMixin):
             commit_msg_prefix="docs",
         )
 
-    # ── PR/Marketing Campaign pipeline stages ──────────────────────────────
+    # ── PR/Marketing Campaign pipeline stages ─────────────────────────────
 
     def _stage_pr_analyst(self, result: "PipelineResult") -> None:
         """Run the PR Analyst agent to produce structured research from the campaign brief."""
@@ -1256,6 +1256,7 @@ class Orchestrator(TestFixLoopMixin):
             model=self.model,
             github_token=self._github_token,
             ollama_url=self.ollama_url,
+            tool_registry=self._rag_registry,
         )
         context = {
             "issue_body": result.requirement or "",
@@ -1277,6 +1278,7 @@ class Orchestrator(TestFixLoopMixin):
             model=self.model,
             github_token=self._github_token,
             ollama_url=self.ollama_url,
+            tool_registry=self._rag_registry,
         )
         context = {
             "pr_analyst": analyst_output,
@@ -1302,6 +1304,7 @@ class Orchestrator(TestFixLoopMixin):
             model=self.model,
             github_token=self._github_token,
             ollama_url=self.ollama_url,
+            tool_registry=self._rag_registry,
         )
         context = {
             "pr_analyst": analyst_output,
@@ -1393,6 +1396,120 @@ class Orchestrator(TestFixLoopMixin):
             result.pr_url = pr.get("html_url")
         except Exception as exc:
             result.add_error(f"PR creation failed: {exc}")
+
+    def _get_repo_patterns_dir(self) -> Path:
+        """Return the path to repo-patterns/ directory. Patchable in tests."""
+        return Path(__file__).parent / "repo-patterns"
+
+    def _build_engineer_context(
+        self,
+        task: str,
+        target_gh: Optional["GitHubClient"] = None,
+    ) -> str:
+        """Inject relevant codebase context into an engineer task prompt.
+
+        Two tiers:
+        - Tier A (local, keyword-triggered): ai-software-house internal patterns —
+          base_agent.py signatures, repos.yaml content, _make_stage_registry pattern.
+          Only activated for tasks that are modifying ai-software-house itself.
+        - Tier B (remote+fallback, always checked when target_gh is set): repo-specific
+          patterns from the target repo. Checks in priority order (first match wins):
+            1. .github/copilot-instructions.md  (GitHub Copilot standard)
+            2. CLAUDE.md                        (Claude Code standard)
+            3. .github/AGENTS.md                (our convention)
+            4. repo-patterns/{slug}.md          (local fallback)
+
+        Args:
+            task: The task description / design string.
+            target_gh: GitHubClient pointed at the target repo, or None when working
+                       on ai-software-house itself.
+
+        Returns:
+            Concatenated context string, or empty string if nothing found.
+        """
+        task_lower = task.lower()
+        parts: list[str] = []
+
+        # ── Tier A: ai-software-house meta-patterns ─────────────────────────────
+        # Only fires when working on ai-software-house itself (no external target repo).
+        if target_gh is None:
+            if "baseagent" in task_lower or "base_agent" in task_lower or (
+                "agent" in task_lower and "subclass" in task_lower
+            ):
+                try:
+                    lines = (Path(__file__).parent / "agents/base_agent.py").read_text().splitlines()
+                    snippet = "\n".join(lines[:140])
+                    parts.append(
+                        "## Reference: agents/base_agent.py (first 140 lines)\n"
+                        "```python\n" + snippet + "\n```"
+                    )
+                except FileNotFoundError:
+                    pass
+
+            if "repos.yaml" in task_lower or "watcher" in task_lower:
+                try:
+                    contents = (Path(__file__).parent / "repos.yaml").read_text()
+                    parts.append(
+                        "## Reference: current repos.yaml (read before modifying — add entries, never rewrite)\n"
+                        "```yaml\n" + contents + "\n```"
+                    )
+                except FileNotFoundError:
+                    pass
+
+            if "_make_stage_registry" in task_lower or "pipeline stage" in task_lower or (
+                "orchestrator" in task_lower and "stage" in task_lower
+            ):
+                try:
+                    src = (Path(__file__).parent / "orchestrator.py").read_text()
+                    start = src.find("    def _make_stage_registry(")
+                    end = src.find("\n    def ", start + 1)
+                    if start != -1:
+                        snippet = src[start:end] if end != -1 else src[start:start + 3000]
+                        parts.append(
+                            "## Reference: _make_stage_registry() pattern in orchestrator.py\n"
+                            "```python\n" + snippet + "\n```"
+                        )
+                except FileNotFoundError:
+                    pass
+
+        # ── Tier B: repo-specific patterns ───────────────────────────────────────
+        if target_gh is not None:
+            repo_slug = target_gh.repo.replace("/", "-")
+            agents_md: Optional[str] = None
+            source_label: str = ""
+
+            remote_candidates = [
+                (".github/copilot-instructions.md", "`.github/copilot-instructions.md`"),
+                ("CLAUDE.md", "`CLAUDE.md`"),
+                (".github/AGENTS.md", "`.github/AGENTS.md`"),
+            ]
+
+            for remote_path, label in remote_candidates:
+                try:
+                    content = target_gh.get_file_content(remote_path)
+                except Exception:
+                    continue
+                if content is not None:
+                    agents_md = content
+                    source_label = label
+                    break
+
+            if agents_md is None:
+                local_path = self._get_repo_patterns_dir() / f"{repo_slug}.md"
+                if local_path.exists():
+                    try:
+                        agents_md = local_path.read_text(encoding="utf-8")
+                        source_label = f"`repo-patterns/{repo_slug}.md` (local fallback)"
+                    except OSError:
+                        pass
+
+            if agents_md:
+                parts.append(
+                    f"## Codebase Patterns for {target_gh.repo} (from {source_label})\n\n"
+                    + agents_md
+                )
+
+        return "\n\n".join(parts)
 
     def _make_stage_registry(self) -> dict[str, "PipelineStage"]:
         """Build the full registry of all known pipeline stages."""
@@ -3179,6 +3296,13 @@ class Orchestrator(TestFixLoopMixin):
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
         project_dir = (self.workspace_dir / safe).resolve()
         framework_context = self.framework_docs_loader.load(project_dir)
+        engineer_context = ""
+        try:
+            engineer_context = self._build_engineer_context(result.design, self.target_github)
+        except Exception as exc:
+            logger.warning("_build_engineer_context failed (non-fatal): %s", exc)
+        if engineer_context:
+            framework_context = (framework_context + "\n\n" + engineer_context) if framework_context else engineer_context
         if self.target_github:
             eng_result = self.engineer.run_with_github(
                 result.design,

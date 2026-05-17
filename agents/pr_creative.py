@@ -13,12 +13,24 @@ REQUIRED_PLATFORMS = ["LinkedIn", "Instagram", "TikTok", "X/Twitter"]
 class PRCreativeAgent(BaseAgent):
     """
     PR Creative Agent (Casey) - Generates campaign concepts from analyst research.
-    
+
     Subclasses BaseAgent to leverage LLM integration and orchestrator context handling.
     Consumes structured analyst output and produces 3-5 distinct campaign concepts.
     """
 
     role_name = "pr_creative"
+
+    def __init__(self, *args, tool_registry=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._tool_registry = tool_registry
+
+    def _call(self, prompt: str) -> str:
+        if self._tool_registry is not None:
+            try:
+                return self.call_with_tools(prompt, tools=self._tool_registry)
+            except (AttributeError, NotImplementedError):
+                pass
+        return self.call(prompt)
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -68,7 +80,7 @@ class PRCreativeAgent(BaseAgent):
         last_error = None
         for attempt in range(max_retries):
             try:
-                return self.call(prompt)
+                return self._call(prompt)
             except Exception as e:
                 last_error = e
                 if "timeout" in str(e).lower() and attempt < max_retries - 1:

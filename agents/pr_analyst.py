@@ -31,6 +31,18 @@ class PRAnalystAgent(BaseAgent):
 
     role_name = "pr_analyst"
 
+    def __init__(self, *args, tool_registry=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._tool_registry = tool_registry
+
+    def _call(self, prompt: str) -> str:
+        if self._tool_registry is not None:
+            try:
+                return self.call_with_tools(prompt, tools=self._tool_registry)
+            except (AttributeError, NotImplementedError):
+                pass
+        return self.call(prompt)
+
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the PR Analyst pipeline stage.
 
@@ -191,7 +203,7 @@ class PRAnalystAgent(BaseAgent):
                 logger.info(
                     f"Calling LLM for PR Analyst (attempt {attempt + 1}/{MAX_LLM_RETRIES})"
                 )
-                return self.call(user_prompt)
+                return self._call(user_prompt)
 
             except TimeoutError as e:
                 last_exception = e
@@ -318,7 +330,7 @@ class PRAnalystAgent(BaseAgent):
         logger.info("Retrying with fallback prompt for JSON validation")
 
         try:
-            retry_response = self.call(
+            retry_response = self._call(
                 f"Your previous response could not be parsed. "
                 f"Please return ONLY the JSON object with all required keys: "
                 f"Opportunity, Audience, Angle, Channels, Risks. "
