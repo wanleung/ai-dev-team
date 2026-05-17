@@ -50,14 +50,18 @@ class AnthropicBackend(LLMBackend):
         """Return False — Anthropic backend does not support tool calling."""
         return False
 
-    def call(self, messages: list[dict], run_id: str | None = None) -> str:
+    def call(self, messages: list[dict], run_id: str | None = None,
+             on_token: "Callable[[str], None] | None" = None) -> str:
         """Call the Anthropic API with the given messages.
 
         Extracts the system prompt from the first "system" role message (if present)
         and passes it separately to ``client.messages.create(system=...)``.
 
         Args:
-            messages: List of message dicts with "role" and "content" keys.
+            messages:  List of message dicts with "role" and "content" keys.
+            run_id:    Optional pipeline run ID (unused by this backend).
+            on_token:  Optional streaming callback — intentionally not forwarded;
+                       this backend does not support streaming.
 
         Returns:
             The text content of the first response block.

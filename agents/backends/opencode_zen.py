@@ -92,10 +92,19 @@ class OpenCodeZenBackend(LLMBackend):
         """Return True if this backend supports tool/function calling."""
         return self._oai_backend is not None
 
-    def call(self, messages: list[dict], run_id: str | None = None) -> str:
-        """Call the backend with a list of messages and return the response text."""
+    def call(self, messages: list[dict], run_id: str | None = None,
+             on_token: "Callable[[str], None] | None" = None) -> str:
+        """Call the backend with a list of messages and return the response text.
+
+        Args:
+            messages:  Full message list in OpenAI chat format.
+            run_id:    Optional pipeline run ID for token ledger emission.
+            on_token:  Optional streaming callback forwarded to the OAI backend
+                       when using a non-Claude model.  Intentionally not forwarded
+                       on the Anthropic path; that backend does not support streaming.
+        """
         if self._oai_backend:
-            return self._oai_backend.call(messages)
+            return self._oai_backend.call(messages, run_id=run_id, on_token=on_token)
         # Anthropic path — extract system from messages
         system = ""
         chat_messages = []

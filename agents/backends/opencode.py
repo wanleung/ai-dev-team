@@ -44,11 +44,15 @@ class OpenCodeBackend(LLMBackend):
         """Return False — opencode CLI does not support function calling."""
         return False
 
-    def call(self, messages: list[dict], run_id: str | None = None) -> str:
+    def call(self, messages: list[dict], run_id: str | None = None,
+             on_token: "Callable[[str], None] | None" = None) -> str:
         """Build a combined prompt from messages and run via opencode CLI.
 
         Args:
-            messages: Full message list (system + history + user message).
+            messages:  Full message list (system + history + user message).
+            run_id:    Optional pipeline run ID (unused by this backend).
+            on_token:  Optional streaming callback — intentionally not forwarded;
+                       this backend does not support streaming.
 
         Returns:
             The assistant reply text.

@@ -20,7 +20,7 @@ def _make_backend(reply: str = "ok", raises=None, supports_tools: bool = True):
         def supports_tools(self):
             return self._supports_tools
 
-        def call(self, messages):
+        def call(self, messages, run_id=None, on_token=None):
             self.call_count += 1
             if self._raises:
                 raise self._raises
@@ -101,7 +101,7 @@ def test_fallback_replays_history_on_secondary():
 
     class CapturingBackend:
         model = "capturing"
-        def call(self, messages):
+        def call(self, messages, run_id=None, on_token=None):
             received_messages.extend(messages)
             return "captured"
         def call_with_tools(self, messages, tools, max_turns=8):

@@ -424,7 +424,7 @@ class TestDiscussionAgentMentionRouting:
 
         call_sequence = []
 
-        def fake_call(messages):
+        def fake_call(messages, **kwargs):
             n = len(call_sequence)
             call_sequence.append(n)
             # Round 1: analyst(0), skeptic(1) — analyst mentions @skeptic
@@ -495,7 +495,7 @@ class TestDiscussionAgentMentionRouting:
 
         call_sequence = []
 
-        def fake_call(messages):
+        def fake_call(messages, **kwargs):
             n = len(call_sequence)
             call_sequence.append(n)
             if n == 0:  # analyst round 1 — self-mentions
@@ -528,7 +528,7 @@ class TestDiscussionAgentMentionRouting:
 
         call_sequence = []
 
-        def fake_call(messages):
+        def fake_call(messages, **kwargs):
             n = len(call_sequence)
             call_sequence.append(n)
             if n == 0:  # analyst mentions optimist
@@ -579,3 +579,122 @@ class TestDiscussionAgentMentionRouting:
 
         # Should have exactly max_rounds * n_participants turns, no extra
         assert len(transcript) == 2  # 1 round × 2 participants
+
+
+# ── Live Console Streaming ────────────────────────────────────────────────────
+
+class TestDiscussionStreaming:
+    """Tests for live console streaming in DiscussionAgent."""
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_console_prints_turn_header(self, mock_backend):
+        """When console is set, a turn header is printed per participant."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        backend.call.return_value = "A response."
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[Participant(role="analyst", persona="A")],
+            max_rounds=1,
+            homework_round=False,
+        )
+        console = MagicMock()
+        agent = DiscussionAgent(config=config, model="gpt-4.1", console=console)
+        agent._run_discussion_rounds(context="topic", transcript=[])
+
+        # Should have printed a header mentioning 'analyst'
+        printed_calls = [str(c) for c in console.print.call_args_list]
+        assert any("analyst" in c for c in printed_calls), f"No analyst header in: {printed_calls}"
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_no_console_no_error(self, mock_backend):
+        """Without console, discussion runs silently without error."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        backend.call.return_value = "A response."
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[Participant(role="analyst", persona="A")],
+            max_rounds=1,
+            homework_round=False,
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")  # no console
+        transcript = agent._run_discussion_rounds(context="topic", transcript=[])
+        assert len(transcript) == 1
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_on_token_passed_when_console_set(self, mock_backend):
+        """When console is set, backend.call() is invoked with an on_token kwarg."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        backend.call.return_value = "A response."
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[Participant(role="analyst", persona="A")],
+            max_rounds=1,
+            homework_round=False,
+        )
+        console = MagicMock()
+        agent = DiscussionAgent(config=config, model="gpt-4.1", console=console)
+        agent._run_discussion_rounds(context="topic", transcript=[])
+
+        # backend.call must have been called with on_token= kwarg
+        call_kwargs = backend.call.call_args_list[0].kwargs
+        assert "on_token" in call_kwargs, f"on_token not passed to backend.call: {backend.call.call_args_list}"
+        assert callable(call_kwargs["on_token"])
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_no_on_token_without_console(self, mock_backend):
+        """Without console, backend.call() has no on_token kwarg (None or absent)."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        backend.call.return_value = "A response."
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[Participant(role="analyst", persona="A")],
+            max_rounds=1,
+            homework_round=False,
+        )
+        agent = DiscussionAgent(config=config, model="gpt-4.1")
+        agent._run_discussion_rounds(context="topic", transcript=[])
+
+        call_kwargs = backend.call.call_args_list[0].kwargs
+        on_token = call_kwargs.get("on_token")
+        assert on_token is None, f"Expected on_token=None without console, got: {on_token}"
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_homework_round_does_not_stream(self, mock_backend):
+        """Homework round never passes on_token even when console is set."""
+        from agents.discussion_agent import DiscussionAgent, DiscussionConfig, Participant
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        backend.call.return_value = "A response."
+        mock_backend.return_value = backend
+
+        config = DiscussionConfig(
+            participants=[Participant(role="analyst", persona="A")],
+            max_rounds=1,
+            homework_round=True,
+        )
+        console = MagicMock()
+        agent = DiscussionAgent(config=config, model="gpt-4.1", console=console)
+        # Only run homework round, not discussion rounds
+        agent._run_homework_round(context="topic")
+
+        # on_token must NOT be a callable in homework round calls
+        for call in backend.call.call_args_list:
+            on_token = call.kwargs.get("on_token")
+            assert on_token is None, f"Homework round should not stream, got on_token={on_token}"

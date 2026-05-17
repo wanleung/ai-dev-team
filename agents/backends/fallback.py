@@ -46,10 +46,11 @@ class FallbackLLMBackend(LLMBackend):
     def supports_tools(self) -> bool:
         return self._backends[0].supports_tools()
 
-    def call(self, messages: list[dict], run_id: str | None = None) -> str:
+    def call(self, messages: list[dict], run_id: str | None = None,
+             on_token: "Callable[[str], None] | None" = None) -> str:
         for i, backend in enumerate(self._backends):
             try:
-                return backend.call(messages)
+                return backend.call(messages, on_token=on_token)
             except FALLBACK_ERRORS as exc:
                 if i < len(self._backends) - 1:
                     next_model = self._backends[i + 1].model

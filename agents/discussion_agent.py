@@ -153,12 +153,27 @@ class DiscussionAgent:
         model: str = "gpt-4.1",
         github_token: Optional[str] = None,
         ollama_url: str = "http://localhost:11434",
+        console=None,
     ) -> None:
-        """Initialise with a resolved DiscussionConfig."""
+        """Initialise with a resolved DiscussionConfig.
+
+        Args:
+            config:       Resolved :class:`DiscussionConfig` instance.
+            model:        Default LLM model string for all participants.
+            github_token: Optional GitHub token (forwarded to BaseAgent).
+            ollama_url:   Ollama base URL (forwarded to BaseAgent).
+            console:      Optional ``rich.console.Console`` instance.  When
+                          provided, each participant's turn header is printed
+                          and response tokens are streamed live.  Streaming
+                          only applies to sequential discussion rounds — the
+                          homework round is always silent regardless of this
+                          setting.
+        """
         self.config = config
         self.model = model
         self.github_token = github_token
         self.ollama_url = ollama_url
+        self.console = console
         self._backend_cache: dict = {}
 
     @classmethod
@@ -225,8 +240,22 @@ class DiscussionAgent:
         transcript: list[Turn],
         round_num: int,
     ) -> Turn:
-        """Call one participant. Returns a Turn with the participant's response."""
+        """Call one participant. Returns a Turn with the participant's response.
+
+        When ``self.console`` is set and this is a discussion round
+        (``round_num > 0``), a turn header is printed and tokens are streamed
+        live to the console.  Homework-round calls (``round_num == 0``) are
+        always silent to avoid garbled output from concurrent threads.
+        """
         backend = self._make_backend(participant.llm)
+
+        # Print turn header for sequential discussion rounds only.
+        streaming = self.console is not None and round_num > 0
+        if streaming:
+            self.console.print(
+                f"\n[bold cyan]{participant.role}[/bold cyan] (round {round_num})"
+            )
+
         if transcript:
             transcript_text = self._format_transcript_for_prompt(transcript)
             user = (
@@ -245,7 +274,12 @@ class DiscussionAgent:
             {"role": "system", "content": participant.persona},
             {"role": "user", "content": user},
         ]
-        content = backend.call(messages)
+
+        on_token = None
+        if streaming:
+            on_token = lambda tok: self.console.print(tok, end="", highlight=False)
+
+        content = backend.call(messages, on_token=on_token)
         return Turn(role=participant.role, content=content, round_num=round_num)
 
     def _run_homework_round(self, context: str) -> list[Turn]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections.abc import Callable
 
 import httpx
 from openai import OpenAI
@@ -70,7 +71,12 @@ class OllamaBackend(OpenAICompatibleBackend):
             return {"extra_body": {"think": False}}
         return {}
 
-    def _stream_call(self, messages: list[dict], run_id: str | None = None) -> str:
+    def _stream_call(
+        self,
+        messages: list[dict],
+        run_id: str | None = None,
+        on_token: Callable[[str], None] | None = None,
+    ) -> str:
         """Collect a streaming Ollama response, including thinking content when requested.
 
         Ollama thinking models stream reasoning via ``delta.model_extra['reasoning_content']``
@@ -82,8 +88,11 @@ class OllamaBackend(OpenAICompatibleBackend):
             any residual ``<think>`` tags are stripped by ``_post_process``.
 
         Args:
-            messages: Full message list in OpenAI chat format.
-            run_id:   Optional pipeline run ID for token ledger emission.
+            messages:  Full message list in OpenAI chat format.
+            run_id:    Optional pipeline run ID for token ledger emission.
+            on_token:  Optional callable invoked with each content chunk as it
+                       arrives.  Only called for ``delta.content`` chunks, not
+                       for ``reasoning_content``.
         """
         if self._inter_call_delay > 0:
             time.sleep(self._inter_call_delay)
@@ -106,6 +115,11 @@ class OllamaBackend(OpenAICompatibleBackend):
                     reasoning_parts.append(rc)
                 if delta.content:
                     content_parts.append(delta.content)
+                    if on_token is not None:
+                        try:
+                            on_token(delta.content)
+                        except Exception:
+                            pass  # never let console errors kill the LLM response
             content = "".join(content_parts)
             if not content and not reasoning_parts:
                 # Stream completed with zero chunks — LiteLLM likely timed out server-side.

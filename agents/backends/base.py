@@ -6,6 +6,7 @@ import os
 import random
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -157,13 +158,17 @@ class LLMBackend(ABC):
     model: str  # bare model name (without prefix, e.g. "qwen3.6" not "ollama/qwen3.6")
 
     @abstractmethod
-    def call(self, messages: list[dict], run_id: str | None = None) -> str:
+    def call(self, messages: list[dict], run_id: str | None = None,
+             on_token: "Callable[[str], None] | None" = None) -> str:
         """Send a message list and return the assistant reply.
 
         Args:
-            messages: Full message list including system prompt, history, and
-                      the new user message. Format: OpenAI chat messages.
-            run_id:   Optional pipeline run ID for token ledger emission.
+            messages:  Full message list including system prompt, history, and
+                       the new user message. Format: OpenAI chat messages.
+            run_id:    Optional pipeline run ID for token ledger emission.
+            on_token:  Optional callable invoked with each text chunk as it
+                       arrives.  Backends that do not support streaming accept
+                       this parameter but silently ignore it.
         """
 
     @abstractmethod
@@ -227,12 +232,20 @@ class OpenAICompatibleBackend(LLMBackend):
     def _pre_call(self) -> None:
         pass
 
-    def _stream_call(self, messages: list[dict], run_id: str | None = None) -> str:
+    def _stream_call(
+        self,
+        messages: list[dict],
+        run_id: str | None = None,
+        on_token: Callable[[str], None] | None = None,
+    ) -> str:
         """Collect a streaming response into a single string.
 
         Args:
-            messages: Full message list in OpenAI chat format.
-            run_id:   Optional pipeline run ID for token ledger emission.
+            messages:  Full message list in OpenAI chat format.
+            run_id:    Optional pipeline run ID for token ledger emission.
+            on_token:  Optional callable invoked with each text chunk as it
+                       arrives from the stream.  Ignored when ``self._stream``
+                       is False.
 
         Returns:
             Assembled and post-processed assistant reply text.
@@ -240,7 +253,12 @@ class OpenAICompatibleBackend(LLMBackend):
         if self._inter_call_delay > 0:
             time.sleep(self._inter_call_delay)
 
-        def _collect(stream) -> str:
+        # The entire stream creation AND iteration is retried as a unit.
+        # If a mid-stream error occurs, the request restarts from scratch.
+        # on_token is suppressed on retry attempts to prevent duplicate output.
+        _attempt = [0]
+
+        def _collect_with_guard(stream) -> str:
             collected = ""
             for chunk in stream:
                 if not chunk.choices:
@@ -248,14 +266,18 @@ class OpenAICompatibleBackend(LLMBackend):
                 delta = chunk.choices[0].delta.content
                 if delta:
                     collected += delta
+                    if on_token is not None and _attempt[0] == 0:
+                        try:
+                            on_token(delta)
+                        except Exception:
+                            pass  # never let console errors kill the LLM response
+            _attempt[0] += 1
             return collected
 
-        # The entire stream creation AND iteration is retried as a unit.
-        # If a mid-stream error occurs, the request restarts from scratch.
         cb = _get_cb_registry().get_or_create("backend", self.model)
         reply = cb.call(
             lambda: _retry_with_backoff(
-                lambda: _collect(
+                lambda: _collect_with_guard(
                     self._client.chat.completions.create(
                         model=self.model,
                         messages=messages,
@@ -274,18 +296,21 @@ class OpenAICompatibleBackend(LLMBackend):
             get_ledger().record(effective_run_id, current_stage.get(), self.model, pt, ct)
         return self._post_process(reply)
 
-    def call(self, messages: list[dict], run_id: str | None = None) -> str:
+    def call(self, messages: list[dict], run_id: str | None = None, on_token: Callable[[str], None] | None = None) -> str:
         """Send a message list and return the assistant reply.
 
         Args:
-            messages: Full message list including system prompt, history, and
-                      the new user message. Format: OpenAI chat messages.
-            run_id:   Optional pipeline run ID for token ledger emission.
-                      Falls back to the ledger's active run ID when omitted.
+            messages:  Full message list including system prompt, history, and
+                       the new user message. Format: OpenAI chat messages.
+            run_id:    Optional pipeline run ID for token ledger emission.
+                       Falls back to the ledger's active run ID when omitted.
+            on_token:  Optional callable invoked with each text chunk as it
+                       arrives.  Only used when ``self._stream`` is True;
+                       silently ignored otherwise (no crash).
         """
         self._pre_call()
         if self._stream:
-            return self._stream_call(messages, run_id=run_id)
+            return self._stream_call(messages, run_id=run_id, on_token=on_token)
         if self._inter_call_delay > 0:
             time.sleep(self._inter_call_delay)
         cb = _get_cb_registry().get_or_create("backend", self.model)
