@@ -1870,3 +1870,4 @@ For operational topics not covered above, see [`docs/operations-guide.md`](docs/
 | [§6](docs/operations-guide.md#6-pipeline-self-chaining-auto-re-label) | Pipeline self-chaining — auto re-label for follow-up runs |
 | [§7](docs/operations-guide.md#7-per-repo-deploy-backends) | Per-repo deploy backends — docker, libvirt VM, or none |
 | [§8](docs/operations-guide.md#8-agent-accuracy-system) | Agent Accuracy System — validation gate, LearningAgent, BootstrapPatternsAgent |
+| [Quick Start](docs/quick-start.md) | Four scenarios: MVP, bug fix, new features, existing repo onboarding |
