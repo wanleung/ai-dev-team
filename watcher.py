@@ -1542,10 +1542,11 @@ def watch(config_path: Path, once: bool = False, dry_run: bool = False, logger: 
 
         # Compute effective LLM config: global merged with per-repo overrides
         global_llm    = pipeline_cfg.get("llm", {})
-        effective_llm = _deep_merge_llm(global_llm, w.get("_llm", {}))
+        repo_llm      = w.get("_llm", {})
+        effective_llm = _deep_merge_llm(global_llm, repo_llm)
         # If settings.model was explicitly set (not the default "gpt-4.1") and
         # the repo didn't set llm.model, let settings.model flow through
-        if not w.get("_llm", {}).get("model") and model != "gpt-4.1":
+        if not repo_llm.get("model") and model != "gpt-4.1":
             effective_llm["model"] = model
 
         # Read label → pipeline mapping for this watcher entry. New format:
@@ -1592,7 +1593,7 @@ def watch(config_path: Path, once: bool = False, dry_run: bool = False, logger: 
                         model=model,
                         num_engineers=num_engineers,
                         deploy=w.get("deploy"),
-                        llm=effective_llm,
+                        llm=copy.deepcopy(effective_llm),
                     ))
                     _log.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
         except Exception as exc:  # noqa: BLE001
