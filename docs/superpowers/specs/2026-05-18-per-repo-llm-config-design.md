@@ -27,6 +27,9 @@ labels:
 
 llm:
   model: "openai/gpt-4.1"          # default model for all agents in this repo
+  fallback:                          # fallback chain if primary model fails
+    - model: "openai/gpt-4.1-mini"
+    - model: "ollama/qwen3.5"
   overrides:                         # per-agent model overrides
     architect: "claude-3-5-sonnet-20241022"
     engineer: "openai/gpt-4.1-mini"
@@ -40,7 +43,8 @@ Omitting `llm:` entirely means the repo uses the global config unchanged.
 
 The supported sub-keys mirror `config.yaml`'s `llm:` section:
 - `model` — default model string
-- `overrides` — dict of `agent_name: model_string`
+- `fallback` — ordered list of fallback model configs tried if the primary model fails; each entry follows the same per-backend config structure as the primary. Repo value **replaces** (not merges with) the global fallback chain.
+- `overrides` — dict of `agent_name: model_string` (or dict form for per-agent Ollama/stream settings)
 - `pools` — dict of `backend_name: max_concurrency`
 
 Other `llm:` keys from `config.yaml` (e.g. `ollama_url`, `ollama_think`, `stream`) are also merged if present, allowing full per-repo LLM tuning.
@@ -55,6 +59,7 @@ effective_llm = deep_merge(global_llm, repo_llm)
 
 Rules:
 - `model`: repo value replaces global if non-empty
+- `fallback`: repo list **replaces** global list entirely (no partial merge — if a repo defines fallbacks, its full chain is used)
 - `overrides`: key-by-key merge — repo agent entry wins; agents not listed in repo keep global values
 - `pools`: key-by-key merge — repo backend limit wins; other backends keep global limits
 - All other scalar keys: repo value replaces global if present
