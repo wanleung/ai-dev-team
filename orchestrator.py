@@ -1281,7 +1281,7 @@ class Orchestrator(TestFixLoopMixin):
         from agents.pr_analyst import PRAnalystAgent
 
         agent = PRAnalystAgent(
-            model=self.model,
+            model=_model("pr_analyst"),
             github_token=self._github_token,
             ollama_url=self.ollama_url,
             tool_registry=self._rag_registry,
@@ -1303,7 +1303,7 @@ class Orchestrator(TestFixLoopMixin):
             return
 
         agent = PRCreativeAgent(
-            model=self.model,
+            model=_model("pr_creative"),
             github_token=self._github_token,
             ollama_url=self.ollama_url,
             tool_registry=self._rag_registry,
@@ -1329,7 +1329,7 @@ class Orchestrator(TestFixLoopMixin):
 
         gh = self.target_github or self.github
         agent = PRProposalAgent(
-            model=self.model,
+            model=_model("pr_proposal"),
             github_token=self._github_token,
             ollama_url=self.ollama_url,
             tool_registry=self._rag_registry,
@@ -1508,7 +1508,7 @@ class Orchestrator(TestFixLoopMixin):
         from agents.discussion_agent import DiscussionAgent
         agent = DiscussionAgent.from_file(
             config_path=config_path,
-            model=self.model,
+            model=_model("discussion"),
             github_token=self._github_token,
             ollama_url=self.ollama_url,
         )

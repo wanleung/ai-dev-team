@@ -13,12 +13,15 @@
 participants:
   - role: analyst
     persona_file: roles/analyst.md
+    llm: "opencode-go/qwen3.6-plus"
 
   - role: skeptic
     persona_file: roles/skeptic.md
+    llm: "opencode-go/qwen3.6-plus"
 
   - role: optimist
     persona_file: roles/optimist.md
+    llm: "opencode-go/qwen3.6-plus"
 
 homework_round: true    # each participant thinks independently before the group discussion
 max_rounds: 2           # up to 2 discussion rounds after homework
