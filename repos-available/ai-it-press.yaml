@@ -1,0 +1,30 @@
+# repos-available/ai-it-press.yaml
+# Press team configuration for the ai-it-press GitHub repo.
+#
+# Activate by symlinking:
+#   ln -s ../repos-available/ai-it-press.yaml repos-enabled/ai-it-press.yaml
+#
+# The pipeline YAML is read from the ai-it-press repo itself (pipeline_file:).
+# All press-specific logic (stages, discussion presets) lives there.
+
+tracker_repo: wanleung/ai-it-press
+default_target: ~
+pipeline_file: pipelines/news-article.yaml
+parallel_issues: 2
+enabled: true
+
+labels:
+  news-article: {}          # pipeline loaded from pipeline_file (above)
+
+settings:
+  watch_prs: false          # press team does not auto-fix PRs
+
+# LLM config for the press pipeline.
+# Uncomment and adjust to override global settings.
+# llm:
+#   model: "opencode-go/qwen3.6-plus"
+#   homework_llm: "ollama/qwen3:8b"
+#   overrides:
+#     news_writer: "opencode-go/qwen3.6-plus"
+#     news_editor: "opencode-go/qwen3.6-plus"
+#     discussion: "opencode-go/qwen3.6-plus"

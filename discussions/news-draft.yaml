@@ -1,0 +1,31 @@
+# discussions/news-draft.yaml
+# Post-draft news article review discussion.
+# Suitable for: writer/editor back-and-forth on draft quality before final edit.
+#
+# Usage in press pipeline:
+#   stages:
+#     - news_writer
+#     - discuss_news_draft
+#     - news_editor
+
+topic: "Draft review: accuracy, clarity, headline quality, and completeness"
+max_rounds: 2
+early_exit: CONSENSUS_REACHED
+
+participants:
+  - role: news_writer
+    persona_file: roles/news_writer.md
+
+  - role: news_editor
+    persona_file: roles/news_editor.md
+
+homework_round: false   # both agents already have the draft; no research needed
+
+moderator:
+  persona_file: roles/moderator.md
+
+output_mode: both
+
+context_fields:
+  - issue_body
+  - article_draft    # news_writer's draft (PipelineResult.article_draft)

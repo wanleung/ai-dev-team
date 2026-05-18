@@ -428,6 +428,7 @@ def run_pipeline(
     dlq=None,          # DeadLetterQueue | None
     deploy_cfg: dict | None = None,
     llm_cfg: dict | None = None,
+    pipeline_file: str = "",
 ) -> bool:
     """Run the appropriate orchestrator for a single issue. Returns True on success.
 
@@ -498,6 +499,7 @@ def run_pipeline(
             logger=logger,
             deploy_cfg=deploy_cfg,
             llm_cfg=llm_cfg,
+            pipeline_file=pipeline_file,
         )
 
         # ── Pipeline chaining ─────────────────────────────────────────────────
@@ -790,6 +792,7 @@ def _dispatch(
     logger: logging.Logger,  # noqa: ARG001 – forwarded by callers; body uses module _log
     deploy_cfg: dict | None = None,
     llm_cfg: dict | None = None,
+    pipeline_file: str = "",
 ) -> "PipelineResult":
     """Run the unified Orchestrator with the pipeline file selected by ``label``.
 
@@ -846,6 +849,23 @@ def _dispatch(
                 deploy_cfg=deploy_cfg,
                 llm_fallbacks=_llm.get("fallbacks") or None,
             )
+
+            # pipeline_file: fetch pipeline YAML from tracker repo via GitHub API
+            if pipeline_file:
+                raw = tracker_gh.get_file_content(pipeline_file)
+                if raw:
+                    import yaml as _yaml
+                    data = _yaml.safe_load(raw)
+                    if not isinstance(data, dict):
+                        _log.warning("    pipeline_file %r: expected YAML mapping, got %s — falling back to label lookup", pipeline_file, type(data).__name__)
+                        data = {}
+                    fetched_stages = data.get("stages")
+                    if fetched_stages is not None:
+                        orch._validate_pipeline_stages(pipeline_file, fetched_stages)
+                        orch._pipeline_yaml_stages = fetched_stages
+                        _log.info("    Using pipeline_file: %s (%d stages)", pipeline_file, len(fetched_stages))
+                else:
+                    _log.warning("    pipeline_file %r not found in %s — falling back to label lookup", pipeline_file, tracker_repo)
 
             # Resolve pipeline stages for this label (project override → builtin)
             stages = orch.load_pipeline_for_label(label)
@@ -1405,6 +1425,7 @@ def _run_tasks(
                     t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
                     deploy_cfg=t.get("deploy"),
                     llm_cfg=t.get("llm"),
+                    pipeline_file=t.get("pipeline_file", ""),
                 )
                 futures_to_task[fut] = t
 
@@ -1462,6 +1483,99 @@ def _run_tasks(
     finally:
         for ex in repo_executors:
             ex.shutdown(wait=False, cancel_futures=True)
+
+
+def _build_watch_tasks(
+    watchers: list[dict],
+    model: str,
+    num_engineers: int,
+    github_token: str,
+) -> list[dict]:
+    """Build the list of task dicts from watcher repo configs.
+
+    Each returned dict maps directly to run_pipeline() kwargs.
+    """
+    import copy
+    tasks: list[dict] = []
+    pipeline_cfg = _load_pipeline_config()
+
+    for w in watchers:
+        if not w.get("enabled", True):
+            continue
+        tracker_repo = w["tracker_repo"]
+        default_target = w.get("default_target") or None
+        pipeline_file = w.get("pipeline_file", "")
+
+        # Apply per-watcher settings overrides
+        _w_settings = w.get("_settings", {})
+        watcher_model = _w_settings.get("model", model)
+        watcher_num_engineers = _w_settings.get("num_engineers", num_engineers)
+
+        # Compute effective LLM config: global merged with per-repo overrides
+        global_llm = pipeline_cfg.get("llm", {})
+        repo_llm = w.get("_llm", {})
+        effective_llm = _deep_merge_llm(global_llm, repo_llm)
+        # If settings.model was explicitly set (not the default "gpt-4.1") and
+        # the repo didn't set llm.model, let settings.model flow through
+        if not repo_llm.get("model") and watcher_model != "gpt-4.1":
+            effective_llm["model"] = watcher_model
+
+        # Read label → pipeline mapping for this watcher entry. New format:
+        #   labels:
+        #     ai-feature: {}
+        #     my-bug: {pipeline: ai-fix}
+        # Backward-compat with old feature_label / bug_label / doc_label keys.
+        labels_cfg = w.get("labels")
+        if labels_cfg is None:
+            labels_cfg = {}
+
+            def _add_legacy(field: str, default: str | None, pipeline: str) -> None:
+                val = w.get(field, default)
+                if not val:
+                    return
+                names = val if isinstance(val, list) else [val]
+                for name in names:
+                    if name:
+                        labels_cfg[name] = {"pipeline": pipeline}
+
+            _add_legacy("feature_label", "feature-request", "ai-feature")
+            _add_legacy("bug_label", "bug", "ai-fix")
+            _add_legacy("doc_label", "documentation", "ai-docs")
+
+        # Ensure state labels exist
+        for name, colour in LABEL_COLOURS.items():
+            ensure_label(tracker_repo, name, colour)
+
+        _log.info("Checking %s …", tracker_repo)
+        try:
+            for label_name, label_cfg in labels_cfg.items():
+                if isinstance(label_cfg, str):
+                    pipeline_name = label_cfg
+                else:
+                    pipeline_name = (label_cfg or {}).get("pipeline", label_name)
+                for issue in get_open_issues(tracker_repo, label_name):
+                    add_label(tracker_repo, issue["number"], LABEL_QUEUED)
+                    tasks.append(dict(
+                        issue=issue,
+                        tracker_repo=tracker_repo,
+                        default_target=default_target,
+                        label=pipeline_name,
+                        parallel_issues=w.get("parallel_issues", 1),
+                        model=watcher_model,
+                        num_engineers=watcher_num_engineers,
+                        deploy=w.get("deploy"),
+                        llm=copy.deepcopy(effective_llm),
+                        pipeline_file=pipeline_file,
+                    ))
+                    _log.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
+        except Exception as exc:  # noqa: BLE001
+            _log.error(
+                "Failed to fetch issues from %s: %s",
+                tracker_repo, _sanitise(str(exc), github_token),
+                exc_info=True,
+            )
+
+    return tasks
 
 
 def watch(config_path: Path, once: bool = False, dry_run: bool = False, logger: logging.Logger | None = None) -> None:  # noqa: ARG001 – logger/once kept for backward compat
@@ -1541,79 +1655,11 @@ def watch(config_path: Path, once: bool = False, dry_run: bool = False, logger: 
         resumed_tasks = _process_resume_queue(workspace_dir, tracker_repos, default_targets, global_model, global_num_engineers, log_dir, dry_run, logger)
         tasks.extend(resumed_tasks)
     
-    for w in watchers:
-        if not w.get("enabled", True):
-            continue
-        tracker_repo    = w["tracker_repo"]
-        default_target  = w.get("default_target") or None
-
-        # Apply per-watcher settings overrides on top of global settings
-        _w_settings   = {**global_settings, **w.get("_settings", {})}
-        model         = _w_settings.get("model", "gpt-4.1")
-        num_engineers = _w_settings.get("num_engineers", 2)
-
-        # Compute effective LLM config: global merged with per-repo overrides
-        global_llm    = pipeline_cfg.get("llm", {})
-        repo_llm      = w.get("_llm", {})
-        effective_llm = _deep_merge_llm(global_llm, repo_llm)
-        # If settings.model was explicitly set (not the default "gpt-4.1") and
-        # the repo didn't set llm.model, let settings.model flow through
-        if not repo_llm.get("model") and model != "gpt-4.1":
-            effective_llm["model"] = model
-
-        # Read label → pipeline mapping for this watcher entry. New format:
-        #   labels:
-        #     ai-feature: {}
-        #     my-bug: {pipeline: ai-fix}
-        # Backward-compat with old feature_label / bug_label / doc_label keys.
-        labels_cfg = w.get("labels")
-        if labels_cfg is None:
-            labels_cfg = {}
-
-            def _add_legacy(field: str, default: str | None, pipeline: str) -> None:
-                val = w.get(field, default)
-                if not val:
-                    return
-                names = val if isinstance(val, list) else [val]
-                for name in names:
-                    if name:
-                        labels_cfg[name] = {"pipeline": pipeline}
-
-            _add_legacy("feature_label", "feature-request", "ai-feature")
-            _add_legacy("bug_label", "bug", "ai-fix")
-            _add_legacy("doc_label", "documentation", "ai-docs")
-
-        # Ensure state labels exist
-        for name, colour in LABEL_COLOURS.items():
-            ensure_label(tracker_repo, name, colour)
-
-        _log.info("Checking %s …", tracker_repo)
-        try:
-            for label_name, label_cfg in labels_cfg.items():
-                if isinstance(label_cfg, str):
-                    pipeline_name = label_cfg
-                else:
-                    pipeline_name = (label_cfg or {}).get("pipeline", label_name)
-                for issue in get_open_issues(tracker_repo, label_name):
-                    add_label(tracker_repo, issue["number"], LABEL_QUEUED)
-                    tasks.append(dict(
-                        issue=issue,
-                        tracker_repo=tracker_repo,
-                        default_target=default_target,
-                        label=pipeline_name,
-                        parallel_issues=w.get("parallel_issues", 1),
-                        model=model,
-                        num_engineers=num_engineers,
-                        deploy=w.get("deploy"),
-                        llm=copy.deepcopy(effective_llm),
-                    ))
-                    _log.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
-        except Exception as exc:  # noqa: BLE001
-            _log.error(
-                "Failed to fetch issues from %s: %s",
-                tracker_repo, _sanitise(str(exc), github_token),
-                exc_info=True,
-            )
+    # Build tasks from watcher configs
+    global_model = global_settings.get("model", "gpt-4.1")
+    global_num_engineers = global_settings.get("num_engineers", 2)
+    watcher_tasks = _build_watch_tasks(watchers, global_model, global_num_engineers, github_token)
+    tasks.extend(watcher_tasks)
 
     try:
         _run_tasks(tasks, max_parallel, log_dir, dry_run, logger, github_token, global_settings)

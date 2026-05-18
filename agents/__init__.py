@@ -10,6 +10,8 @@ from .qa_planner import QAPlannerAgent
 from .qa_engineer import QAEngineerAgent
 from .deployment_tester import DeploymentTesterAgent
 from .documentation_agent import DocumentationAgent
+from .news_writer import NewsWriterAgent
+from .news_editor import NewsEditorAgent
 
 __all__ = [
     "BaseAgent",
@@ -23,4 +25,6 @@ __all__ = [
     "QAEngineerAgent",
     "DeploymentTesterAgent",
     "DocumentationAgent",
+    "NewsWriterAgent",
+    "NewsEditorAgent",
 ]

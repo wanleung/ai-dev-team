@@ -47,6 +47,8 @@ from agents.refactor_agent import RefactorAgent
 from agents.memory_consolidator import MemoryConsolidatorAgent
 from agents.conflict_resolver import ConflictResolverAgent, PRContext
 from agents.deploy_backends import build_deploy_backend
+from agents.news_writer import NewsWriterAgent
+from agents.news_editor import NewsEditorAgent
 from framework_docs import FrameworkDocsLoader
 from github_client import GitHubClient, parse_target_repo
 from config_schema import AppConfig as _AppConfig
@@ -409,6 +411,9 @@ class PipelineResult:
     # Discussion stage outputs
     discussion_transcript: str = ""
     discussion_synthesis: str = ""
+    # News article stage outputs
+    article_draft: str = ""
+    article: str = ""
     # PRD/Design revision loop tracking
     prd_revision_count: int = 0
     design_revision_count: int = 0
@@ -479,6 +484,8 @@ class PipelineResult:
             "bootstrap_agents_md": self.bootstrap_agents_md,
             "discussion_transcript": self.discussion_transcript,
             "discussion_synthesis": self.discussion_synthesis,
+            "article_draft": self.article_draft,
+            "article": self.article,
             "progress_comment_id": self.progress_comment_id,
             "run_id": self.run_id,
             "total_cost_usd": self.total_cost_usd,
@@ -520,6 +527,7 @@ class PipelineResult:
                     "pipeline_label", "validation_attempts", "pr_draft",
                     "bootstrap_agents_md",
                     "discussion_transcript", "discussion_synthesis",
+                    "article_draft", "article",
                     "progress_comment_id",
                     "run_id", "total_cost_usd", "token_usage"]:
             setattr(r, key, data.get(key, getattr(r, key)))
@@ -813,6 +821,8 @@ class Orchestrator(TestFixLoopMixin):
             return {"llm": backend}
 
         self.pm = ProductManagerAgent(**{**agent_kwargs, **_mk("product_manager")})
+        self.news_writer = NewsWriterAgent(**{**agent_kwargs, **_mk("news_writer")})
+        self.news_editor = NewsEditorAgent(**{**agent_kwargs, **_mk("news_editor")})
         self.pm_reviewer = PMReviewerAgent(**{**agent_kwargs, **_mk("pm_reviewer")})
         self.architect = ArchitectAgent(tool_registry=rag_registry, **{**agent_kwargs, **_mk("architect")})
         self.architect_reviewer = ArchitectReviewerAgent(**{**agent_kwargs, **_mk("architect_reviewer")})
@@ -865,7 +875,7 @@ class Orchestrator(TestFixLoopMixin):
         self._original_system_prompts: dict = {
             agent: agent.system_prompt
             for agent in (
-                self.pm, self.pm_reviewer, self.architect, self.architect_reviewer,
+                self.pm, self.news_writer, self.news_editor, self.pm_reviewer, self.architect, self.architect_reviewer,
                 self.engineer, self.junior_engineer, self.senior_engineer,
                 self.reviewer, self.qa_planner, self.qa,
                 self.deployment_tester,
@@ -1885,6 +1895,27 @@ class Orchestrator(TestFixLoopMixin):
                 description="Scanning repo and generating .github/AGENTS.md...",
                 checkpoint_key="bootstrap_patterns",
                 fn=lambda r: self._stage_bootstrap_patterns(r),
+            ),
+            "news_writer": PipelineStage(
+                name="news_writer",
+                label="✍️  News Writer",
+                description="Writing news article draft...",
+                checkpoint_key="news_writer",
+                fn=lambda r: self._stage_news_writer(r),
+            ),
+            "news_editor": PipelineStage(
+                name="news_editor",
+                label="📝 News Editor",
+                description="Editing and finalising article...",
+                checkpoint_key="news_editor",
+                fn=lambda r: self._stage_news_editor(r),
+            ),
+            "news_article_pr": PipelineStage(
+                name="news_article_pr",
+                label="📨 News Article PR",
+                description="Opening PR with article...",
+                checkpoint_key="news_article_pr",
+                fn=lambda r: self._stage_news_article_pr(r),
             ),
         }
         # Wire per-stage timeouts from config
@@ -4140,6 +4171,71 @@ class Orchestrator(TestFixLoopMixin):
             result.test_results    = _orig_results
             result.test_retry_count = _orig_count
             result.test_fix_history = _orig_history
+
+    def _stage_news_writer(self, result: PipelineResult) -> None:
+        """Write a first-draft news article from the issue brief."""
+        issue_body = getattr(result, "issue_body", "") or result.requirement
+        synthesis = result.discussion_synthesis or ""
+        wr = self.news_writer.run(issue_body, discussion_synthesis=synthesis)
+        if not wr.get("article_draft", "").strip():
+            raise RuntimeError("NewsWriter produced an empty draft — LLM may have returned no content.")
+        result.article_draft = wr["article_draft"]
+        # Do NOT clear discussion_synthesis here — if discuss_news_draft runs next it
+        # will overwrite it; if it doesn't run the editor should still see the
+        # pre-write analysis synthesis from discuss_news_analysis.
+
+    def _stage_news_editor(self, result: PipelineResult) -> None:
+        """Edit the article draft to publication standard."""
+        issue_body = getattr(result, "issue_body", "") or result.requirement
+        synthesis = result.discussion_synthesis or ""
+        ed = self.news_editor.run(
+            result.article_draft,
+            issue_body=issue_body,
+            discussion_synthesis=synthesis,
+        )
+        if not ed.get("article", "").strip():
+            raise RuntimeError("NewsEditor produced an empty article — LLM may have returned no content.")
+        result.article = ed["article"]
+
+    def _stage_news_article_pr(self, result: PipelineResult) -> None:
+        """Commit the final article as a file and open a PR in the tracker repo."""
+        import re
+        import yaml as _yaml
+
+        article = result.article or result.article_draft
+        if not article.strip():
+            result.add_error("news_article_pr: no article content to commit.")
+            return
+
+        # Parse frontmatter for date and title
+        date_str = ""
+        title_slug = "article"
+        fm_match = re.match(r"^---\s*\n(.*?)\n---", article, re.DOTALL)
+        if fm_match:
+            try:
+                fm = _yaml.safe_load(fm_match.group(1)) or {}
+                raw_date = str(fm.get("date", ""))
+                date_str = raw_date[:10].replace("-", "") if raw_date else ""
+                title = str(fm.get("title", ""))
+                title_slug = re.sub(r"[^a-z0-9]+", "-", title.lower())[:40].strip("-")
+            except Exception:  # noqa: BLE001
+                pass
+
+        if not date_str:
+            from datetime import datetime
+            date_str = datetime.utcnow().strftime("%Y%m%d")
+
+        issue_part = f"{result.issue_number}-" if result.issue_number else ""
+        filename = f"articles/{date_str}-{issue_part}{title_slug or 'article'}.md"
+        result.all_files = {filename: article}
+
+        self._commit_and_open_pr(
+            result,
+            branch_prefix="article",
+            title_prefix="article",
+            body_header="## 📰 AI-Generated News Article",
+            commit_msg_prefix="article",
+        )
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
