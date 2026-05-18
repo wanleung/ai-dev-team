@@ -10,6 +10,8 @@
 6. [Pipeline Self-Chaining (Auto Re-Label)](#6-pipeline-self-chaining-auto-re-label)
 7. [Token Usage & Cost Tracking](#7-token-usage--cost-tracking)
 8. [Repo Watcher Config (repos-available / repos-enabled)](#8-repo-watcher-config-repos-available--repos-enabled)
+9. [PR Watcher](#9-pr-watcher)
+10. [Multi-Agent Discussion Stages](#10-multi-agent-discussion-stages)
 
 ---
 
@@ -1014,3 +1016,211 @@ accuracy:
   bootstrap: true       # Layer 4 — BootstrapPatternsAgent
   max_retries: 2        # Gate retry limit before human escalation
 ```
+
+---
+
+## 10. Multi-Agent Discussion Stages
+
+Discussion stages let multiple AI personas debate a topic before downstream agents act. The synthesis is injected into all following stages so engineers, architects, and QA understand the reasoning without re-deriving it.
+
+### How it works
+
+1. Each participant independently writes a **homework** analysis (optional)
+2. Participants debate in up to N **rounds**, `@mention`-ing each other to respond directly
+3. A **moderator** persona summarises and can signal `CONSENSUS_REACHED` to exit early
+4. `discussion_transcript` and `discussion_synthesis` are written to `PipelineResult` and injected into every downstream stage
+
+### Auto-discovery
+
+Any YAML file placed in `discussions/` is automatically registered as a pipeline stage named `discuss_<stem>`. For example:
+
+| File | Stage name |
+|------|-----------|
+| `discussions/brainstorm.yaml` | `discuss_brainstorm` |
+| `discussions/spec_brief.yaml` | `discuss_spec_brief` |
+| `discussions/news-analysis.yaml` | `discuss_news-analysis` |
+
+Add the stage name to any `pipelines/*.yaml` to use it.
+
+---
+
+### Built-in presets
+
+#### `discuss_brainstorm` — architecture / feature brainstorm
+
+Three personas (Analyst, Skeptic, Optimist) debate a feature or architecture decision **before** the engineers write any code. Best for high-stakes or ambiguous requirements.
+
+```yaml
+# pipelines/ai-feature-brainstorm.yaml
+stages:
+  - pm
+  - architect
+  - discuss_brainstorm   # debate before engineers touch code
+  - reviewer
+  - junior_engineer
+  - senior_engineer
+  - qa_planner
+  - qa_engineer
+```
+
+#### `discuss_spec_brief` — pre-PM requirements debate
+
+PM, PM Reviewer, and Architect debate the raw requirement **before** the PM writes the PRD. The synthesis is automatically injected into `PM.run()` so the PM produces a better first draft, reducing or eliminating revision rounds.
+
+```yaml
+# pipelines/ai-feature-careful.yaml
+stages:
+  - discuss_spec_brief   # debate requirements first
+  - pm                   # writes PRD informed by synthesis (automatic)
+  - pm_reviewer          # likely approves first time
+  - architect
+  - junior_engineer
+  - senior_engineer
+  - qa_planner
+  - qa_engineer
+```
+
+**No `homework_llm` needed** for spec discussions — participants only reason about the requirement text, no codebase searching required.
+
+---
+
+### Writing a custom preset
+
+Create `discussions/my-preset.yaml`:
+
+```yaml
+participants:
+  - role: analyst
+    persona_file: roles/analyst.md
+    llm: "opencode-go/qwen3.6-plus"
+
+  - role: skeptic
+    persona_file: roles/skeptic.md
+    llm: "opencode-go/qwen3.6-plus"
+
+homework_round: true      # independent analysis before group debate
+max_rounds: 2
+early_exit: CONSENSUS_REACHED
+
+moderator:
+  persona_file: roles/moderator.md
+
+output_mode: both         # inject both transcript and synthesis downstream
+
+context_fields:
+  - issue_body            # fields from PipelineResult to inject as context
+```
+
+The stage name becomes `discuss_my-preset` automatically.
+
+---
+
+### Participant configuration
+
+#### Option 1 — Role file (recommended)
+
+```yaml
+participants:
+  - role: analyst
+    persona_file: roles/analyst.md
+    llm: "opencode-go/qwen3.6-plus"
+```
+
+Any `roles/*.md` file can be a participant — existing agent roles (e.g. `roles/architect.md`, `roles/code_reviewer.md`) or dedicated debater roles.
+
+#### Option 2 — Inline persona
+
+```yaml
+participants:
+  - role: security-expert
+    persona: "You are a security expert. Challenge every design for vulnerabilities."
+    llm: "opencode-go/qwen3.6-plus"
+```
+
+#### Option 3 — Auto-selected from pool
+
+```yaml
+auto_participants:
+  pool:
+    - analyst
+    - skeptic
+    - optimist
+    - architect
+    - security-expert
+  count: 3              # LLM picks the 3 most relevant for this issue
+```
+
+---
+
+### Two-model split: fast debate + slow research (`homework_llm`)
+
+Discussion rounds (debate) need fast reasoning, not tools. But the **homework round** may benefit from codebase search — especially for architecture or code-related topics.
+
+Set `homework_llm` on any participant to give them a different (capable, tool-enabled) model for homework only:
+
+```yaml
+participants:
+  - role: analyst
+    persona_file: roles/analyst.md
+    llm: "fast-model"           # debate rounds — no tools needed
+    homework_llm: "slow-model"  # homework round — has RAG tool access
+```
+
+| Phase | Model | Tools |
+|-------|-------|-------|
+| Homework (round 0) | `homework_llm` | ✅ `search_codebase`, `search_memory`, `search_docs` |
+| Discussion rounds (1+) | `llm` | ❌ pure reasoning |
+
+**When to use `homework_llm`:**
+- ✅ Architecture / feature brainstorm touching existing code
+- ✅ Any case where participants need to know what's already in the codebase
+- ❌ Spec/requirements discussions (reasoning only, no search needed)
+- ❌ Greenfield projects with no existing codebase
+
+If `homework_llm` is set but the model doesn't support tool calling, it falls back to a plain call automatically.
+
+---
+
+### `context_fields` — what gets injected
+
+`context_fields` lists `PipelineResult` string fields to inject as context for all participants:
+
+| Field | When available | Typical use |
+|-------|---------------|-------------|
+| `issue_body` | Always | Raw requirement text |
+| `prd` | After `pm` stage | PRD for spec review discussions |
+| `design` | After `architect` stage | Architecture for code brainstorm |
+| `review` | After `code_reviewer` stage | Review findings |
+| `discussion_synthesis` | After any prior discussion | Chain discussions |
+
+**Note:** `all_files` (dict) and other non-string fields cannot be used in `context_fields` directly. Summarise them in a prior stage if needed.
+
+---
+
+### Where to place a discussion in a pipeline
+
+| Placement | Use case | `context_fields` |
+|-----------|----------|-----------------|
+| Before `pm` | Align on requirements before writing the spec | `issue_body` |
+| Between `architect` and engineers | Debate design before writing code | `design`, `prd` |
+| After `code_reviewer`, before fixes | Reviewer + engineer debate the review findings | `review`, `design` |
+| After `pm`, before `pm_reviewer` | Debate the written spec quality | `prd` |
+
+Multiple discussion stages can be chained in one pipeline — each adds its synthesis to `PipelineResult` (the last one wins for `discussion_synthesis`).
+
+---
+
+### Per-agent model override in `config.local.yaml`
+
+The discussion stage respects the `discussion` key in `model_overrides`:
+
+```yaml
+model_overrides:
+  discussion:
+    primary: "opencode-go/qwen3.6-plus"
+    fallbacks:
+      - "opencode-go/qwen3.5-plus"
+      - "ollama/qwen3.5"
+```
+
+Individual participant `llm:` fields in the preset YAML take precedence over this override.
