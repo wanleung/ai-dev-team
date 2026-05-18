@@ -28,6 +28,22 @@
 #         pipeline: ai-refactor   # explicit map (optional; defaults to label name)
 #
 # Backwards-compat: feature_label / bug_label still work.
+#
+# Per-repo LLM config (optional) — overrides global config.yaml settings for this repo only:
+#
+#   llm:
+#     model: "openai/gpt-4.1"          # default model for all agents in this repo
+#     fallback:                          # fallback chain (replaces global chain)
+#       - model: "openai/gpt-4.1-mini"
+#       - model: "ollama/qwen3.5"
+#     overrides:                         # per-agent overrides (merged with global)
+#       architect: "claude-3-5-sonnet-20241022"
+#       engineer: "openai/gpt-4.1-mini"
+#     pools:                             # per-repo concurrency pool limits
+#       openai: 5
+#       anthropic: 2
+#
+# All llm: keys are optional. Unspecified agents/pools inherit global config.yaml values.
 
 watchers:
 
