@@ -33,7 +33,7 @@
 #
 #   llm:
 #     model: "openai/gpt-4.1"          # default model for all agents in this repo
-#     fallback:                          # fallback chain (replaces global chain)
+#     fallbacks:                         # fallback chain (replaces global chain)
 #       - model: "openai/gpt-4.1-mini"
 #       - model: "ollama/qwen3.5"
 #     overrides:                         # per-agent overrides (merged with global)

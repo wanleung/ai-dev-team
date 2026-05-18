@@ -536,10 +536,10 @@ def test_merge_llm_pools_key_by_key():
 
 
 def test_merge_llm_fallback_replaced_not_merged():
-    global_llm = {"model": "openai/gpt-4.1", "fallback": [{"model": "openai/gpt-4.1-mini"}]}
-    repo_llm = {"fallback": [{"model": "ollama/qwen3.5"}]}
+    global_llm = {"model": "openai/gpt-4.1", "fallbacks": [{"model": "openai/gpt-4.1-mini"}]}
+    repo_llm = {"fallbacks": [{"model": "ollama/qwen3.5"}]}
     result = _deep_merge_llm(global_llm, repo_llm)
-    assert result["fallback"] == [{"model": "ollama/qwen3.5"}]
+    assert result["fallbacks"] == [{"model": "ollama/qwen3.5"}]
 
 
 def test_merge_llm_no_repo_llm_returns_global_copy():
