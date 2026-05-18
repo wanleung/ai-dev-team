@@ -1244,6 +1244,22 @@ participants:
     llm: "ollama/qwen2.5-coder"    # cheap local model for implementation perspective
 ```
 
+**Two-model split: fast discussion + slow homework with tool calling**
+
+Use `homework_llm` to give each participant a different model for the research phase vs the debate phase:
+
+```yaml
+participants:
+  - role: analyst
+    persona_file: roles/analyst.md
+    llm: "opencode-go/qwen3.6-plus"          # fast — discussion rounds (no tools needed)
+    homework_llm: "opencode-go/qwen3.5-plus"  # slow+tools — homework research round
+```
+
+- `llm` is used for all **discussion rounds** (fast, no tool calling needed — pure reasoning)
+- `homework_llm` is used for the **homework round only** and gets access to the RAG `tool_registry` (search_codebase, search_memory, search_docs)
+- If `homework_llm` is set but the model doesn't support tool calling, it falls back to a plain call automatically
+
 ---
 
 ### Install cron job (runs every hour at :00)

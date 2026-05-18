@@ -1511,6 +1511,7 @@ class Orchestrator(TestFixLoopMixin):
             model=_model("discussion"),
             github_token=self._github_token,
             ollama_url=self.ollama_url,
+            tool_registry=self._rag_registry,
         )
         active_repo = str(getattr(self.target_github, "repo", None) or "local") if getattr(self, "target_github", None) else "local"
         agent.run(result, memory_store=getattr(self, "memory", None), repo=active_repo)

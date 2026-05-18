@@ -39,7 +39,8 @@ class Participant:
 
     role: str
     persona: str
-    llm: Optional[str] = None  # optional per-participant model override
+    llm: Optional[str] = None           # model for discussion rounds
+    homework_llm: Optional[str] = None  # model for homework round (supports tools); falls back to llm
 
 
 @dataclass
@@ -133,6 +134,7 @@ class DiscussionConfig:
                     role=role,
                     persona=resolve_persona(entry),
                     llm=entry.get("llm"),
+                    homework_llm=entry.get("homework_llm"),
                 )
             )
 
@@ -164,26 +166,31 @@ class DiscussionAgent:
         ollama_url: str = "http://localhost:11434",
         console=None,
         roles_dir: Optional[Path] = None,
+        tool_registry=None,
     ) -> None:
         """Initialise with a resolved DiscussionConfig.
 
         Args:
-            config:       Resolved :class:`DiscussionConfig` instance.
-            model:        Default LLM model string for all participants.
-            github_token: Optional GitHub token (forwarded to BaseAgent).
-            ollama_url:   Ollama base URL (forwarded to BaseAgent).
-            console:      Optional ``rich.console.Console`` instance.  When
-                          provided, each participant's turn header is printed
-                          and response tokens are streamed live.  Streaming
-                          only applies to sequential discussion rounds — the
-                          homework round is always silent regardless of this
-                          setting.
-            roles_dir:    Optional path to the directory containing role persona
-                          files (``{role}.md``).  Defaults to
-                          ``Path(__file__).parent.parent / "roles"`` (the repo
-                          root ``roles/`` folder).  Used by
-                          :meth:`_select_participants` when ``auto_participants``
-                          is configured.
+            config:        Resolved :class:`DiscussionConfig` instance.
+            model:         Default LLM model string for all participants.
+            github_token:  Optional GitHub token (forwarded to BaseAgent).
+            ollama_url:    Ollama base URL (forwarded to BaseAgent).
+            console:       Optional ``rich.console.Console`` instance.  When
+                           provided, each participant's turn header is printed
+                           and response tokens are streamed live.  Streaming
+                           only applies to sequential discussion rounds — the
+                           homework round is always silent regardless of this
+                           setting.
+            roles_dir:     Optional path to the directory containing role persona
+                           files (``{role}.md``).  Defaults to
+                           ``Path(__file__).parent.parent / "roles"`` (the repo
+                           root ``roles/`` folder).  Used by
+                           :meth:`_select_participants` when ``auto_participants``
+                           is configured.
+            tool_registry: Optional ToolRegistry passed to participants during
+                           the homework round only.  Ignored for discussion rounds.
+                           Only used when a participant declares ``homework_llm``
+                           and that backend supports tool calling.
         """
         self.config = config
         self.model = model
@@ -191,6 +198,7 @@ class DiscussionAgent:
         self.ollama_url = ollama_url
         self.console = console
         self.roles_dir: Path = roles_dir if roles_dir is not None else Path(__file__).parent.parent / "roles"
+        self.tool_registry = tool_registry
         self._backend_cache: dict = {}
 
     @classmethod
@@ -200,10 +208,11 @@ class DiscussionAgent:
         model: str,
         github_token: Optional[str] = None,
         ollama_url: str = "http://localhost:11434",
+        tool_registry=None,
     ) -> "DiscussionAgent":
         """Load config from a preset YAML file and return a DiscussionAgent."""
         config = DiscussionConfig.from_yaml(config_path)
-        return cls(config, model, github_token, ollama_url)
+        return cls(config, model, github_token, ollama_url, tool_registry=tool_registry)
 
     def _make_backend(self, llm_override: Optional[str] = None):
         """Build an LLMBackend for a participant, cached per model string."""
@@ -263,8 +272,18 @@ class DiscussionAgent:
         (``round_num > 0``), a turn header is printed and tokens are streamed
         live to the console.  Homework-round calls (``round_num == 0``) are
         always silent to avoid garbled output from concurrent threads.
+
+        If the participant declares ``homework_llm`` and a ``tool_registry`` is
+        available, the homework round uses that model with tool calling so the
+        participant can search the codebase/memory before writing their analysis.
+        Discussion rounds always use the fast ``llm`` model without tools.
         """
-        backend = self._make_backend(participant.llm)
+        is_homework = round_num == 0
+        if is_homework and participant.homework_llm:
+            effective_llm = participant.homework_llm
+        else:
+            effective_llm = participant.llm
+        backend = self._make_backend(effective_llm)
 
         # Print turn header for sequential discussion rounds only.
         streaming = self.console is not None and round_num > 0
@@ -296,7 +315,27 @@ class DiscussionAgent:
         if streaming:
             on_token = lambda tok: self.console.print(tok, end="", highlight=False)
 
-        content = backend.call(messages, on_token=on_token)
+        # Homework round: use tool-calling if a homework_llm and tool_registry are set
+        if is_homework and participant.homework_llm and self.tool_registry is not None:
+            from agents.base_agent import BaseAgent
+            hw_agent = BaseAgent(
+                model=participant.homework_llm,
+                github_token=self.github_token,
+                ollama_url=self.ollama_url,
+                system_prompt=participant.persona,
+            )
+            try:
+                content = hw_agent.call_with_tools(user, tools=self.tool_registry)
+            except NotImplementedError:
+                # homework_llm doesn't support tools — fall back to plain call
+                logger.warning(
+                    "DiscussionAgent: %s homework_llm '%s' doesn't support tools, "
+                    "falling back to plain call",
+                    participant.role, participant.homework_llm,
+                )
+                content = backend.call(messages, on_token=on_token)
+        else:
+            content = backend.call(messages, on_token=on_token)
         return Turn(role=participant.role, content=content, round_num=round_num)
 
     def _run_homework_round(self, context: str) -> list[Turn]:
