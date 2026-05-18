@@ -41,7 +41,7 @@ Start with **nothing** — just a plain-English requirement — and let agents p
 github_token: "${GITHUB_TOKEN}"
 model: gpt-4o
 target_repo: owner/my-new-project   # ← your empty repo
-tracker_repo: owner/ai-software-house
+tracker_repo: owner/ai-software-house   # the repo running the watcher
 ```
 
 3. **Write your requirement** — inline or in a file:
@@ -344,7 +344,7 @@ You want agents to research and draft a PR/marketing campaign proposal for a pro
 
 ### Path A — Via GitHub label (recommended)
 
-1. **Create a GitHub issue** on `wanleung/pr-campaigns` (or whichever repo you've configured) with your campaign brief
+1. **Create a GitHub issue** on your campaign tracker repo (the one configured under `tracker_repo` with the `pr-campaign` label) with your campaign brief
 2. **Apply label `pr-campaign`**
 3. The watcher runs 3 stages automatically: **Analyst → Creative → Proposal**
 4. A PR opens on the same repo containing the full proposal document
