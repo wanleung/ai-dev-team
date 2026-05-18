@@ -1325,7 +1325,134 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
 
 # ── Watcher loop ──────────────────────────────────────────────────────────────
 
-def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | None = None) -> None:  # noqa: ARG001 – logger kept for backward compat
+def _run_tasks(
+    tasks: list[dict],
+    max_parallel: int,
+    log_dir: Path,
+    dry_run: bool,
+    logger: logging.Logger,
+    github_token: str,
+    global_settings: dict,
+) -> None:
+    """Dispatch collected watcher tasks to the pipeline.
+
+    Extracted from ``watch()`` so that tests can monkeypatch this function to
+    capture the task dicts (including ``llm``) without actually running pipelines.
+
+    Args:
+        tasks: List of task dicts built by the watcher loop.  Each dict must
+            contain at minimum ``issue``, ``tracker_repo``, ``default_target``,
+            ``label``, ``model``, ``num_engineers``, ``parallel_issues``, and
+            optionally ``deploy`` and ``llm``.
+        max_parallel: Maximum number of pipelines to run simultaneously across
+            all repos (enforced by a ``threading.Semaphore``).
+        log_dir: Directory for per-run log files.
+        dry_run: When *True* pipelines are not actually executed.
+        logger: Logger instance to use for dispatch messages.
+        github_token: GitHub API token (used only for sanitising error messages).
+        global_settings: Merged global settings dict (used to read
+            ``pipeline_timeout_s``).
+    """
+    if not tasks:
+        _log.info("Nothing to do.")
+        return
+
+    # Group tasks by tracker_repo so each gets its own thread pool
+    by_repo: dict[str, list[dict]] = {}
+    for t in tasks:
+        by_repo.setdefault(t["tracker_repo"], []).append(t)
+
+    _log.info("Dispatching %d pipeline(s) across %d repo(s)…", len(tasks), len(by_repo))
+
+    # One executor per repo; each repo's parallel_issues bounds its concurrency.
+    # A global semaphore enforces the overall max_parallel cap so the total
+    # number of simultaneous pipelines never exceeds settings.max_parallel
+    # regardless of how many repos are being watched.
+    global_sem = threading.Semaphore(max(1, max_parallel))
+
+    def _run_with_global_cap(*args, **kwargs):
+        global_sem.acquire()
+        try:
+            run_pipeline(*args, **kwargs)
+        finally:
+            global_sem.release()
+
+    repo_executors: list[ThreadPoolExecutor] = []
+    futures_to_task: dict = {}
+    try:
+        for repo_name, repo_tasks in by_repo.items():
+            par = max(1, repo_tasks[0].get("parallel_issues", 1))
+            ex = ThreadPoolExecutor(max_workers=par, thread_name_prefix=f"watcher-{repo_name}")
+            repo_executors.append(ex)
+            for t in repo_tasks:
+                ctx = contextvars.copy_context()
+                fut = ex.submit(
+                    ctx.run,
+                    _run_with_issue_lock,
+                    _run_with_global_cap,
+                    t["issue"], t["tracker_repo"], t["default_target"],
+                    t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
+                    deploy_cfg=t.get("deploy"),
+                )
+                futures_to_task[fut] = t
+
+        pipeline_timeout_s = int(global_settings.get("pipeline_timeout_s") or 3600)
+
+        try:
+            for fut in as_completed(futures_to_task, timeout=pipeline_timeout_s):
+                t = futures_to_task[fut]
+                try:
+                    fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    _log.error(
+                        "Unhandled error for issue #%d: %s",
+                        t["issue"]["number"],
+                        _sanitise(str(exc), github_token),
+                        exc_info=True,
+                    )
+        except FuturesTimeoutError:
+            hung = [
+                f"#{futures_to_task[f]['issue']['number']}"
+                for f in futures_to_task
+                if not f.done()
+            ]
+            _log.warning(
+                "Pipeline timeout (%ds) exceeded — cancelling %d hung pipeline(s): %s",
+                pipeline_timeout_s, len(hung), ", ".join(hung),
+            )
+            for f in futures_to_task:
+                f.cancel()
+            # Clean up labels for futures that were cancelled before they started running.
+            # Futures that were already running have their own label lifecycle in run_pipeline().
+            for f in futures_to_task:
+                if f.cancelled():
+                    t = futures_to_task[f]
+                    issue_number = t["issue"]["number"]
+                    tracker_repo = t["tracker_repo"]
+                    _log.warning(
+                        "Issue #%d timed out before starting — marking as failed",
+                        issue_number,
+                    )
+                    try:
+                        remove_label(tracker_repo, issue_number, LABEL_QUEUED)
+                    except Exception:  # noqa: BLE001
+                        _log.warning(
+                            "Could not remove %s for timed-out issue #%d",
+                            LABEL_QUEUED, issue_number, exc_info=True,
+                        )
+                    try:
+                        add_label(tracker_repo, issue_number, LABEL_FAILED)
+                    except Exception:  # noqa: BLE001
+                        _log.warning(
+                            "Could not add %s for timed-out issue #%d",
+                            LABEL_FAILED, issue_number, exc_info=True,
+                        )
+    finally:
+        for ex in repo_executors:
+            ex.shutdown(wait=False, cancel_futures=True)
+
+
+def watch(config_path: Path, once: bool = False, dry_run: bool = False, logger: logging.Logger | None = None) -> None:  # noqa: ARG001 – logger/once kept for backward compat
     config = load_watcher_config(config_path)
 
     global_settings = config.get("settings", {})
@@ -1413,6 +1540,14 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
         model         = _w_settings.get("model", "gpt-4.1")
         num_engineers = _w_settings.get("num_engineers", 2)
 
+        # Compute effective LLM config: global merged with per-repo overrides
+        global_llm    = pipeline_cfg.get("llm", {})
+        effective_llm = _deep_merge_llm(global_llm, w.get("_llm", {}))
+        # If settings.model was explicitly set (not the default "gpt-4.1") and
+        # the repo didn't set llm.model, let settings.model flow through
+        if not w.get("_llm", {}).get("model") and model != "gpt-4.1":
+            effective_llm["model"] = model
+
         # Read label → pipeline mapping for this watcher entry. New format:
         #   labels:
         #     ai-feature: {}
@@ -1457,6 +1592,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                         model=model,
                         num_engineers=num_engineers,
                         deploy=w.get("deploy"),
+                        llm=effective_llm,
                     ))
                     _log.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
         except Exception as exc:  # noqa: BLE001
@@ -1467,103 +1603,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
             )
 
     try:
-        if not tasks:
-            _log.info("Nothing to do.")
-            return
-
-        # Group tasks by tracker_repo so each gets its own thread pool
-        by_repo: dict[str, list[dict]] = {}
-        for t in tasks:
-            by_repo.setdefault(t["tracker_repo"], []).append(t)
-
-        _log.info("Dispatching %d pipeline(s) across %d repo(s)…", len(tasks), len(by_repo))
-
-        # One executor per repo; each repo's parallel_issues bounds its concurrency.
-        # A global semaphore enforces the overall max_parallel cap so the total
-        # number of simultaneous pipelines never exceeds settings.max_parallel
-        # regardless of how many repos are being watched.
-        global_sem = threading.Semaphore(max(1, max_parallel))
-
-        def _run_with_global_cap(*args, **kwargs):
-            global_sem.acquire()
-            try:
-                run_pipeline(*args, **kwargs)
-            finally:
-                global_sem.release()
-
-        repo_executors: list[ThreadPoolExecutor] = []
-        futures_to_task: dict = {}
-        try:
-            for repo_name, repo_tasks in by_repo.items():
-                par = max(1, repo_tasks[0].get("parallel_issues", 1))
-                ex = ThreadPoolExecutor(max_workers=par, thread_name_prefix=f"watcher-{repo_name}")
-                repo_executors.append(ex)
-                for t in repo_tasks:
-                    ctx = contextvars.copy_context()
-                    fut = ex.submit(
-                        ctx.run,
-                        _run_with_issue_lock,
-                        _run_with_global_cap,
-                        t["issue"], t["tracker_repo"], t["default_target"],
-                        t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
-                        deploy_cfg=t.get("deploy"),
-                    )
-                    futures_to_task[fut] = t
-
-            pipeline_timeout_s = int(global_settings.get("pipeline_timeout_s") or 3600)
-
-            try:
-                for fut in as_completed(futures_to_task, timeout=pipeline_timeout_s):
-                    t = futures_to_task[fut]
-                    try:
-                        fut.result()
-                    except Exception as exc:  # noqa: BLE001
-                        _log.error(
-                            "Unhandled error for issue #%d: %s",
-                            t["issue"]["number"],
-                            _sanitise(str(exc), github_token),
-                            exc_info=True,
-                        )
-            except FuturesTimeoutError:
-                hung = [
-                    f"#{futures_to_task[f]['issue']['number']}"
-                    for f in futures_to_task
-                    if not f.done()
-                ]
-                _log.warning(
-                    "Pipeline timeout (%ds) exceeded — cancelling %d hung pipeline(s): %s",
-                    pipeline_timeout_s, len(hung), ", ".join(hung),
-                )
-                for f in futures_to_task:
-                    f.cancel()
-                # Clean up labels for futures that were cancelled before they started running.
-                # Futures that were already running have their own label lifecycle in run_pipeline().
-                for f in futures_to_task:
-                    if f.cancelled():
-                        t = futures_to_task[f]
-                        issue_number = t["issue"]["number"]
-                        tracker_repo = t["tracker_repo"]
-                        _log.warning(
-                            "Issue #%d timed out before starting — marking as failed",
-                            issue_number,
-                        )
-                        try:
-                            remove_label(tracker_repo, issue_number, LABEL_QUEUED)
-                        except Exception:  # noqa: BLE001
-                            _log.warning(
-                                "Could not remove %s for timed-out issue #%d",
-                                LABEL_QUEUED, issue_number, exc_info=True,
-                            )
-                        try:
-                            add_label(tracker_repo, issue_number, LABEL_FAILED)
-                        except Exception:  # noqa: BLE001
-                            _log.warning(
-                                "Could not add %s for timed-out issue #%d",
-                                LABEL_FAILED, issue_number, exc_info=True,
-                            )
-        finally:
-            for ex in repo_executors:
-                ex.shutdown(wait=False, cancel_futures=True)
+        _run_tasks(tasks, max_parallel, log_dir, dry_run, logger, github_token, global_settings)
     finally:
         clear_run_id()
 

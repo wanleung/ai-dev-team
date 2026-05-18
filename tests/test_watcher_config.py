@@ -630,3 +630,91 @@ def test_load_watcher_config_llm_null_is_ignored(tmp_path):
     _write(cfg, "watchers:\n  - tracker_repo: owner/a\n    enabled: true\n    llm:\n")
     w = load_watcher_config(cfg)["watchers"][0]
     assert "_llm" not in w
+
+
+def test_watch_task_dict_contains_effective_llm(tmp_path, monkeypatch):
+    """Tasks queued for a watcher include effective_llm merging global + repo llm."""
+    cfg_path = tmp_path / "repos.yaml"
+    _write(cfg_path, """
+        watchers:
+          - tracker_repo: owner/alpha
+            labels:
+              ai-feature: ai-feature
+            enabled: true
+            llm:
+              model: "ollama/qwen3.5"
+              overrides:
+                engineer: "ollama/qwen3.5"
+        settings:
+          max_parallel: 1
+          num_engineers: 1
+    """)
+
+    # Patch global config with known LLM settings
+    global_cfg = {
+        "llm": {
+            "model": "openai/gpt-4.1",
+            "overrides": {"architect": "openai/gpt-4.1", "engineer": "openai/gpt-4.1-mini"},
+        },
+        "pipeline": {},
+        "settings": {},
+    }
+    monkeypatch.setattr(watcher, "_load_pipeline_config", lambda: global_cfg)
+
+    issues = [{"number": 1, "title": "feat", "labels": []}]
+    monkeypatch.setattr(watcher, "get_open_issues", lambda repo, label: issues if label == "ai-feature" else [])
+    monkeypatch.setattr(watcher, "add_label", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "ensure_label", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "check_waiting_issues", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "_watch_prs", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "_process_resume_queue", lambda *a, **kw: [])
+    (tmp_path / "logs" / "watcher").mkdir(parents=True, exist_ok=True)
+
+    tasks = []
+    monkeypatch.setattr(watcher, "_run_tasks", lambda t, *a, **kw: tasks.extend(t))
+
+    watcher.watch(cfg_path, once=True, dry_run=False)
+
+    assert len(tasks) == 1
+    llm = tasks[0]["llm"]
+    assert llm["model"] == "ollama/qwen3.5"           # repo wins
+    assert llm["overrides"]["architect"] == "openai/gpt-4.1"   # global kept
+    assert llm["overrides"]["engineer"] == "ollama/qwen3.5"    # repo wins
+
+
+def test_watch_task_dict_llm_is_global_when_no_repo_llm(tmp_path, monkeypatch):
+    """Tasks for repo without llm: section use global LLM config unchanged."""
+    cfg_path = tmp_path / "repos.yaml"
+    _write(cfg_path, """
+        watchers:
+          - tracker_repo: owner/alpha
+            labels:
+              ai-feature: ai-feature
+            enabled: true
+        settings:
+          max_parallel: 1
+          num_engineers: 1
+    """)
+
+    global_cfg = {
+        "llm": {"model": "openai/gpt-4.1", "overrides": {"architect": "openai/gpt-4.1"}},
+        "pipeline": {},
+        "settings": {},
+    }
+    monkeypatch.setattr(watcher, "_load_pipeline_config", lambda: global_cfg)
+
+    issues = [{"number": 1, "title": "feat", "labels": []}]
+    monkeypatch.setattr(watcher, "get_open_issues", lambda repo, label: issues if label == "ai-feature" else [])
+    monkeypatch.setattr(watcher, "add_label", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "ensure_label", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "check_waiting_issues", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "_watch_prs", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "_process_resume_queue", lambda *a, **kw: [])
+    (tmp_path / "logs" / "watcher").mkdir(parents=True, exist_ok=True)
+
+    tasks = []
+    monkeypatch.setattr(watcher, "_run_tasks", lambda t, *a, **kw: tasks.extend(t))
+
+    watcher.watch(cfg_path, once=True, dry_run=False)
+
+    assert tasks[0]["llm"]["model"] == "openai/gpt-4.1"
