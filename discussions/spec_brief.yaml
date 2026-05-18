@@ -1,0 +1,39 @@
+# discussions/spec_brief.yaml
+# Pre-PM discussion preset: debates the raw requirement before the PM writes the spec.
+# Participants reason about scope, edge cases, and risks so the PM produces a
+# better first-draft PRD without needing revision rounds.
+#
+# No homework_llm needed — participants only reason about the requirement text,
+# no codebase searching required.
+#
+# Usage in pipeline.yaml:
+#   stages:
+#     - discuss_spec_brief   # ← debate requirements first
+#     - pm                   # ← writes PRD informed by synthesis
+#     - pm_reviewer
+#     - architect
+
+participants:
+  - role: product_manager
+    persona_file: roles/product_manager.md
+    llm: "opencode-go/qwen3.6-plus"
+
+  - role: pm_reviewer
+    persona_file: roles/pm_reviewer.md
+    llm: "opencode-go/qwen3.6-plus"
+
+  - role: architect
+    persona_file: roles/architect.md
+    llm: "opencode-go/qwen3.6-plus"
+
+homework_round: false   # pure reasoning — no research phase needed
+max_rounds: 2
+early_exit: CONSENSUS_REACHED
+
+moderator:
+  persona_file: roles/moderator.md
+
+output_mode: both       # PM receives both transcript and synthesis
+
+context_fields:
+  - issue_body           # raw requirement injected as discussion context

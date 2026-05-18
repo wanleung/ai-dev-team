@@ -17,11 +17,14 @@ class ProductManagerAgent(BaseAgent):
 
     role_name = "product_manager"
 
-    def run(self, requirement: str) -> dict:
+    def run(self, requirement: str, discussion_synthesis: str = "") -> dict:
         """Analyze a requirement and produce a PRD.
 
         Args:
             requirement: The raw user requirement (e.g. "Build a task manager API").
+            discussion_synthesis: Optional synthesis from a pre-PM discussion stage
+                (e.g. discuss_spec_brief).  When provided it is prepended to the
+                prompt so the PM writes the spec already informed by the debate.
 
         Returns:
             dict with keys:
@@ -30,7 +33,15 @@ class ProductManagerAgent(BaseAgent):
                 - issue_number (int | None): GitHub issue number if created
                 - issue_url (str | None): GitHub issue URL if created
         """
+        synthesis_section = (
+            f"A multi-perspective pre-analysis of this requirement has already been conducted.\n"
+            f"Use the key insights below to inform your PRD — do not copy them verbatim.\n\n"
+            f"---\n{discussion_synthesis}\n---\n\n"
+            if discussion_synthesis.strip()
+            else ""
+        )
         prompt = (
+            f"{synthesis_section}"
             f"A client has submitted the following software requirement:\n\n"
             f"---\n{requirement}\n---\n\n"
             f"Please analyze this requirement and produce a detailed PRD following your role instructions."
@@ -46,17 +57,18 @@ class ProductManagerAgent(BaseAgent):
             "issue_url": None,
         }
 
-    def run_with_github(self, requirement: str, github_client) -> dict:
+    def run_with_github(self, requirement: str, github_client, discussion_synthesis: str = "") -> dict:
         """Run and also create a GitHub Issue with the PRD.
 
         Args:
             requirement: The raw user requirement.
             github_client: A GitHubClient instance.
+            discussion_synthesis: Optional synthesis from a pre-PM discussion stage.
 
         Returns:
             Same as run() but with issue_number and issue_url populated.
         """
-        result = self.run(requirement)
+        result = self.run(requirement, discussion_synthesis=discussion_synthesis)
 
         issue = github_client.create_issue(
             title=f"[PRD] {result['project_name']}",

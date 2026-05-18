@@ -3069,12 +3069,13 @@ class Orchestrator(TestFixLoopMixin):
         prior_ctx = getattr(self, "_issue_prior_context", "")
         extra = "\n\n".join(filter(None, [ctx, prior_ctx]))
         effective_req = f"{extra}\n\n---\n\n{requirement}" if extra else requirement
+        synthesis = result.discussion_synthesis or ""
         if self.github:
-            pm_result = self.pm.run_with_github(effective_req, self.github)
+            pm_result = self.pm.run_with_github(effective_req, self.github, discussion_synthesis=synthesis)
             result.issue_number = pm_result["issue_number"]
             result.issue_url = pm_result["issue_url"]
         else:
-            pm_result = self.pm.run(effective_req)
+            pm_result = self.pm.run(effective_req, discussion_synthesis=synthesis)
         if not pm_result.get("prd", "").strip():
             raise RuntimeError("Product Manager produced an empty PRD — LLM may have returned no content.")
         result.prd = pm_result["prd"]
