@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 import watcher
-from watcher import load_watcher_config, cmd_repo_enable, cmd_repo_disable, cmd_repo_list
+from watcher import load_watcher_config, cmd_repo_enable, cmd_repo_disable, cmd_repo_list, _deep_merge_llm
 
 
 # ── load_watcher_config ───────────────────────────────────────────────────────
@@ -510,8 +510,6 @@ def test_pipeline_timeout_custom(tmp_path):
 
 # ── _deep_merge_llm ───────────────────────────────────────────────────────────
 
-from watcher import _deep_merge_llm
-
 
 def test_merge_llm_model_repo_wins():
     global_llm = {"model": "openai/gpt-4.1", "overrides": {"architect": "openai/gpt-4.1"}}
@@ -548,9 +546,18 @@ def test_merge_llm_no_repo_llm_returns_global_copy():
     global_llm = {"model": "openai/gpt-4.1", "overrides": {"architect": "openai/gpt-4.1"}}
     result = _deep_merge_llm(global_llm, {})
     assert result == global_llm
-    assert result is not global_llm  # must be a copy
+    assert result is not global_llm  # top-level copy
+    assert result["overrides"] is not global_llm["overrides"]  # nested dict is a copy
+    # Verify mutation independence
+    global_llm["overrides"]["architect"] = "mutated"
+    assert result["overrides"]["architect"] == "openai/gpt-4.1"
 
 
 def test_merge_llm_empty_global():
     result = _deep_merge_llm({}, {"model": "ollama/qwen3.5"})
     assert result["model"] == "ollama/qwen3.5"
+
+
+def test_merge_llm_empty_model_does_not_replace_global():
+    result = _deep_merge_llm({"model": "openai/gpt-4.1"}, {"model": ""})
+    assert result["model"] == "openai/gpt-4.1"

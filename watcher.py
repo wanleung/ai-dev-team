@@ -18,6 +18,7 @@ Cron setup (hourly):
 from __future__ import annotations
 
 import argparse
+import copy
 import contextvars
 import fcntl
 import glob
@@ -624,17 +625,18 @@ def _deep_merge_llm(global_llm: dict, repo_llm: dict) -> dict:
     - ``pools``: key-by-key merge (repo backend wins)
     - All other scalar keys: repo value replaces global if present
     """
-    result = dict(global_llm)  # shallow copy of global
+    result = copy.deepcopy(global_llm)  # deep copy so nested dicts are independent
 
-    for key, repo_val in repo_llm.items():
+    for key, repo_val in (repo_llm or {}).items():
         if key in ("overrides", "pools") and isinstance(repo_val, dict):
             # Key-by-key merge: global base, repo keys win
             merged = dict(result.get(key) or {})
             merged.update(repo_val)
             result[key] = merged
         else:
-            # model, fallback, ollama_url, etc: repo replaces global
-            result[key] = repo_val
+            # model, fallback, ollama_url, etc: repo replaces global if non-empty
+            if repo_val is not None and repo_val != "" and repo_val != []:
+                result[key] = repo_val
 
     return result
 
