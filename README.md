@@ -12,6 +12,7 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **Checkpoint / resume** — interrupted runs pick up from the last successful stage
 - **Multi-repo routing** — agents push to a target repo; tracking issues live in a central `ai-software-house` repo
 - **Per-agent LLM config** — assign any GitHub Models model to each agent independently
+- **Per-repo LLM config** — each repo can declare its own `llm:` section in `repos-available/*.yaml` that overrides the global config for that repo only (model, per-agent overrides, fallback chains, pool limits)
 - **Actual test execution** — pytest runs locally; results posted back to the PR as a comment
 - **Pluggable deploy backends** — deployment tester generates smoke tests; each repo independently chooses `none`, `docker` (local docker-compose), or `libvirt` (remote VM via SSH + CoW overlay) for its deploy test strategy
 - **GitHub Actions integration** — label an issue to trigger the full pipeline automatically; 15-minute watcher catches pre-labelled issues too
@@ -959,6 +960,74 @@ settings:
 > **Legacy `feature_label` / `bug_label` / `doc_label` fields are still supported** — they are automatically mapped to `ai-feature`, `ai-fix`, and `ai-docs` pipelines respectively.
 
 > Use `**Target repo:** owner/repo` in the issue body to route code to a different repo than `default_target`.
+
+### 🧠 Per-Repo LLM Config
+
+Each repo entry can declare its own `llm:` block that **deep-merges on top of** the global `config.yaml` LLM config. This lets different projects use different models, fallbacks, or concurrency limits — with no change to the global config.
+
+#### Minimal example — override the default model for one repo
+
+```yaml
+# repos-available/my-ml-project.yaml
+tracker_repo: wanleung/my-ml-project
+labels:
+  ai-feature: ai-feature
+
+llm:
+  model: "claude-3-5-sonnet-20241022"   # use Claude for this repo only
+```
+
+#### Full example — custom model, per-agent overrides, fallbacks, pool limits
+
+```yaml
+# repos-available/my-app.yaml
+tracker_repo: wanleung/my-app
+labels:
+  ai-feature: ai-feature
+  ai-fix: ai-fix
+
+llm:
+  model: "openai/gpt-4.1"              # default model for this repo
+
+  overrides:
+    architect: "openai/gpt-4.1"        # strong model for design work
+    engineer: "openai/gpt-4.1-mini"    # cheaper model for repetitive coding
+    qa_engineer: "ollama/qwen2.5-coder" # run QA locally
+
+  fallbacks:
+    - model: "openai/gpt-4.1-mini"     # if primary fails, fall back here
+    - model: "ollama/llama3.2"         # final fallback: local Ollama
+
+  pools:
+    openai: 3        # allow 3 concurrent calls to OpenAI for this repo
+    ollama: 1        # keep local Ollama at 1 (default)
+```
+
+#### Merge rules
+
+| Key | Behaviour |
+|---|---|
+| `model` | Repo value replaces global |
+| `overrides` | Key-by-key merge — repo agent wins, others keep global |
+| `pools` | Key-by-key merge — repo backend wins, others keep global |
+| `fallbacks` | Repo list **replaces** global list entirely |
+
+The global `config.yaml` is never mutated — each repo gets its own deep copy.
+
+#### Using `repos-available/` (split config)
+
+You can store each repo's config in a separate file and symlink or drop them into `repos-available/`:
+
+```
+repos-available/
+  my-app.yaml           # enabled
+  my-ml-project.yaml    # enabled
+  old-service.yaml      # disabled (enabled: false)
+```
+
+`repos.yaml` auto-discovers all `.yaml` files in `repos-available/` and merges them with any inline `watchers:` entries. The `llm:` block in each file is scoped to that repo.
+
+> **Note:** The `--once` CLI path and DLQ retries always use the global LLM config — per-repo `llm:` only applies to watcher-dispatched pipelines.
 
 ### `ai-docs` pipeline — Documentation-only
 
