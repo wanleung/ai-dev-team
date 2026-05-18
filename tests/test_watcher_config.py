@@ -506,3 +506,51 @@ def test_pipeline_timeout_custom(tmp_path):
     cfg_file.write_text(yaml.dump(cfg))
     result = load_watcher_config(cfg_file)
     assert result["settings"]["pipeline_timeout_s"] == 1800
+
+
+# ── _deep_merge_llm ───────────────────────────────────────────────────────────
+
+from watcher import _deep_merge_llm
+
+
+def test_merge_llm_model_repo_wins():
+    global_llm = {"model": "openai/gpt-4.1", "overrides": {"architect": "openai/gpt-4.1"}}
+    repo_llm = {"model": "ollama/qwen3.5"}
+    result = _deep_merge_llm(global_llm, repo_llm)
+    assert result["model"] == "ollama/qwen3.5"
+    assert result["overrides"]["architect"] == "openai/gpt-4.1"  # global kept
+
+
+def test_merge_llm_overrides_key_by_key():
+    global_llm = {"model": "openai/gpt-4.1", "overrides": {"architect": "openai/gpt-4.1", "engineer": "openai/gpt-4.1-mini"}}
+    repo_llm = {"overrides": {"architect": "claude-3-5-sonnet-20241022"}}
+    result = _deep_merge_llm(global_llm, repo_llm)
+    assert result["overrides"]["architect"] == "claude-3-5-sonnet-20241022"  # repo wins
+    assert result["overrides"]["engineer"] == "openai/gpt-4.1-mini"  # global kept
+
+
+def test_merge_llm_pools_key_by_key():
+    global_llm = {"model": "openai/gpt-4.1", "pools": {"openai": 10, "anthropic": 5}}
+    repo_llm = {"pools": {"openai": 3}}
+    result = _deep_merge_llm(global_llm, repo_llm)
+    assert result["pools"]["openai"] == 3       # repo wins
+    assert result["pools"]["anthropic"] == 5    # global kept
+
+
+def test_merge_llm_fallback_replaced_not_merged():
+    global_llm = {"model": "openai/gpt-4.1", "fallback": [{"model": "openai/gpt-4.1-mini"}]}
+    repo_llm = {"fallback": [{"model": "ollama/qwen3.5"}]}
+    result = _deep_merge_llm(global_llm, repo_llm)
+    assert result["fallback"] == [{"model": "ollama/qwen3.5"}]
+
+
+def test_merge_llm_no_repo_llm_returns_global_copy():
+    global_llm = {"model": "openai/gpt-4.1", "overrides": {"architect": "openai/gpt-4.1"}}
+    result = _deep_merge_llm(global_llm, {})
+    assert result == global_llm
+    assert result is not global_llm  # must be a copy
+
+
+def test_merge_llm_empty_global():
+    result = _deep_merge_llm({}, {"model": "ollama/qwen3.5"})
+    assert result["model"] == "ollama/qwen3.5"

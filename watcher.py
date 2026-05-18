@@ -614,6 +614,31 @@ def _load_pipeline_config() -> dict:
     return cfg
 
 
+def _deep_merge_llm(global_llm: dict, repo_llm: dict) -> dict:
+    """Deep-merge repo LLM config on top of global. Repo values win.
+
+    Rules:
+    - ``model``: repo value replaces global if non-empty
+    - ``fallback``: repo list replaces global list entirely
+    - ``overrides``: key-by-key merge (repo agent wins)
+    - ``pools``: key-by-key merge (repo backend wins)
+    - All other scalar keys: repo value replaces global if present
+    """
+    result = dict(global_llm)  # shallow copy of global
+
+    for key, repo_val in repo_llm.items():
+        if key in ("overrides", "pools") and isinstance(repo_val, dict):
+            # Key-by-key merge: global base, repo keys win
+            merged = dict(result.get(key) or {})
+            merged.update(repo_val)
+            result[key] = merged
+        else:
+            # model, fallback, ollama_url, etc: repo replaces global
+            result[key] = repo_val
+
+    return result
+
+
 def load_watcher_config(config_path: Path) -> dict:
     """Load and merge watcher config from repos.yaml + repos-enabled/*.yaml.
 
