@@ -14,7 +14,7 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **Per-agent LLM config** — assign any GitHub Models model to each agent independently
 - **Per-repo LLM config** — each repo can declare its own `llm:` section in `repos-available/*.yaml` that overrides the global config for that repo only (model, per-agent overrides, fallback chains, pool limits)
 - 📣 **PR & marketing campaign pipeline** — label an issue `pr-campaign` to run a 3-stage pipeline (Analyst → Creative → Proposal) that researches your campaign brief and outputs a polished proposal PR with social copy and platform tactics
-- 💬 **Multi-agent brainstorm stage** — add `discuss_brainstorm` to any pipeline to run a moderated 3-persona debate (Analyst / Skeptic / Optimist) before engineering begins; transcript and synthesis injected into all downstream stages
+- 💬 **Multi-agent brainstorm stage** — add `discuss_brainstorm` to any pipeline to run a moderated debate; participants can be any agent role file, inline personas, or auto-selected by the LLM from a pool; transcript and synthesis injected into all downstream stages
 - **Actual test execution** — pytest runs locally; results posted back to the PR as a comment
 - **Pluggable deploy backends** — deployment tester generates smoke tests; each repo independently chooses `none`, `docker` (local docker-compose), or `libvirt` (remote VM via SSH + CoW overlay) for its deploy test strategy
 - **GitHub Actions integration** — label an issue to trigger the full pipeline automatically; 15-minute watcher catches pre-labelled issues too
@@ -1189,6 +1189,60 @@ context_fields:
 ```
 
 Use it in any pipeline as `discuss_architecture_review`.
+
+#### Who can participate — three ways to configure participants
+
+Participants are resolved from any role file in `roles/`, an inline persona string, or chosen automatically by the LLM. All three approaches can be mixed in the same preset.
+
+**1 — Fixed list (any existing agent role file):**
+
+```yaml
+participants:
+  - role: architect
+    persona_file: roles/architect.md        # any roles/*.md file works
+  - role: code_reviewer
+    persona_file: roles/code_reviewer.md
+  - role: qa_engineer
+    persona_file: roles/qa_engineer.md
+```
+
+**2 — Auto-select from a pool (LLM picks the best fit for each issue):**
+
+```yaml
+auto_participants:
+  pool:
+    - architect
+    - senior_engineer
+    - code_reviewer
+    - qa_engineer
+    - security_reviewer
+  select: 3     # LLM reads the issue and picks the 3 most relevant roles
+```
+
+The LLM sees the issue body and chooses who adds the most value — e.g. for a DB schema change it might pick `architect`, `senior_engineer`, `qa_engineer` and skip `security_reviewer`.  
+Fallback: if the LLM response contains no valid role names, `participants` is used instead.
+
+**3 — Inline persona (no role file needed):**
+
+```yaml
+participants:
+  - role: domain_expert
+    persona: |
+      You are a domain expert in financial regulations.
+      Focus on compliance risks and regulatory constraints.
+```
+
+**Per-participant model override** — give a specific participant a different LLM:
+
+```yaml
+participants:
+  - role: architect
+    persona_file: roles/architect.md
+    llm: "openai/gpt-4.1"          # strong model for design reasoning
+  - role: junior_engineer
+    persona_file: roles/junior_engineer.md
+    llm: "ollama/qwen2.5-coder"    # cheap local model for implementation perspective
+```
 
 ---
 
