@@ -231,6 +231,19 @@ python main.py --pipeline ai-feature-brainstorm \
 
 > **Tip:** Use `discuss_brainstorm` for high-stakes architectural decisions or anything where hidden tradeoffs are likely. For routine feature work, the standard `ai-feature` pipeline is faster.
 
+**Two-model split (optional):** If your LLM pool includes a fast model (no tool support) and a slower model (with tool support), you can split the homework and discussion phases so each participant does deep research with the capable model, then debates with the fast one:
+
+```yaml
+# discussions/brainstorm.yaml — per-participant model override
+participants:
+  - role: analyst
+    persona_file: roles/analyst.md
+    llm: "fast-model"           # used for debate rounds — no tools needed
+    homework_llm: "slow-model"  # used for homework round — has RAG tool access
+```
+
+See the [full discussion docs](../README.md#-discuss_brainstorm--multi-agent-brainstorm) for all participant options.
+
 ### Tips
 
 - **Break large features into separate issues** (auth, DB migration, monitoring as three issues) and label each — the watcher runs them with the concurrency defined by `parallel_issues` in `repos.yaml`

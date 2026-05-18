@@ -1246,6 +1246,8 @@ participants:
 
 **Two-model split: fast discussion + slow homework with tool calling**
 
+Discussion agents do not call tools during debate rounds — they only reason. But the **homework round** is different: participants need to research the codebase and prior decisions before forming an opinion. To support this, each participant can use a separate, more capable model for homework that has access to the RAG `tool_registry`.
+
 Use `homework_llm` to give each participant a different model for the research phase vs the debate phase:
 
 ```yaml
@@ -1256,9 +1258,14 @@ participants:
     homework_llm: "opencode-go/qwen3.5-plus"  # slow+tools — homework research round
 ```
 
-- `llm` is used for all **discussion rounds** (fast, no tool calling needed — pure reasoning)
-- `homework_llm` is used for the **homework round only** and gets access to the RAG `tool_registry` (search_codebase, search_memory, search_docs)
+| Phase | Model used | Tools available |
+|-------|-----------|-----------------|
+| **Homework** | `homework_llm` (slow, capable) | ✅ `search_codebase`, `search_memory`, `search_docs` |
+| **Discussion rounds** | `llm` (fast) | ❌ pure reasoning only |
+
+- If `homework_llm` is not set, `llm` is used for all phases (no tools)
 - If `homework_llm` is set but the model doesn't support tool calling, it falls back to a plain call automatically
+- This pattern is useful when you have a fast model without tool support and a slower model with tool support in the same LLM pool
 
 ---
 
