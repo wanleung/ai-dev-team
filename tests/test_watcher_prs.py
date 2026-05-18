@@ -304,7 +304,7 @@ def test_watch_prs_dispatches_when_label_trigger(monkeypatch, tmp_path):
         "watcher._run_pr_revision",
         lambda pr, tracker, target, model, num_eng, log_dir, logger,
                pr_fix_label="ai-fix", update_branch_enabled=False,
-               conflict_resolver_model=None:
+               conflict_resolver_model=None, llm_cfg=None:
             dispatched.append((pr["number"], tracker, target, model, num_eng, pr_fix_label)),
     )
 

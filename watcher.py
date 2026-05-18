@@ -622,7 +622,7 @@ def _deep_merge_llm(global_llm: dict, repo_llm: dict) -> dict:
 
     Rules:
     - ``model``: repo value replaces global if non-empty
-    - ``fallback``: repo list replaces global list entirely
+    - ``fallbacks``: repo list replaces global list entirely
     - ``overrides``: key-by-key merge (repo agent wins)
     - ``pools``: key-by-key merge (repo backend wins)
     - All other scalar keys: repo value replaces global if present
@@ -1074,7 +1074,7 @@ def _watch_prs(
                 pr_fix_label=pr_fix_label,
                 update_branch_enabled=update_branch_enabled,
                 conflict_resolver_model=conflict_resolver_model,
-                llm_cfg=effective_llm,
+                llm_cfg=copy.deepcopy(effective_llm),
             )
 
 
@@ -1795,6 +1795,7 @@ def main() -> None:
         for entry in dlq.drain():
             _log.info("Retrying DLQ entry: issue #%d (%s)", entry.issue_number, entry.tracker_repo)
             try:
+                # TODO: DLQEntry does not store llm_cfg; retries use the global pipeline LLM config.
                 ok = run_pipeline(
                     label=entry.label,
                     tracker_repo=entry.tracker_repo,
