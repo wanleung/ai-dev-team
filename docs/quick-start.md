@@ -203,6 +203,34 @@ After a feature PR merges, run refactor mode to let agents review code quality a
 python main.py --refactor --repo owner/repo
 ```
 
+### Path D — With brainstorm discussion (debate before engineering)
+
+Add `discuss_brainstorm` to your pipeline to run a moderated 3-persona debate (Analyst / Skeptic / Optimist) **before** the engineers write any code. The synthesis is injected into all downstream stages so engineers understand the rationale.
+
+```yaml
+# pipelines/ai-feature-brainstorm.yaml
+stages:
+  - pm
+  - pm_reviewer
+  - architect
+  - discuss_brainstorm      # ← homework + up to 2 debate rounds
+  - reviewer
+  - junior_engineer
+  - senior_engineer
+  - validation_gate
+  - qa_planner
+  - qa_engineer
+```
+
+```bash
+# Trigger with your custom pipeline label
+python main.py --pipeline ai-feature-brainstorm \
+  "Add webhook support to the notification service" \
+  --repo owner/repo
+```
+
+> **Tip:** Use `discuss_brainstorm` for high-stakes architectural decisions or anything where hidden tradeoffs are likely. For routine feature work, the standard `ai-feature` pipeline is faster.
+
 ### Tips
 
 - **Break large features into separate issues** (auth, DB migration, monitoring as three issues) and label each — the watcher runs them with the concurrency defined by `parallel_issues` in `repos.yaml`
@@ -211,7 +239,7 @@ python main.py --refactor --repo owner/repo
 - **Build a custom pipeline** in the browser GUI: `python main.py --config-builder`
 
 ### ⏱ Typical runtime
-~8–15 min per feature (TDD adds ~2–3 min for the test-writing stage)
+~8–15 min per feature (TDD adds ~2–3 min for the test-writing stage; `discuss_brainstorm` adds ~3–5 min)
 
 ### ✅ What you get
 A feature PR with PM spec, architecture notes, implementation, tests, and deployment smoke tests — all in one pull request.
@@ -307,6 +335,58 @@ Bootstrap: ~3 min · First `ai-docs` run: ~5 min · Feature/fix runs: same as Sc
 
 ### ✅ What you get
 A bootstrapped repo where agents understand your actual code, safely patched or extended via PRs with a validation gate protecting your existing test suite.
+
+---
+
+## Scenario 5 — PR & Marketing Campaign
+
+You want agents to research and draft a PR/marketing campaign proposal for a product, release, or feature — with social copy and platform tactics ready to go.
+
+### Path A — Via GitHub label (recommended)
+
+1. **Create a GitHub issue** on `wanleung/pr-campaigns` (or whichever repo you've configured) with your campaign brief
+2. **Apply label `pr-campaign`**
+3. The watcher runs 3 stages automatically: **Analyst → Creative → Proposal**
+4. A PR opens on the same repo containing the full proposal document
+
+**Issue body format:**
+
+```markdown
+## Campaign Brief
+
+**Product / Feature:** <name and one-line description>
+**Key message:** <the single most important thing to communicate>
+**Target audience:** <who you want to reach>
+**Goal:** <what success looks like — e.g. GitHub stars, sign-ups, awareness>
+**Preferred channels:** X, LinkedIn, Reddit (r/LocalLLaMA)
+```
+
+### Path B — Direct CLI
+
+```bash
+python main.py --pipeline pr-campaign \
+  "Launch campaign for v0.10.0: per-repo LLM config for indie devs. Goal: GitHub stars." \
+  --repo owner/pr-campaigns
+```
+
+### Configure the watcher
+
+```yaml
+# repos.yaml
+watchers:
+  - tracker_repo: your-org/pr-campaigns
+    default_target: your-org/pr-campaigns
+    parallel_issues: 1
+    labels:
+      pr-campaign: pr-campaign
+    enabled: true
+```
+
+### ⏱ Typical runtime
+~5–8 min (3 sequential LLM stages, no code execution)
+
+### ✅ What you get
+A proposal PR with executive summary, research brief, 3–5 campaign concepts, ready-to-post social copy (LinkedIn, Instagram, TikTok, X), press release angle, and recommended next steps.
 
 ---
 
