@@ -31,7 +31,7 @@ Pipeline YAML example:
 model: grok/grok-4.3
 timeout: 300          # seconds, default 600
 directory: /path/to/project   # optional, defaults to os.getcwd()
-max_retries: 2        # example value; default comes from _DEFAULT_MAX_RETRIES (env AGENT_MAX_RETRIES, default 3)
+max_retries: 2        # default 2
 ```
 
 ### Binary Resolution
@@ -100,15 +100,15 @@ Returns `False`.
 
 File: `tests/test_grok_backend.py`
 
-| # | Test | What it verifies | Status |
-|---|------|-----------------|--------|
-| 1 | `test_call_collects_text_events` | Mock Popen emitting text events → reply assembled correctly | ✅ |
-| 2 | `test_call_streams_on_token` | `on_token` called once per text event chunk | ✅ |
-| 3 | `test_call_retries_on_timeout` | First call raises `TimeoutExpired`, second succeeds | ✅ |
-| 4 | `test_call_raises_on_error_event` | `{"type":"error"}` event → `RuntimeError` | ✅ |
-| 5 | `test_call_raises_on_empty_output` | No text events → `RuntimeError` | ✅ |
-| 6 | `test_call_with_tools_not_supported` | `call_with_tools()` → `NotImplementedError` | ✅ |
-| 7 | `test_factory_creates_grok_backend` | `create_backend({"model": "grok/grok-4.3"})` → `GrokBackend` | ✅ |
+| # | Test | What it verifies |
+|---|------|-----------------|
+| 1 | `test_call_collects_text_events` | Mock Popen emitting text events → reply assembled correctly |
+| 2 | `test_call_streams_on_token` | `on_token` called once per text event chunk |
+| 3 | `test_call_retries_on_timeout` | First call raises `TimeoutExpired`, second succeeds |
+| 4 | `test_call_raises_on_error_event` | `{"type":"error"}` event → `RuntimeError` |
+| 5 | `test_call_raises_on_empty_output` | No text events → `RuntimeError` |
+| 6 | `test_call_with_tools_not_supported` | `call_with_tools()` → `NotImplementedError` |
+| 7 | `test_factory_creates_grok_backend` | `create_backend({"model": "grok/grok-4.3"})` → `GrokBackend` |
 
 ---
 
