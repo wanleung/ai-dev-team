@@ -561,3 +561,64 @@ def test_merge_llm_empty_global():
 def test_merge_llm_empty_model_does_not_replace_global():
     result = _deep_merge_llm({"model": "openai/gpt-4.1"}, {"model": ""})
     assert result["model"] == "openai/gpt-4.1"
+
+
+# ── load_watcher_config: llm extraction ──────────────────────────────────────
+
+def test_load_watcher_config_extracts_llm(tmp_path):
+    """llm: key is extracted from repo entry and stored as _llm."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, """
+        watchers:
+          - tracker_repo: owner/alpha
+            enabled: true
+            llm:
+              model: "ollama/qwen3.5"
+              overrides:
+                architect: "openai/gpt-4.1"
+    """)
+    result = load_watcher_config(cfg)
+    w = result["watchers"][0]
+    assert "_llm" in w
+    assert w["_llm"]["model"] == "ollama/qwen3.5"
+    assert w["_llm"]["overrides"]["architect"] == "openai/gpt-4.1"
+    assert "llm" not in w  # original key removed
+
+
+def test_load_watcher_config_no_llm_key_absent(tmp_path):
+    """Repo entries without llm: have no _llm key."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, """
+        watchers:
+          - tracker_repo: owner/alpha
+            enabled: true
+    """)
+    result = load_watcher_config(cfg)
+    w = result["watchers"][0]
+    assert "_llm" not in w
+
+
+def test_load_watcher_config_llm_in_repos_enabled(tmp_path):
+    """llm: key in repos-available/ entry is extracted to _llm."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, "settings:\n  max_parallel: 1\n")
+
+    avail = tmp_path / "repos-available"
+    avail.mkdir()
+    _write(avail / "my-repo.yaml", """
+        tracker_repo: owner/my-repo
+        enabled: true
+        llm:
+          model: "openai/gpt-4.1"
+          pools:
+            openai: 3
+    """)
+
+    enabled = tmp_path / "repos-enabled"
+    enabled.mkdir()
+    os.symlink(avail / "my-repo.yaml", enabled / "my-repo.yaml")
+
+    result = load_watcher_config(cfg)
+    w = result["watchers"][0]
+    assert w["_llm"]["model"] == "openai/gpt-4.1"
+    assert w["_llm"]["pools"]["openai"] == 3

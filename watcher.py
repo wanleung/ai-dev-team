@@ -658,6 +658,9 @@ def load_watcher_config(config_path: Path) -> dict:
         per_settings = w.pop("settings", None)
         if per_settings is not None:
             w["_settings"] = per_settings
+        per_llm = w.pop("llm", None)
+        if per_llm is not None:
+            w["_llm"] = per_llm
     seen: dict[str, int] = {}  # tracker_repo → index in merged list
 
     for i, w in enumerate(legacy_watchers):
@@ -678,6 +681,9 @@ def load_watcher_config(config_path: Path) -> dict:
             per_settings = watcher_dict.pop("settings", None)
             if per_settings is not None:
                 watcher_dict["_settings"] = per_settings
+            per_llm = watcher_dict.pop("llm", None)
+            if per_llm is not None:
+                watcher_dict["_llm"] = per_llm
             repo = watcher_dict.get("tracker_repo", "")
             if not repo:
                 _log.warning("repos-enabled/%s has no tracker_repo — skipping", entry.name)
