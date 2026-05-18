@@ -13,6 +13,8 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **Multi-repo routing** — agents push to a target repo; tracking issues live in a central `ai-software-house` repo
 - **Per-agent LLM config** — assign any GitHub Models model to each agent independently
 - **Per-repo LLM config** — each repo can declare its own `llm:` section in `repos-available/*.yaml` that overrides the global config for that repo only (model, per-agent overrides, fallback chains, pool limits)
+- 📣 **PR & marketing campaign pipeline** — label an issue `pr-campaign` to run a 3-stage pipeline (Analyst → Creative → Proposal) that researches your campaign brief and outputs a polished proposal PR with social copy and platform tactics
+- 💬 **Multi-agent brainstorm stage** — add `discuss_brainstorm` to any pipeline to run a moderated 3-persona debate (Analyst / Skeptic / Optimist) before engineering begins; transcript and synthesis injected into all downstream stages
 - **Actual test execution** — pytest runs locally; results posted back to the PR as a comment
 - **Pluggable deploy backends** — deployment tester generates smoke tests; each repo independently chooses `none`, `docker` (local docker-compose), or `libvirt` (remote VM via SSH + CoW overlay) for its deploy test strategy
 - **GitHub Actions integration** — label an issue to trigger the full pipeline automatically; 15-minute watcher catches pre-labelled issues too
@@ -1047,6 +1049,148 @@ Update the README installation section and add a troubleshooting guide.
 
 - `**Docs:**` is optional — if omitted, the agent auto-discovers `.md` files in the repo (up to 5)
 - `**Target repo:**` is optional — if omitted, the watcher's repo is used
+
+---
+
+### 📣 `pr-campaign` pipeline — PR & Marketing Campaign
+
+Label an issue `pr-campaign` to run a 3-stage content creation pipeline that produces a fully formatted campaign proposal and opens a GitHub PR for human review.
+
+**Built-in pipeline:** `pipelines/pr-campaign.yaml`
+
+| Stage | Agent | Output |
+|-------|-------|--------|
+| `pr_analyst` | Alex — PR Analyst | Structured research: opportunity, audience, angle, channels, risks |
+| `pr_creative` | Casey — PR Creative | 3–5 campaign concepts with platform tactics (LinkedIn, Instagram, TikTok, X) and ready-to-post social copy |
+| `pr_proposal` | Jordan — PR Proposal | Polished Markdown proposal + PR metadata (title, body) |
+
+#### Trigger via GitHub issue (recommended)
+
+The watcher monitors `wanleung/pr-campaigns` for issues labelled `pr-campaign`.  
+Create an issue there with your campaign brief and apply the label:
+
+```markdown
+## Campaign Brief
+
+**Product / Feature:** ai-dev-team v0.10.0 — per-repo LLM config
+**Key message:** Every project can now pick its own AI model without touching global config.
+**Target audience:** Indie hackers, small dev teams, local-LLM enthusiasts.
+**Goal:** GitHub stars and community awareness.
+**Preferred channels:** X, LinkedIn, Reddit (r/LocalLLaMA, r/MachineLearning)
+```
+
+The pipeline runs automatically. When it finishes, a new PR appears on `wanleung/pr-campaigns` containing the full proposal document.
+
+#### Trigger via CLI
+
+```bash
+python main.py --pipeline pr-campaign \
+  "Launch campaign for v0.10.0: per-repo LLM config for indie devs." \
+  --repo wanleung/pr-campaigns
+```
+
+Or from a brief file:
+
+```bash
+python main.py --pipeline pr-campaign --file brief.txt --repo wanleung/pr-campaigns
+```
+
+#### Add to your own repos.yaml
+
+```yaml
+watchers:
+  - tracker_repo: your-org/pr-campaigns
+    default_target: your-org/pr-campaigns
+    parallel_issues: 1
+    labels:
+      pr-campaign: pr-campaign
+    enabled: true
+```
+
+---
+
+### 💬 `discuss_brainstorm` stage — Multi-Agent Round-Table
+
+Any pipeline can include a **brainstorm discussion** stage that runs a moderated multi-agent debate before engineering work begins. Three personas — **Analyst**, **Skeptic**, and **Optimist** — independently think through the problem, then debate across up to 2 rounds, with the **Moderator** synthesising the outcome.
+
+**Preset file:** `discussions/brainstorm.yaml`  
+**Auto-registered stage name:** `discuss_brainstorm` (all `discussions/*.yaml` files are auto-discovered)
+
+#### Add to any pipeline
+
+```yaml
+# pipelines/my-feature.yaml
+stages:
+  - pm
+  - pm_reviewer
+  - architect
+  - discuss_brainstorm       # ← insert here, after design, before engineering
+  - reviewer
+  - junior_engineer
+  - senior_engineer
+  - validation_gate
+  - qa_planner
+  - qa_engineer
+```
+
+#### What happens during the stage
+
+| Phase | What happens |
+|-------|-------------|
+| **Homework** | Each participant thinks independently and writes their initial analysis |
+| **Rounds 1–2** | Open discussion — participants can `@mention` each other to respond directly |
+| **Early exit** | Stops before max rounds if moderator signals `CONSENSUS_REACHED` |
+| **Output** | `discussion_transcript` + `discussion_synthesis` injected into all downstream stages |
+
+Downstream agents (reviewer, engineers, QA) receive the full transcript and synthesis, so they understand the reasoning behind design choices without re-deriving them.
+
+#### Trigger via GitHub issue
+
+Create an issue with your feature or architecture brief and apply whatever label maps to your pipeline:
+
+```markdown
+## Feature Brief
+
+Add webhook support to the notification service so external systems can subscribe
+to job completion events.
+
+**Acceptance criteria:**
+- POST /webhooks to register an endpoint
+- Events fired on job status change (queued, running, done, failed)
+- Retry on delivery failure (3 attempts, exponential backoff)
+```
+
+The brainstorm stage will debate the approach before the architect and engineers write any code.
+
+#### Create a custom discussion preset
+
+Drop a YAML file into `discussions/` and it's automatically available as a stage:
+
+```yaml
+# discussions/architecture-review.yaml
+participants:
+  - role: backend_expert
+    persona_file: roles/senior_engineer.md
+  - role: security_reviewer
+    persona_file: roles/code_reviewer.md
+
+homework_round: true
+max_rounds: 3
+early_exit: CONSENSUS_REACHED
+
+moderator:
+  persona_file: roles/moderator.md
+
+output_mode: both       # transcript + synthesis passed downstream
+context_fields:
+  - spec
+  - design
+  - issue_body
+```
+
+Use it in any pipeline as `discuss_architecture_review`.
+
+---
 
 ### Install cron job (runs every hour at :00)
 
