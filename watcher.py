@@ -427,6 +427,7 @@ def run_pipeline(
     log_file: Path | None = None,
     dlq=None,          # DeadLetterQueue | None
     deploy_cfg: dict | None = None,
+    llm_cfg: dict | None = None,
 ) -> bool:
     """Run the appropriate orchestrator for a single issue. Returns True on success.
 
@@ -496,6 +497,7 @@ def run_pipeline(
             log_file=issue_log,
             logger=logger,
             deploy_cfg=deploy_cfg,
+            llm_cfg=llm_cfg,
         )
 
         # ── Pipeline chaining ─────────────────────────────────────────────────
@@ -787,6 +789,7 @@ def _dispatch(
     log_file: Path,
     logger: logging.Logger,  # noqa: ARG001 – forwarded by callers; body uses module _log
     deploy_cfg: dict | None = None,
+    llm_cfg: dict | None = None,
 ) -> "PipelineResult":
     """Run the unified Orchestrator with the pipeline file selected by ``label``.
 
@@ -796,14 +799,14 @@ def _dispatch(
     token = os.environ.get("GITHUB_TOKEN")
 
     pipeline_cfg = _load_pipeline_config()
-    llm_cfg = pipeline_cfg.get("llm", {})
+    _llm = llm_cfg if llm_cfg is not None else pipeline_cfg.get("llm", {})
     pipe_cfg = pipeline_cfg.get("pipeline", {})
-    cfg_model = llm_cfg.get("model", "") or ""
+    cfg_model = _llm.get("model", "") or ""
     effective_model = cfg_model if cfg_model and cfg_model != "gpt-4.1" else model
-    model_overrides = llm_cfg.get("overrides", {})
-    ollama_url = llm_cfg.get("ollama_url", "http://localhost:11434")
-    nvidia_nim_api_key = llm_cfg.get("nvidia_nim_api_key") or os.environ.get("NVIDIA_API_KEY")
-    nvidia_nim_base_url = llm_cfg.get("nvidia_nim_base_url") or os.environ.get("NVIDIA_NIM_BASE_URL")
+    model_overrides = _llm.get("overrides", {})
+    ollama_url = _llm.get("ollama_url", "http://localhost:11434")
+    nvidia_nim_api_key = _llm.get("nvidia_nim_api_key") or os.environ.get("NVIDIA_API_KEY")
+    nvidia_nim_base_url = _llm.get("nvidia_nim_base_url") or os.environ.get("NVIDIA_NIM_BASE_URL")
     retry_delay = pipe_cfg.get("retry_delay", 15)
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
@@ -841,6 +844,7 @@ def _dispatch(
                 max_api_retries=max_api_retries,
                 inter_call_delay=inter_call_delay,
                 deploy_cfg=deploy_cfg,
+                llm_fallbacks=_llm.get("fallbacks") or None,
             )
 
             # Resolve pipeline stages for this label (project override → builtin)
@@ -898,6 +902,7 @@ def _run_pr_revision(
     pr_fix_label: str = "ai-fix",
     update_branch_enabled: bool = False,
     conflict_resolver_model: Optional[str] = None,
+    llm_cfg: dict | None = None,
 ) -> None:
     """Instantiate an Orchestrator and run run_revision() for a failing PR.
 
@@ -911,14 +916,14 @@ def _run_pr_revision(
 
     token = os.environ.get("GITHUB_TOKEN", "")
     pipeline_cfg = _load_pipeline_config()
-    llm_cfg = pipeline_cfg.get("llm", {})
+    _llm = llm_cfg if llm_cfg is not None else pipeline_cfg.get("llm", {})
     pipe_cfg = pipeline_cfg.get("pipeline", {})
-    cfg_model = llm_cfg.get("model", "") or ""
+    cfg_model = _llm.get("model", "") or ""
     effective_model = cfg_model if cfg_model and cfg_model != "gpt-4.1" else model
-    model_overrides = llm_cfg.get("overrides", {})
-    ollama_url = llm_cfg.get("ollama_url", "http://localhost:11434")
-    nvidia_nim_api_key = llm_cfg.get("nvidia_nim_api_key") or os.environ.get("NVIDIA_API_KEY")
-    nvidia_nim_base_url = llm_cfg.get("nvidia_nim_base_url") or os.environ.get("NVIDIA_NIM_BASE_URL")
+    model_overrides = _llm.get("overrides", {})
+    ollama_url = _llm.get("ollama_url", "http://localhost:11434")
+    nvidia_nim_api_key = _llm.get("nvidia_nim_api_key") or os.environ.get("NVIDIA_API_KEY")
+    nvidia_nim_base_url = _llm.get("nvidia_nim_base_url") or os.environ.get("NVIDIA_NIM_BASE_URL")
     retry_delay = pipe_cfg.get("retry_delay", 15)
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
@@ -957,6 +962,7 @@ def _run_pr_revision(
                     inter_call_delay=inter_call_delay,
                     update_branch_enabled=update_branch_enabled,
                     conflict_resolver_model=conflict_resolver_model,
+                    llm_fallbacks=_llm.get("fallbacks") or None,
                 )
 
                 result = orch.run_revision(pr_number)
@@ -1013,6 +1019,9 @@ def _watch_prs(
     Only runs for watchers with watch_prs: true in their settings.
     Per-watcher settings override global_settings (same _settings merge as watch()).
     """
+    pipeline_cfg = _load_pipeline_config()
+    global_llm = pipeline_cfg.get("llm", {})
+
     for w in watchers:
         if not w.get("enabled", True):
             continue
@@ -1028,6 +1037,7 @@ def _watch_prs(
         update_branch_enabled = bool(_w_settings.get("update_branch", False))
         conflict_resolver_model = _w_settings.get("conflict_resolver_model")
         pr_failure_pattern = _w_settings.get("pr_failure_pattern", r"❌|FAILED|tests? failed|test suite failed")
+        effective_llm = _deep_merge_llm(global_llm, w.get("_llm", {}))
         try:
             max_pr_retries = int(_w_settings.get("max_pr_retries", 3))
         except (ValueError, TypeError):
@@ -1064,6 +1074,7 @@ def _watch_prs(
                 pr_fix_label=pr_fix_label,
                 update_branch_enabled=update_branch_enabled,
                 conflict_resolver_model=conflict_resolver_model,
+                llm_cfg=effective_llm,
             )
 
 
@@ -1393,6 +1404,7 @@ def _run_tasks(
                     t["issue"], t["tracker_repo"], t["default_target"],
                     t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
                     deploy_cfg=t.get("deploy"),
+                    llm_cfg=t.get("llm"),
                 )
                 futures_to_task[fut] = t
 
