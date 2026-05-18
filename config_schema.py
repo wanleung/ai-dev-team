@@ -189,6 +189,7 @@ class RepoWatcherEntry(BaseModel):
     enabled: bool = True
     senior_model: Optional[str] = None
     conflict_resolver_model: Optional[str] = None
+    llm: Optional[LLMConfig] = None
 
 
 # ── loaders ──────────────────────────────────────────────────────────────────

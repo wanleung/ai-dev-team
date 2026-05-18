@@ -21,3 +21,10 @@ settings:
 
 deploy:
   mode: docker
+
+# Per-repo LLM config example (uncomment and edit to override global settings):
+# llm:
+#   model: "openai/gpt-4.1"
+#   overrides:
+#     architect: "claude-3-5-sonnet-20241022"
+#     engineer: "openai/gpt-4.1-mini"

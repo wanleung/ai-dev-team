@@ -18,6 +18,7 @@ Cron setup (hourly):
 from __future__ import annotations
 
 import argparse
+import copy
 import contextvars
 import fcntl
 import glob
@@ -426,6 +427,7 @@ def run_pipeline(
     log_file: Path | None = None,
     dlq=None,          # DeadLetterQueue | None
     deploy_cfg: dict | None = None,
+    llm_cfg: dict | None = None,
 ) -> bool:
     """Run the appropriate orchestrator for a single issue. Returns True on success.
 
@@ -495,6 +497,7 @@ def run_pipeline(
             log_file=issue_log,
             logger=logger,
             deploy_cfg=deploy_cfg,
+            llm_cfg=llm_cfg,
         )
 
         # ── Pipeline chaining ─────────────────────────────────────────────────
@@ -614,13 +617,39 @@ def _load_pipeline_config() -> dict:
     return cfg
 
 
+def _deep_merge_llm(global_llm: dict, repo_llm: dict) -> dict:
+    """Deep-merge repo LLM config on top of global. Repo values win.
+
+    Rules:
+    - ``model``: repo value replaces global if non-empty
+    - ``fallbacks``: repo list replaces global list entirely
+    - ``overrides``: key-by-key merge (repo agent wins)
+    - ``pools``: key-by-key merge (repo backend wins)
+    - All other scalar keys: repo value replaces global if present
+    """
+    result = copy.deepcopy(global_llm)  # deep copy so nested dicts are independent
+
+    for key, repo_val in (repo_llm or {}).items():
+        if key in ("overrides", "pools") and isinstance(repo_val, dict):
+            # Key-by-key merge: global base, repo keys win
+            merged = dict(result.get(key) or {})
+            merged.update(repo_val)
+            result[key] = merged
+        else:
+            # model, fallback, ollama_url, etc: repo replaces global if non-empty
+            if repo_val is not None and repo_val != "" and repo_val != []:
+                result[key] = repo_val
+
+    return result
+
+
 def load_watcher_config(config_path: Path) -> dict:
     """Load and merge watcher config from repos.yaml + repos-enabled/*.yaml.
 
     Returns a config dict with a unified ``watchers`` list.  Per-watcher
-    ``settings:`` blocks are stripped from the watcher entry and stored as
-    ``_settings`` (for both legacy and repos-enabled entries) so callers can
-    apply per-watcher overrides.
+    ``settings:`` blocks are stripped and stored as ``_settings``; per-watcher
+    ``llm:`` blocks are stripped and stored as ``_llm`` (for both legacy and
+    repos-enabled entries) so callers can apply per-watcher overrides.
     """
     with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
@@ -631,6 +660,9 @@ def load_watcher_config(config_path: Path) -> dict:
         per_settings = w.pop("settings", None)
         if per_settings is not None:
             w["_settings"] = per_settings
+        per_llm = w.pop("llm", None)
+        if per_llm is not None:
+            w["_llm"] = per_llm
     seen: dict[str, int] = {}  # tracker_repo → index in merged list
 
     for i, w in enumerate(legacy_watchers):
@@ -651,6 +683,9 @@ def load_watcher_config(config_path: Path) -> dict:
             per_settings = watcher_dict.pop("settings", None)
             if per_settings is not None:
                 watcher_dict["_settings"] = per_settings
+            per_llm = watcher_dict.pop("llm", None)
+            if per_llm is not None:
+                watcher_dict["_llm"] = per_llm
             repo = watcher_dict.get("tracker_repo", "")
             if not repo:
                 _log.warning("repos-enabled/%s has no tracker_repo — skipping", entry.name)
@@ -754,6 +789,7 @@ def _dispatch(
     log_file: Path,
     logger: logging.Logger,  # noqa: ARG001 – forwarded by callers; body uses module _log
     deploy_cfg: dict | None = None,
+    llm_cfg: dict | None = None,
 ) -> "PipelineResult":
     """Run the unified Orchestrator with the pipeline file selected by ``label``.
 
@@ -763,14 +799,14 @@ def _dispatch(
     token = os.environ.get("GITHUB_TOKEN")
 
     pipeline_cfg = _load_pipeline_config()
-    llm_cfg = pipeline_cfg.get("llm", {})
+    _llm = llm_cfg if llm_cfg is not None else pipeline_cfg.get("llm", {})
     pipe_cfg = pipeline_cfg.get("pipeline", {})
-    cfg_model = llm_cfg.get("model", "") or ""
+    cfg_model = _llm.get("model", "") or ""
     effective_model = cfg_model if cfg_model and cfg_model != "gpt-4.1" else model
-    model_overrides = llm_cfg.get("overrides", {})
-    ollama_url = llm_cfg.get("ollama_url", "http://localhost:11434")
-    nvidia_nim_api_key = llm_cfg.get("nvidia_nim_api_key") or os.environ.get("NVIDIA_API_KEY")
-    nvidia_nim_base_url = llm_cfg.get("nvidia_nim_base_url") or os.environ.get("NVIDIA_NIM_BASE_URL")
+    model_overrides = _llm.get("overrides", {})
+    ollama_url = _llm.get("ollama_url", "http://localhost:11434")
+    nvidia_nim_api_key = _llm.get("nvidia_nim_api_key") or os.environ.get("NVIDIA_API_KEY")
+    nvidia_nim_base_url = _llm.get("nvidia_nim_base_url") or os.environ.get("NVIDIA_NIM_BASE_URL")
     retry_delay = pipe_cfg.get("retry_delay", 15)
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
@@ -808,6 +844,7 @@ def _dispatch(
                 max_api_retries=max_api_retries,
                 inter_call_delay=inter_call_delay,
                 deploy_cfg=deploy_cfg,
+                llm_fallbacks=_llm.get("fallbacks") or None,
             )
 
             # Resolve pipeline stages for this label (project override → builtin)
@@ -865,6 +902,7 @@ def _run_pr_revision(
     pr_fix_label: str = "ai-fix",
     update_branch_enabled: bool = False,
     conflict_resolver_model: Optional[str] = None,
+    llm_cfg: dict | None = None,
 ) -> None:
     """Instantiate an Orchestrator and run run_revision() for a failing PR.
 
@@ -878,14 +916,14 @@ def _run_pr_revision(
 
     token = os.environ.get("GITHUB_TOKEN", "")
     pipeline_cfg = _load_pipeline_config()
-    llm_cfg = pipeline_cfg.get("llm", {})
+    _llm = llm_cfg if llm_cfg is not None else pipeline_cfg.get("llm", {})
     pipe_cfg = pipeline_cfg.get("pipeline", {})
-    cfg_model = llm_cfg.get("model", "") or ""
+    cfg_model = _llm.get("model", "") or ""
     effective_model = cfg_model if cfg_model and cfg_model != "gpt-4.1" else model
-    model_overrides = llm_cfg.get("overrides", {})
-    ollama_url = llm_cfg.get("ollama_url", "http://localhost:11434")
-    nvidia_nim_api_key = llm_cfg.get("nvidia_nim_api_key") or os.environ.get("NVIDIA_API_KEY")
-    nvidia_nim_base_url = llm_cfg.get("nvidia_nim_base_url") or os.environ.get("NVIDIA_NIM_BASE_URL")
+    model_overrides = _llm.get("overrides", {})
+    ollama_url = _llm.get("ollama_url", "http://localhost:11434")
+    nvidia_nim_api_key = _llm.get("nvidia_nim_api_key") or os.environ.get("NVIDIA_API_KEY")
+    nvidia_nim_base_url = _llm.get("nvidia_nim_base_url") or os.environ.get("NVIDIA_NIM_BASE_URL")
     retry_delay = pipe_cfg.get("retry_delay", 15)
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
@@ -924,6 +962,7 @@ def _run_pr_revision(
                     inter_call_delay=inter_call_delay,
                     update_branch_enabled=update_branch_enabled,
                     conflict_resolver_model=conflict_resolver_model,
+                    llm_fallbacks=_llm.get("fallbacks") or None,
                 )
 
                 result = orch.run_revision(pr_number)
@@ -980,6 +1019,9 @@ def _watch_prs(
     Only runs for watchers with watch_prs: true in their settings.
     Per-watcher settings override global_settings (same _settings merge as watch()).
     """
+    pipeline_cfg = _load_pipeline_config()
+    global_llm = pipeline_cfg.get("llm", {})
+
     for w in watchers:
         if not w.get("enabled", True):
             continue
@@ -995,6 +1037,7 @@ def _watch_prs(
         update_branch_enabled = bool(_w_settings.get("update_branch", False))
         conflict_resolver_model = _w_settings.get("conflict_resolver_model")
         pr_failure_pattern = _w_settings.get("pr_failure_pattern", r"❌|FAILED|tests? failed|test suite failed")
+        effective_llm = _deep_merge_llm(global_llm, w.get("_llm", {}))
         try:
             max_pr_retries = int(_w_settings.get("max_pr_retries", 3))
         except (ValueError, TypeError):
@@ -1031,6 +1074,7 @@ def _watch_prs(
                 pr_fix_label=pr_fix_label,
                 update_branch_enabled=update_branch_enabled,
                 conflict_resolver_model=conflict_resolver_model,
+                llm_cfg=copy.deepcopy(effective_llm),
             )
 
 
@@ -1292,7 +1336,135 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
 
 # ── Watcher loop ──────────────────────────────────────────────────────────────
 
-def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | None = None) -> None:  # noqa: ARG001 – logger kept for backward compat
+def _run_tasks(
+    tasks: list[dict],
+    max_parallel: int,
+    log_dir: Path,
+    dry_run: bool,
+    logger: logging.Logger,
+    github_token: str,
+    global_settings: dict,
+) -> None:
+    """Dispatch collected watcher tasks to the pipeline.
+
+    Extracted from ``watch()`` so that tests can monkeypatch this function to
+    capture the task dicts (including ``llm``) without actually running pipelines.
+
+    Args:
+        tasks: List of task dicts built by the watcher loop.  Each dict must
+            contain at minimum ``issue``, ``tracker_repo``, ``default_target``,
+            ``label``, ``model``, ``num_engineers``, ``parallel_issues``, and
+            optionally ``deploy`` and ``llm``.
+        max_parallel: Maximum number of pipelines to run simultaneously across
+            all repos (enforced by a ``threading.Semaphore``).
+        log_dir: Directory for per-run log files.
+        dry_run: When *True* pipelines are not actually executed.
+        logger: Logger instance to use for dispatch messages.
+        github_token: GitHub API token (used only for sanitising error messages).
+        global_settings: Merged global settings dict (used to read
+            ``pipeline_timeout_s``).
+    """
+    if not tasks:
+        _log.info("Nothing to do.")
+        return
+
+    # Group tasks by tracker_repo so each gets its own thread pool
+    by_repo: dict[str, list[dict]] = {}
+    for t in tasks:
+        by_repo.setdefault(t["tracker_repo"], []).append(t)
+
+    _log.info("Dispatching %d pipeline(s) across %d repo(s)…", len(tasks), len(by_repo))
+
+    # One executor per repo; each repo's parallel_issues bounds its concurrency.
+    # A global semaphore enforces the overall max_parallel cap so the total
+    # number of simultaneous pipelines never exceeds settings.max_parallel
+    # regardless of how many repos are being watched.
+    global_sem = threading.Semaphore(max(1, max_parallel))
+
+    def _run_with_global_cap(*args, **kwargs):
+        global_sem.acquire()
+        try:
+            run_pipeline(*args, **kwargs)
+        finally:
+            global_sem.release()
+
+    repo_executors: list[ThreadPoolExecutor] = []
+    futures_to_task: dict = {}
+    try:
+        for repo_name, repo_tasks in by_repo.items():
+            par = max(1, repo_tasks[0].get("parallel_issues", 1))
+            ex = ThreadPoolExecutor(max_workers=par, thread_name_prefix=f"watcher-{repo_name}")
+            repo_executors.append(ex)
+            for t in repo_tasks:
+                ctx = contextvars.copy_context()
+                fut = ex.submit(
+                    ctx.run,
+                    _run_with_issue_lock,
+                    _run_with_global_cap,
+                    t["issue"], t["tracker_repo"], t["default_target"],
+                    t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
+                    deploy_cfg=t.get("deploy"),
+                    llm_cfg=t.get("llm"),
+                )
+                futures_to_task[fut] = t
+
+        pipeline_timeout_s = int(global_settings.get("pipeline_timeout_s") or 3600)
+
+        try:
+            for fut in as_completed(futures_to_task, timeout=pipeline_timeout_s):
+                t = futures_to_task[fut]
+                try:
+                    fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    _log.error(
+                        "Unhandled error for issue #%d: %s",
+                        t["issue"]["number"],
+                        _sanitise(str(exc), github_token),
+                        exc_info=True,
+                    )
+        except FuturesTimeoutError:
+            hung = [
+                f"#{futures_to_task[f]['issue']['number']}"
+                for f in futures_to_task
+                if not f.done()
+            ]
+            _log.warning(
+                "Pipeline timeout (%ds) exceeded — cancelling %d hung pipeline(s): %s",
+                pipeline_timeout_s, len(hung), ", ".join(hung),
+            )
+            for f in futures_to_task:
+                f.cancel()
+            # Clean up labels for futures that were cancelled before they started running.
+            # Futures that were already running have their own label lifecycle in run_pipeline().
+            for f in futures_to_task:
+                if f.cancelled():
+                    t = futures_to_task[f]
+                    issue_number = t["issue"]["number"]
+                    tracker_repo = t["tracker_repo"]
+                    _log.warning(
+                        "Issue #%d timed out before starting — marking as failed",
+                        issue_number,
+                    )
+                    try:
+                        remove_label(tracker_repo, issue_number, LABEL_QUEUED)
+                    except Exception:  # noqa: BLE001
+                        _log.warning(
+                            "Could not remove %s for timed-out issue #%d",
+                            LABEL_QUEUED, issue_number, exc_info=True,
+                        )
+                    try:
+                        add_label(tracker_repo, issue_number, LABEL_FAILED)
+                    except Exception:  # noqa: BLE001
+                        _log.warning(
+                            "Could not add %s for timed-out issue #%d",
+                            LABEL_FAILED, issue_number, exc_info=True,
+                        )
+    finally:
+        for ex in repo_executors:
+            ex.shutdown(wait=False, cancel_futures=True)
+
+
+def watch(config_path: Path, once: bool = False, dry_run: bool = False, logger: logging.Logger | None = None) -> None:  # noqa: ARG001 – logger/once kept for backward compat
     config = load_watcher_config(config_path)
 
     global_settings = config.get("settings", {})
@@ -1380,6 +1552,15 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
         model         = _w_settings.get("model", "gpt-4.1")
         num_engineers = _w_settings.get("num_engineers", 2)
 
+        # Compute effective LLM config: global merged with per-repo overrides
+        global_llm    = pipeline_cfg.get("llm", {})
+        repo_llm      = w.get("_llm", {})
+        effective_llm = _deep_merge_llm(global_llm, repo_llm)
+        # If settings.model was explicitly set (not the default "gpt-4.1") and
+        # the repo didn't set llm.model, let settings.model flow through
+        if not repo_llm.get("model") and model != "gpt-4.1":
+            effective_llm["model"] = model
+
         # Read label → pipeline mapping for this watcher entry. New format:
         #   labels:
         #     ai-feature: {}
@@ -1424,6 +1605,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
                         model=model,
                         num_engineers=num_engineers,
                         deploy=w.get("deploy"),
+                        llm=copy.deepcopy(effective_llm),
                     ))
                     _log.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
         except Exception as exc:  # noqa: BLE001
@@ -1434,103 +1616,7 @@ def watch(config_path: Path, dry_run: bool = False, logger: logging.Logger | Non
             )
 
     try:
-        if not tasks:
-            _log.info("Nothing to do.")
-            return
-
-        # Group tasks by tracker_repo so each gets its own thread pool
-        by_repo: dict[str, list[dict]] = {}
-        for t in tasks:
-            by_repo.setdefault(t["tracker_repo"], []).append(t)
-
-        _log.info("Dispatching %d pipeline(s) across %d repo(s)…", len(tasks), len(by_repo))
-
-        # One executor per repo; each repo's parallel_issues bounds its concurrency.
-        # A global semaphore enforces the overall max_parallel cap so the total
-        # number of simultaneous pipelines never exceeds settings.max_parallel
-        # regardless of how many repos are being watched.
-        global_sem = threading.Semaphore(max(1, max_parallel))
-
-        def _run_with_global_cap(*args, **kwargs):
-            global_sem.acquire()
-            try:
-                run_pipeline(*args, **kwargs)
-            finally:
-                global_sem.release()
-
-        repo_executors: list[ThreadPoolExecutor] = []
-        futures_to_task: dict = {}
-        try:
-            for repo_name, repo_tasks in by_repo.items():
-                par = max(1, repo_tasks[0].get("parallel_issues", 1))
-                ex = ThreadPoolExecutor(max_workers=par, thread_name_prefix=f"watcher-{repo_name}")
-                repo_executors.append(ex)
-                for t in repo_tasks:
-                    ctx = contextvars.copy_context()
-                    fut = ex.submit(
-                        ctx.run,
-                        _run_with_issue_lock,
-                        _run_with_global_cap,
-                        t["issue"], t["tracker_repo"], t["default_target"],
-                        t["label"], t.get("model", "gpt-4.1"), t.get("num_engineers", 2), log_dir, dry_run, logger,
-                        deploy_cfg=t.get("deploy"),
-                    )
-                    futures_to_task[fut] = t
-
-            pipeline_timeout_s = int(global_settings.get("pipeline_timeout_s") or 3600)
-
-            try:
-                for fut in as_completed(futures_to_task, timeout=pipeline_timeout_s):
-                    t = futures_to_task[fut]
-                    try:
-                        fut.result()
-                    except Exception as exc:  # noqa: BLE001
-                        _log.error(
-                            "Unhandled error for issue #%d: %s",
-                            t["issue"]["number"],
-                            _sanitise(str(exc), github_token),
-                            exc_info=True,
-                        )
-            except FuturesTimeoutError:
-                hung = [
-                    f"#{futures_to_task[f]['issue']['number']}"
-                    for f in futures_to_task
-                    if not f.done()
-                ]
-                _log.warning(
-                    "Pipeline timeout (%ds) exceeded — cancelling %d hung pipeline(s): %s",
-                    pipeline_timeout_s, len(hung), ", ".join(hung),
-                )
-                for f in futures_to_task:
-                    f.cancel()
-                # Clean up labels for futures that were cancelled before they started running.
-                # Futures that were already running have their own label lifecycle in run_pipeline().
-                for f in futures_to_task:
-                    if f.cancelled():
-                        t = futures_to_task[f]
-                        issue_number = t["issue"]["number"]
-                        tracker_repo = t["tracker_repo"]
-                        _log.warning(
-                            "Issue #%d timed out before starting — marking as failed",
-                            issue_number,
-                        )
-                        try:
-                            remove_label(tracker_repo, issue_number, LABEL_QUEUED)
-                        except Exception:  # noqa: BLE001
-                            _log.warning(
-                                "Could not remove %s for timed-out issue #%d",
-                                LABEL_QUEUED, issue_number, exc_info=True,
-                            )
-                        try:
-                            add_label(tracker_repo, issue_number, LABEL_FAILED)
-                        except Exception:  # noqa: BLE001
-                            _log.warning(
-                                "Could not add %s for timed-out issue #%d",
-                                LABEL_FAILED, issue_number, exc_info=True,
-                            )
-        finally:
-            for ex in repo_executors:
-                ex.shutdown(wait=False, cancel_futures=True)
+        _run_tasks(tasks, max_parallel, log_dir, dry_run, logger, github_token, global_settings)
     finally:
         clear_run_id()
 
@@ -1709,6 +1795,7 @@ def main() -> None:
         for entry in dlq.drain():
             _log.info("Retrying DLQ entry: issue #%d (%s)", entry.issue_number, entry.tracker_repo)
             try:
+                # TODO: DLQEntry does not store llm_cfg; retries use the global pipeline LLM config.
                 ok = run_pipeline(
                     label=entry.label,
                     tracker_repo=entry.tracker_repo,

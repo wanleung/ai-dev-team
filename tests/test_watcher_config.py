@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 import watcher
-from watcher import load_watcher_config, cmd_repo_enable, cmd_repo_disable, cmd_repo_list
+from watcher import load_watcher_config, cmd_repo_enable, cmd_repo_disable, cmd_repo_list, _deep_merge_llm
 
 
 # ── load_watcher_config ───────────────────────────────────────────────────────
@@ -506,3 +506,215 @@ def test_pipeline_timeout_custom(tmp_path):
     cfg_file.write_text(yaml.dump(cfg))
     result = load_watcher_config(cfg_file)
     assert result["settings"]["pipeline_timeout_s"] == 1800
+
+
+# ── _deep_merge_llm ───────────────────────────────────────────────────────────
+
+
+def test_merge_llm_model_repo_wins():
+    global_llm = {"model": "openai/gpt-4.1", "overrides": {"architect": "openai/gpt-4.1"}}
+    repo_llm = {"model": "ollama/qwen3.5"}
+    result = _deep_merge_llm(global_llm, repo_llm)
+    assert result["model"] == "ollama/qwen3.5"
+    assert result["overrides"]["architect"] == "openai/gpt-4.1"  # global kept
+
+
+def test_merge_llm_overrides_key_by_key():
+    global_llm = {"model": "openai/gpt-4.1", "overrides": {"architect": "openai/gpt-4.1", "engineer": "openai/gpt-4.1-mini"}}
+    repo_llm = {"overrides": {"architect": "claude-3-5-sonnet-20241022"}}
+    result = _deep_merge_llm(global_llm, repo_llm)
+    assert result["overrides"]["architect"] == "claude-3-5-sonnet-20241022"  # repo wins
+    assert result["overrides"]["engineer"] == "openai/gpt-4.1-mini"  # global kept
+
+
+def test_merge_llm_pools_key_by_key():
+    global_llm = {"model": "openai/gpt-4.1", "pools": {"openai": 10, "anthropic": 5}}
+    repo_llm = {"pools": {"openai": 3}}
+    result = _deep_merge_llm(global_llm, repo_llm)
+    assert result["pools"]["openai"] == 3       # repo wins
+    assert result["pools"]["anthropic"] == 5    # global kept
+
+
+def test_merge_llm_fallback_replaced_not_merged():
+    global_llm = {"model": "openai/gpt-4.1", "fallbacks": [{"model": "openai/gpt-4.1-mini"}]}
+    repo_llm = {"fallbacks": [{"model": "ollama/qwen3.5"}]}
+    result = _deep_merge_llm(global_llm, repo_llm)
+    assert result["fallbacks"] == [{"model": "ollama/qwen3.5"}]
+
+
+def test_merge_llm_no_repo_llm_returns_global_copy():
+    global_llm = {"model": "openai/gpt-4.1", "overrides": {"architect": "openai/gpt-4.1"}}
+    result = _deep_merge_llm(global_llm, {})
+    assert result == global_llm
+    assert result is not global_llm  # top-level copy
+    assert result["overrides"] is not global_llm["overrides"]  # nested dict is a copy
+    # Verify mutation independence
+    global_llm["overrides"]["architect"] = "mutated"
+    assert result["overrides"]["architect"] == "openai/gpt-4.1"
+
+
+def test_merge_llm_empty_global():
+    result = _deep_merge_llm({}, {"model": "ollama/qwen3.5"})
+    assert result["model"] == "ollama/qwen3.5"
+
+
+def test_merge_llm_empty_model_does_not_replace_global():
+    result = _deep_merge_llm({"model": "openai/gpt-4.1"}, {"model": ""})
+    assert result["model"] == "openai/gpt-4.1"
+
+
+# ── load_watcher_config: llm extraction ──────────────────────────────────────
+
+def test_load_watcher_config_extracts_llm(tmp_path):
+    """llm: key is extracted from repo entry and stored as _llm."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, """
+        watchers:
+          - tracker_repo: owner/alpha
+            enabled: true
+            llm:
+              model: "ollama/qwen3.5"
+              overrides:
+                architect: "openai/gpt-4.1"
+    """)
+    result = load_watcher_config(cfg)
+    w = result["watchers"][0]
+    assert "_llm" in w
+    assert w["_llm"]["model"] == "ollama/qwen3.5"
+    assert w["_llm"]["overrides"]["architect"] == "openai/gpt-4.1"
+    assert "llm" not in w  # original key removed
+
+
+def test_load_watcher_config_no_llm_key_absent(tmp_path):
+    """Repo entries without llm: have no _llm key."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, """
+        watchers:
+          - tracker_repo: owner/alpha
+            enabled: true
+    """)
+    result = load_watcher_config(cfg)
+    w = result["watchers"][0]
+    assert "_llm" not in w
+
+
+def test_load_watcher_config_llm_in_repos_enabled(tmp_path):
+    """llm: key in repos-available/ entry is extracted to _llm."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, "settings:\n  max_parallel: 1\n")
+
+    avail = tmp_path / "repos-available"
+    avail.mkdir()
+    _write(avail / "my-repo.yaml", """
+        tracker_repo: owner/my-repo
+        enabled: true
+        llm:
+          model: "openai/gpt-4.1"
+          pools:
+            openai: 3
+    """)
+
+    enabled = tmp_path / "repos-enabled"
+    enabled.mkdir()
+    os.symlink(avail / "my-repo.yaml", enabled / "my-repo.yaml")
+
+    result = load_watcher_config(cfg)
+    w = result["watchers"][0]
+    assert w["_llm"]["model"] == "openai/gpt-4.1"
+    assert w["_llm"]["pools"]["openai"] == 3
+
+
+def test_load_watcher_config_llm_null_is_ignored(tmp_path):
+    """llm: null (bare YAML key) leaves _llm absent from the watcher entry."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, "watchers:\n  - tracker_repo: owner/a\n    enabled: true\n    llm:\n")
+    w = load_watcher_config(cfg)["watchers"][0]
+    assert "_llm" not in w
+
+
+def test_watch_task_dict_contains_effective_llm(tmp_path, monkeypatch):
+    """Tasks queued for a watcher include effective_llm merging global + repo llm."""
+    cfg_path = tmp_path / "repos.yaml"
+    _write(cfg_path, """
+        watchers:
+          - tracker_repo: owner/alpha
+            labels:
+              ai-feature: ai-feature
+            enabled: true
+            llm:
+              model: "ollama/qwen3.5"
+              overrides:
+                engineer: "ollama/qwen3.5"
+        settings:
+          max_parallel: 1
+          num_engineers: 1
+    """)
+
+    # Patch global config with known LLM settings
+    global_cfg = {
+        "llm": {
+            "model": "openai/gpt-4.1",
+            "overrides": {"architect": "openai/gpt-4.1", "engineer": "openai/gpt-4.1-mini"},
+        },
+        "pipeline": {},
+        "settings": {},
+    }
+    monkeypatch.setattr(watcher, "_load_pipeline_config", lambda: global_cfg)
+
+    issues = [{"number": 1, "title": "feat", "labels": []}]
+    monkeypatch.setattr(watcher, "get_open_issues", lambda repo, label: issues if label == "ai-feature" else [])
+    monkeypatch.setattr(watcher, "add_label", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "ensure_label", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "check_waiting_issues", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "_watch_prs", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "_process_resume_queue", lambda *a, **kw: [])
+    (tmp_path / "logs" / "watcher").mkdir(parents=True, exist_ok=True)
+
+    tasks = []
+    monkeypatch.setattr(watcher, "_run_tasks", lambda t, *a, **kw: tasks.extend(t))
+
+    watcher.watch(cfg_path, once=True, dry_run=False)
+
+    assert len(tasks) == 1
+    llm = tasks[0]["llm"]
+    assert llm["model"] == "ollama/qwen3.5"           # repo wins
+    assert llm["overrides"]["architect"] == "openai/gpt-4.1"   # global kept
+    assert llm["overrides"]["engineer"] == "ollama/qwen3.5"    # repo wins
+
+
+def test_watch_task_dict_llm_is_global_when_no_repo_llm(tmp_path, monkeypatch):
+    """Tasks for repo without llm: section use global LLM config unchanged."""
+    cfg_path = tmp_path / "repos.yaml"
+    _write(cfg_path, """
+        watchers:
+          - tracker_repo: owner/alpha
+            labels:
+              ai-feature: ai-feature
+            enabled: true
+        settings:
+          max_parallel: 1
+          num_engineers: 1
+    """)
+
+    global_cfg = {
+        "llm": {"model": "openai/gpt-4.1", "overrides": {"architect": "openai/gpt-4.1"}},
+        "pipeline": {},
+        "settings": {},
+    }
+    monkeypatch.setattr(watcher, "_load_pipeline_config", lambda: global_cfg)
+
+    issues = [{"number": 1, "title": "feat", "labels": []}]
+    monkeypatch.setattr(watcher, "get_open_issues", lambda repo, label: issues if label == "ai-feature" else [])
+    monkeypatch.setattr(watcher, "add_label", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "ensure_label", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "check_waiting_issues", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "_watch_prs", lambda *a, **kw: None)
+    monkeypatch.setattr(watcher, "_process_resume_queue", lambda *a, **kw: [])
+    (tmp_path / "logs" / "watcher").mkdir(parents=True, exist_ok=True)
+
+    tasks = []
+    monkeypatch.setattr(watcher, "_run_tasks", lambda t, *a, **kw: tasks.extend(t))
+
+    watcher.watch(cfg_path, once=True, dry_run=False)
+
+    assert tasks[0]["llm"]["model"] == "openai/gpt-4.1"

@@ -44,3 +44,23 @@ def test_missing_tracker_repo_raises():
     from config_schema import load_repo_entry
     with pytest.raises(ValidationError):
         load_repo_entry({"enabled": True})
+
+def test_repo_watcher_entry_accepts_llm_section():
+    """RepoWatcherEntry accepts an llm section with model and overrides."""
+    from config_schema import RepoWatcherEntry, LLMConfig
+    entry = RepoWatcherEntry(
+        tracker_repo="owner/my-repo",
+        llm={
+            "model": "ollama/qwen3.5",
+            "overrides": {"architect": "openai/gpt-4.1"},
+            "pools": {"openai": 3},
+        },
+    )
+    assert entry.llm is not None
+    assert entry.llm.model == "ollama/qwen3.5"
+
+def test_repo_watcher_entry_no_llm_defaults_none():
+    """RepoWatcherEntry without llm section defaults to None."""
+    from config_schema import RepoWatcherEntry
+    entry = RepoWatcherEntry(tracker_repo="owner/my-repo")
+    assert entry.llm is None

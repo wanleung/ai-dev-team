@@ -16,7 +16,7 @@
 |--------|------|----------------|
 | Create | `agents/backends/grok.py` | `GrokBackend` class — subprocess + JSON streaming |
 | Modify | `agents/backends/factory.py` | Register `grok/` prefix |
-| Create | `tests/test_grok_backend.py` | 12 tests covering all behaviours |
+| Create | `tests/test_grok_backend.py` | 7 tests covering all behaviours |
 
 ---
 
@@ -249,7 +249,7 @@ class GrokBackend(LLMBackend):
         self,
         model: str,
         timeout: int = 600,
-        max_retries: int = _DEFAULT_MAX_RETRIES,  # env AGENT_MAX_RETRIES, default 3
+        max_retries: int = 2,
         directory: str | None = None,
     ) -> None:
         self.model = model.removeprefix("grok/")
@@ -483,7 +483,7 @@ Replace with:
 python3 -m pytest tests/test_grok_backend.py -v
 ```
 
-Expected: 12 tests PASS, 0 failed.
+Expected: 11 tests PASS, 0 failed.
 
 - [ ] **Step 4: Run full test suite to check for regressions**
 
