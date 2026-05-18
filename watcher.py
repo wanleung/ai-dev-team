@@ -645,9 +645,9 @@ def load_watcher_config(config_path: Path) -> dict:
     """Load and merge watcher config from repos.yaml + repos-enabled/*.yaml.
 
     Returns a config dict with a unified ``watchers`` list.  Per-watcher
-    ``settings:`` blocks are stripped from the watcher entry and stored as
-    ``_settings`` (for both legacy and repos-enabled entries) so callers can
-    apply per-watcher overrides.
+    ``settings:`` blocks are stripped and stored as ``_settings``; per-watcher
+    ``llm:`` blocks are stripped and stored as ``_llm`` (for both legacy and
+    repos-enabled entries) so callers can apply per-watcher overrides.
     """
     with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}

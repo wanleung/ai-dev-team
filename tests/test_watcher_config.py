@@ -622,3 +622,11 @@ def test_load_watcher_config_llm_in_repos_enabled(tmp_path):
     w = result["watchers"][0]
     assert w["_llm"]["model"] == "openai/gpt-4.1"
     assert w["_llm"]["pools"]["openai"] == 3
+
+
+def test_load_watcher_config_llm_null_is_ignored(tmp_path):
+    """llm: null (bare YAML key) leaves _llm absent from the watcher entry."""
+    cfg = tmp_path / "repos.yaml"
+    _write(cfg, "watchers:\n  - tracker_repo: owner/a\n    enabled: true\n    llm:\n")
+    w = load_watcher_config(cfg)["watchers"][0]
+    assert "_llm" not in w
