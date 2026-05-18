@@ -71,7 +71,7 @@ Repos are configured individually under `repos-available/` and activated via sym
 
 **1. Create a repo config file:**
 
-```bash
+```yaml
 # repos-available/my-new-project.yaml
 tracker_repo: owner/my-new-project
 parallel_issues: 2
@@ -82,7 +82,15 @@ labels:
   tdd: tdd
   ai-docs: ai-docs
 enabled: true
+
+# Optional: override LLM settings for this repo only (model, per-agent overrides, fallbacks)
+# llm:
+#   model: "claude-3-5-sonnet-20241022"
+#   overrides:
+#     engineer: "gpt-4.1-mini"
 ```
+
+> 💡 Each repo can declare its own `llm:` block that overrides the global `config.yaml` for that repo only. See [Per-Repo LLM Config](../README.md#-per-repo-llm-config) for the full tutorial.
 
 **2. Enable it and start the watcher:**
 
@@ -240,7 +248,13 @@ labels:
   tdd: tdd
   ai-docs: ai-docs
 enabled: true
+
+# Optional: override LLM settings for this repo only
+# llm:
+#   model: "ollama/qwen2.5-coder"   # e.g. use a local model for this repo
 ```
+
+> 💡 Add an `llm:` block to use a different model or fallbacks for this repo only. See [Per-Repo LLM Config](../README.md#-per-repo-llm-config).
 
 ```bash
 python watcher.py repo enable existing-repo   # activate it
