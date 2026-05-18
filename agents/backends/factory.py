@@ -43,6 +43,10 @@ def _make_single_backend(cfg: dict, github_token: str | None = None) -> "LLMBack
         from agents.backends.grok import GrokBackend
         return GrokBackend(model=model, **kwargs)
 
+    if model.startswith("grok-oauth/"):
+        from agents.backends.grok_oauth import GrokOAuthBackend
+        return GrokOAuthBackend(model=model, **kwargs)
+
     # Default: bare model names (no prefix slash) go to GitHub Models
     if "/" not in model:
         from agents.backends.github_models import GitHubModelsBackend
@@ -51,7 +55,7 @@ def _make_single_backend(cfg: dict, github_token: str | None = None) -> "LLMBack
     raise ValueError(
         f"Cannot determine backend for model {model!r}. "
         "Prefix with 'ollama/', 'copilot/', 'nvidia-nim/', 'opencode/', "
-        "'opencode-zen/', 'opencode-go/', 'grok/', or use 'claude-*' for Anthropic."
+        "'opencode-zen/', 'opencode-go/', 'grok/', 'grok-oauth/', or use 'claude-*' for Anthropic."
     )
 
 
