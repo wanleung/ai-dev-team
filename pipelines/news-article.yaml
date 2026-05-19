@@ -1,0 +1,15 @@
+# pipelines/news-article.yaml
+# Press team pipeline: research → write → review → edit → translate → PR
+#
+# Stages are resolved against ai-software-house's stage registry.
+# Discussions (discuss_news_analysis, discuss_news_draft) auto-discovered
+# from ai-software-house/discussions/.
+
+stages:
+  - discuss_news_analysis       # research + angle debate (homework round)
+  - news_writer                 # write article draft
+  - discuss_news_draft          # writer/editor review of draft
+  - news_editor                 # final polish + frontmatter
+  - translate_cantonese         # translate to Written Cantonese (zh-hk)
+  - translate_zh_traditional    # translate to Formal Traditional Chinese (zh-tw)
+  - news_article_pr             # commit all articles, open PR in this repo
