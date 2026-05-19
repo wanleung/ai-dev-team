@@ -175,6 +175,7 @@ class AppConfig(BaseModel):
     rag: Optional[Dict[str, Any]] = None
     project: Optional[Dict[str, Any]] = None
     reliability: Optional[ReliabilityConfig] = None
+    rss_watcher: Optional[Dict[str, Any]] = None
 
 
 # ── repos.yaml models ────────────────────────────────────────────────────────
