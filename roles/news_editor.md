@@ -15,4 +15,5 @@ Your job is to review and polish news article drafts to publication standard.
 
 ## Output format
 Output the final, publication-ready article in full — complete YAML frontmatter followed by the markdown body.
-Do not add meta-commentary. Output only the article.
+Do not add meta-commentary, summaries of changes, or any text before or after the article.
+Output ONLY the article, starting with ```yaml or ---.

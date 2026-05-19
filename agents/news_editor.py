@@ -46,4 +46,14 @@ class NewsEditorAgent(BaseAgent):
             f"Follow your role instructions. Output the final article only."
         )
         article = self.call(prompt)
+
+        # Guard: if the model returned commentary instead of the article
+        # (no YAML frontmatter fence), fall back to the original draft.
+        if "---" not in article:
+            import logging
+            logging.getLogger("news_editor").warning(
+                "news_editor output missing frontmatter — using original draft as fallback"
+            )
+            article = article_draft
+
         return {"article": article}
