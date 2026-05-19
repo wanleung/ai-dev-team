@@ -75,7 +75,7 @@ watchers:
     parallel_issues: 1
     labels:
       pr-campaign: pr-campaign
-    enabled: true
+    enabled: false
 
 settings:
   # Maximum parallel pipeline runs (one per issue)
