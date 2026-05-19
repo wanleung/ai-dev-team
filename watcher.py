@@ -67,8 +67,11 @@ LABEL_COLOURS = {
     LABEL_WAITING:  "fbca04",
 }
 
+# ── Script directory (captured at import time before __file__ can be cleared) ─
+_SCRIPT_DIR = Path(__file__).parent
+
 # ── Lock file prevents overlapping cron runs ─────────────────────────────────
-LOCK_FILE = Path(__file__).parent / ".watcher.lock"
+LOCK_FILE = _SCRIPT_DIR / ".watcher.lock"
 _log = logging.getLogger("watcher")
 
 # ── Per-issue dedup lock ──────────────────────────────────────────────────────
@@ -594,7 +597,7 @@ def _load_pipeline_config() -> dict:
     Returns the merged config dict with llm and pipeline sections.
     Raises ValueError if the merged result fails AppConfig schema validation.
     """
-    script_dir = Path(__file__).parent
+    script_dir = _SCRIPT_DIR
     cfg: dict = {}
     for name in ("config.yaml", "config.local.yaml"):
         p = script_dir / name
@@ -1760,7 +1763,7 @@ def run_once(repo: str, issue: int, label: str, logger: logging.Logger) -> int:
     Returns exit code (0 = success, 1 = failure).
     """
     install_llm_pool_from_config(_load_pipeline_config())
-    log_dir = Path(__file__).parent / "logs" / "watcher"
+    log_dir = _SCRIPT_DIR / "logs" / "watcher"
     log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     issue_log = log_dir / f"issue-{issue}-{ts}.log"
@@ -1807,7 +1810,7 @@ def main() -> None:
         if not (args.repo and args.issue is not None and args.label):
             print("--once requires --repo, --issue, and --label", file=sys.stderr)
             sys.exit(2)
-        log_dir = Path(__file__).parent / "logs" / "watcher"
+        log_dir = _SCRIPT_DIR / "logs" / "watcher"
         logger = _setup_logging(log_dir)
         sys.exit(run_once(args.repo, args.issue, args.label, logger))
 
