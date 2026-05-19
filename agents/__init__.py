@@ -12,6 +12,7 @@ from .deployment_tester import DeploymentTesterAgent
 from .documentation_agent import DocumentationAgent
 from .news_writer import NewsWriterAgent
 from .news_editor import NewsEditorAgent
+from .translator import TranslatorAgent
 
 __all__ = [
     "BaseAgent",
@@ -27,4 +28,5 @@ __all__ = [
     "DocumentationAgent",
     "NewsWriterAgent",
     "NewsEditorAgent",
+    "TranslatorAgent",
 ]

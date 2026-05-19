@@ -49,6 +49,7 @@ from agents.conflict_resolver import ConflictResolverAgent, PRContext
 from agents.deploy_backends import build_deploy_backend
 from agents.news_writer import NewsWriterAgent
 from agents.news_editor import NewsEditorAgent
+from agents.translator import TranslatorAgent
 from framework_docs import FrameworkDocsLoader
 from github_client import GitHubClient, parse_target_repo
 from config_schema import AppConfig as _AppConfig
@@ -414,6 +415,8 @@ class PipelineResult:
     # News article stage outputs
     article_draft: str = ""
     article: str = ""
+    article_zh_hk: str = ""  # Written Cantonese translation
+    article_zh_tw: str = ""  # Formal Traditional Chinese translation
     # PRD/Design revision loop tracking
     prd_revision_count: int = 0
     design_revision_count: int = 0
@@ -486,6 +489,8 @@ class PipelineResult:
             "discussion_synthesis": self.discussion_synthesis,
             "article_draft": self.article_draft,
             "article": self.article,
+            "article_zh_hk": self.article_zh_hk,
+            "article_zh_tw": self.article_zh_tw,
             "progress_comment_id": self.progress_comment_id,
             "run_id": self.run_id,
             "total_cost_usd": self.total_cost_usd,
@@ -528,6 +533,7 @@ class PipelineResult:
                     "bootstrap_agents_md",
                     "discussion_transcript", "discussion_synthesis",
                     "article_draft", "article",
+                    "article_zh_hk", "article_zh_tw",
                     "progress_comment_id",
                     "run_id", "total_cost_usd", "token_usage"]:
             setattr(r, key, data.get(key, getattr(r, key)))
@@ -823,6 +829,7 @@ class Orchestrator(TestFixLoopMixin):
         self.pm = ProductManagerAgent(**{**agent_kwargs, **_mk("product_manager")})
         self.news_writer = NewsWriterAgent(**{**agent_kwargs, **_mk("news_writer")})
         self.news_editor = NewsEditorAgent(**{**agent_kwargs, **_mk("news_editor")})
+        self.translator = TranslatorAgent(**{**agent_kwargs, **_mk("translator")})
         self.pm_reviewer = PMReviewerAgent(**{**agent_kwargs, **_mk("pm_reviewer")})
         self.architect = ArchitectAgent(tool_registry=rag_registry, **{**agent_kwargs, **_mk("architect")})
         self.architect_reviewer = ArchitectReviewerAgent(**{**agent_kwargs, **_mk("architect_reviewer")})
@@ -1516,12 +1523,15 @@ class Orchestrator(TestFixLoopMixin):
             ))
             return
         from agents.discussion_agent import DiscussionAgent
+        _overrides = getattr(self, "model_overrides", {})
+        _disc_override = _overrides.get("discussion", self.model)
+        _disc_model = _disc_override.get("model", self.model) if isinstance(_disc_override, dict) else _disc_override
         agent = DiscussionAgent.from_file(
             config_path=config_path,
-            model=_model("discussion"),
+            model=_disc_model,
             github_token=self._github_token,
             ollama_url=self.ollama_url,
-            tool_registry=self._rag_registry,
+            tool_registry=getattr(self, "_rag_registry", None),
         )
         active_repo = str(getattr(self.target_github, "repo", None) or "local") if getattr(self, "target_github", None) else "local"
         agent.run(result, memory_store=getattr(self, "memory", None), repo=active_repo)
@@ -1909,6 +1919,20 @@ class Orchestrator(TestFixLoopMixin):
                 description="Editing and finalising article...",
                 checkpoint_key="news_editor",
                 fn=lambda r: self._stage_news_editor(r),
+            ),
+            "translate_cantonese": PipelineStage(
+                name="translate_cantonese",
+                label="🀄 Translate (Cantonese)",
+                description="Translating article to Written Cantonese...",
+                checkpoint_key="translate_cantonese",
+                fn=lambda r: self._stage_translate(r, "cantonese", "article_zh_hk"),
+            ),
+            "translate_zh_traditional": PipelineStage(
+                name="translate_zh_traditional",
+                label="🀄 Translate (Traditional Chinese)",
+                description="Translating article to Traditional Chinese...",
+                checkpoint_key="translate_zh_traditional",
+                fn=lambda r: self._stage_translate(r, "traditional_chinese", "article_zh_tw"),
             ),
             "news_article_pr": PipelineStage(
                 name="news_article_pr",
@@ -4197,6 +4221,33 @@ class Orchestrator(TestFixLoopMixin):
             raise RuntimeError("NewsEditor produced an empty article — LLM may have returned no content.")
         result.article = ed["article"]
 
+    _TRANSLATE_VALID_LANGUAGES = frozenset({"cantonese", "traditional_chinese"})
+    _TRANSLATE_VALID_FIELDS = frozenset({"article_zh_hk", "article_zh_tw"})
+
+    def _stage_translate(self, result: "PipelineResult", target_language: str, result_field: str) -> None:
+        """Translate the final article into a target language."""
+        if target_language not in self._TRANSLATE_VALID_LANGUAGES:
+            raise ValueError(
+                f"translate: unknown target_language {target_language!r}. "
+                f"Expected one of: {sorted(self._TRANSLATE_VALID_LANGUAGES)}"
+            )
+        if result_field not in self._TRANSLATE_VALID_FIELDS:
+            raise ValueError(
+                f"translate: unknown result_field {result_field!r}. "
+                f"Expected one of: {sorted(self._TRANSLATE_VALID_FIELDS)}"
+            )
+        source = result.article or result.article_draft
+        if not source.strip():
+            raise RuntimeError(
+                f"translate ({target_language}): no source article found — "
+                "run news_writer or news_editor before translation stages"
+            )
+        out = self.translator.run(source, target_language=target_language)
+        translated = out.get("translated_article", "")
+        if not translated.strip():
+            raise RuntimeError(f"translate ({target_language}): empty output from translator")
+        setattr(result, result_field, translated)
+
     def _stage_news_article_pr(self, result: PipelineResult) -> None:
         """Commit the final article as a file and open a PR in the tracker repo."""
         import re
@@ -4227,7 +4278,14 @@ class Orchestrator(TestFixLoopMixin):
 
         issue_part = f"{result.issue_number}-" if result.issue_number else ""
         filename = f"articles/{date_str}-{issue_part}{title_slug or 'article'}.md"
-        result.all_files = {filename: article}
+        # Derive zh filenames from the English base so all three files share the same stem.
+        # e.g. 20260519-42-the-future-of-ai.md + .zh-hk.md + .zh-tw.md
+        extra_files: dict[str, str] = {}
+        if result.article_zh_hk.strip():
+            extra_files[filename.replace(".md", ".zh-hk.md")] = result.article_zh_hk
+        if result.article_zh_tw.strip():
+            extra_files[filename.replace(".md", ".zh-tw.md")] = result.article_zh_tw
+        result.all_files = {filename: article, **extra_files}
 
         self._commit_and_open_pr(
             result,

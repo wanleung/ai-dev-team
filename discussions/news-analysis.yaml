@@ -14,9 +14,11 @@ early_exit: CONSENSUS_REACHED
 participants:
   - role: news_writer
     persona_file: roles/news_writer.md
+    homework_llm: "ollama/thinker"
 
   - role: news_editor
     persona_file: roles/news_editor.md
+    homework_llm: "ollama/thinker"
 
 homework_round: true    # participants research the story independently first
 
