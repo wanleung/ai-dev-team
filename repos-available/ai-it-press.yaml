@@ -14,7 +14,7 @@ parallel_issues: 2
 enabled: true
 
 labels:
-  news-article: {}          # pipeline loaded from pipeline_file (above)
+  news-article: news-article  # pipeline loaded from pipeline_file (above)
 
 settings:
   watch_prs: false          # press team does not auto-fix PRs
