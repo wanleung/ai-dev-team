@@ -141,8 +141,8 @@ def _should_fire(
             cron = croniter(trigger.schedule, now - timedelta(minutes=65))
             if cron.get_next(datetime) <= now:
                 return True
-        except Exception:
-            log.warning("intake_triage: could not evaluate schedule '%s'", trigger.schedule)
+        except Exception as exc:
+            log.warning("intake_triage: could not evaluate schedule '%s': %s", trigger.schedule, exc)
     return False
 
 

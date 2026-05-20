@@ -203,6 +203,5 @@ class GitHubTrackerAdapter(TrackerAdapter):
                 if len(batch) < 100:
                     break
                 page += 1
-        except Exception:
-            pass
-        return True, ""
+        except Exception as exc:
+            log.warning("tracker_adapter: failed to fetch triage comments for #%s: %s", item_id, exc)
