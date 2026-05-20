@@ -158,6 +158,7 @@ intake_triage:
     pending:  triage-pending
     approved: triage-approved
     skipped:  triage-skipped
+    trigger:  press            # label that the watcher watches for (added on approve)
 
   trigger:
     min_count: 5              # fire when ≥ N items pending
@@ -196,7 +197,7 @@ class IntakeVerdictConfig(BaseModel):
 class IntakeTriageConfig(BaseModel):
     enabled: bool = False
     tracker: str = "github"
-    labels: dict = {"pending": "triage-pending", "approved": "triage-approved", "skipped": "triage-skipped"}
+    labels: dict = {"pending": "triage-pending", "approved": "triage-approved", "skipped": "triage-skipped", "trigger": "press"}
     trigger: IntakeTriggerConfig = IntakeTriggerConfig()
     batch: IntakeBatchConfig = IntakeBatchConfig()
     verdict: IntakeVerdictConfig = IntakeVerdictConfig()
