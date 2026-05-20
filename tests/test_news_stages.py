@@ -568,7 +568,7 @@ def test_stage_news_writer_prepends_editorial_notes():
 
 def _make_triage_orch_with_intake(approved: bool, notes: str = ""):
     """Orchestrator with intake_triage enabled and mocked adapter."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
     from orchestrator import Orchestrator
     orch = Orchestrator.__new__(Orchestrator)
     orch.model = "gpt-4.1"

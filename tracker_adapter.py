@@ -8,8 +8,7 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime
 
 import requests
 
@@ -79,31 +78,39 @@ class GitHubTrackerAdapter(TrackerAdapter):
         return resp
 
     def list_pending(self) -> list[TriageItem]:
-        resp = requests.get(
-            f"https://api.github.com/repos/{self.repo}/issues",
-            headers=self._headers(),
-            params={"state": "open", "labels": self.pending_label, "per_page": 100},
-            timeout=15,
-        )
-        resp.raise_for_status()
         items = []
-        for issue in resp.json():
-            if "pull_request" in issue:
-                continue
-            created_at = datetime.fromisoformat(
-                issue["created_at"].replace("Z", "+00:00")
+        page = 1
+        while True:
+            resp = requests.get(
+                f"https://api.github.com/repos/{self.repo}/issues",
+                headers=self._headers(),
+                params={"state": "open", "labels": self.pending_label, "per_page": 100, "page": page},
+                timeout=15,
             )
-            items.append(TriageItem(
-                id=str(issue["number"]),
-                title=issue.get("title", ""),
-                body=issue.get("body") or "",
-                url=issue.get("html_url", ""),
-                created_at=created_at,
-                metadata={
-                    "number": issue["number"],
-                    "labels": [l["name"] for l in issue.get("labels", [])],
-                },
-            ))
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            for issue in batch:
+                if "pull_request" in issue:
+                    continue
+                created_at = datetime.fromisoformat(
+                    issue["created_at"].replace("Z", "+00:00")
+                )
+                items.append(TriageItem(
+                    id=str(issue["number"]),
+                    title=issue.get("title", ""),
+                    body=issue.get("body") or "",
+                    url=issue.get("html_url", ""),
+                    created_at=created_at,
+                    metadata={
+                        "number": issue["number"],
+                        "labels": [l["name"] for l in issue.get("labels", [])],
+                    },
+                ))
+            if len(batch) < 100:
+                break
+            page += 1
         return items
 
     def approve(self, item: TriageItem, notes: str) -> None:

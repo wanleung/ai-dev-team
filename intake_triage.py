@@ -8,7 +8,7 @@ Usage:
     python intake_triage.py              # normal cron run (respects trigger conditions)
     python intake_triage.py --run        # manual trigger, ignores min_count/max_age
     python intake_triage.py --dry-run    # preview only, no API calls
-    python intake_triage.py --config repos.yaml
+    python intake_triage.py --config config.yaml
 """
 from __future__ import annotations
 
@@ -131,11 +131,13 @@ def _should_fire(
     if trigger.schedule:
         try:
             from croniter import croniter
+            from datetime import timedelta
             now = datetime.now(timezone.utc)
-            # Fire if the schedule matched within the last 65 minutes (cron run window)
-            cron = croniter(trigger.schedule, now)
-            prev = cron.get_prev(datetime)
-            if (now - prev).total_seconds() <= 65 * 60:
+            # Ask: "did the schedule fire in the last 65 minutes?"
+            # get_prev() is exclusive at `now` so it returns yesterday when run
+            # exactly on-schedule. Instead, advance from (now - 65min) forward.
+            cron = croniter(trigger.schedule, now - timedelta(minutes=65))
+            if cron.get_next(datetime) <= now:
                 return True
         except Exception:
             log.warning("intake_triage: could not evaluate schedule '%s'", trigger.schedule)
@@ -158,6 +160,13 @@ def _make_adapter(cfg: IntakeTriageConfig, repo: str) -> TrackerAdapter:
     if cfg.tracker != "github":
         raise NotImplementedError(f"Tracker '{cfg.tracker}' not yet implemented")
     token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        raise EnvironmentError(
+            "GITHUB_TOKEN environment variable is not set. "
+            "Set it before running intake_triage."
+        )
+    if "/" not in repo:
+        raise ValueError(f"repo must be in 'owner/name' format, got: {repo!r}")
     return GitHubTrackerAdapter(
         repo=repo,
         token=token,
