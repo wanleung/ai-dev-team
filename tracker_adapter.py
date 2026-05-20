@@ -5,12 +5,15 @@ Future: JiraTrackerAdapter follows the same interface.
 """
 from __future__ import annotations
 
+import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 
 import requests
+
+log = logging.getLogger("tracker_adapter")
 
 
 TRIAGE_COMMENT_MARKER = "[INTAKE TRIAGE]"
@@ -124,15 +127,18 @@ class GitHubTrackerAdapter(TrackerAdapter):
         try:
             self._api("POST", f"/repos/{self.repo}/issues/{number}/comments",
                       json={"body": comment})
-        except Exception:
-            pass  # comment failure must not block label transition
+        except Exception as exc:
+            log.warning("tracker_adapter: failed to post approve comment on #%s: %s", number, exc)
         self._api("POST", f"/repos/{self.repo}/issues/{number}/labels",
                   json={"labels": [self.approved_label, self.trigger_label]})
         try:
             self._api("DELETE",
                       f"/repos/{self.repo}/issues/{number}/labels/{self.pending_label}")
-        except Exception:
-            pass  # label may already be absent
+        except Exception as exc:
+            if getattr(exc, "response", None) is not None and exc.response.status_code == 404:
+                pass  # label already absent — expected
+            else:
+                log.warning("tracker_adapter: failed to remove pending label from #%s: %s", number, exc)
 
     def skip(self, item: TriageItem, reason: str) -> None:
         number = item.id
@@ -145,20 +151,23 @@ class GitHubTrackerAdapter(TrackerAdapter):
         try:
             self._api("POST", f"/repos/{self.repo}/issues/{number}/comments",
                       json={"body": comment})
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("tracker_adapter: failed to post skip comment on #%s: %s", number, exc)
         self._api("POST", f"/repos/{self.repo}/issues/{number}/labels",
                   json={"labels": [self.skipped_label]})
         try:
             self._api("PATCH", f"/repos/{self.repo}/issues/{number}",
                       json={"state": "closed", "state_reason": "not_planned"})
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("tracker_adapter: failed to close issue #%s: %s", number, exc)
         try:
             self._api("DELETE",
                       f"/repos/{self.repo}/issues/{number}/labels/{self.pending_label}")
-        except Exception:
-            pass
+        except Exception as exc:
+            if getattr(exc, "response", None) is not None and exc.response.status_code == 404:
+                pass  # label already absent — expected
+            else:
+                log.warning("tracker_adapter: failed to remove pending label from #%s: %s", number, exc)
 
     def is_approved(self, item_id: str) -> tuple[bool, str]:
         resp = requests.get(

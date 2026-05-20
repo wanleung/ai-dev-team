@@ -254,16 +254,16 @@ def run(
             log.info("intake_triage: SKIP item %s — %s", item.id, notes)
             try:
                 adapter.skip(item, reason=notes)
+                skipped.append(item.id)
             except Exception as exc:
                 log.warning("intake_triage: failed to skip item %s: %s", item.id, exc)
-            skipped.append(item.id)
         else:
             log.info("intake_triage: PUBLISH item %s — %s", item.id, notes)
             try:
                 adapter.approve(item, notes=notes)
+                approved.append(item.id)
             except Exception as exc:
                 log.warning("intake_triage: failed to approve item %s: %s", item.id, exc)
-            approved.append(item.id)
 
     log.info("intake_triage: done. approved=%d skipped=%d", len(approved), len(skipped))
     return {"fired": True, "approved": approved, "skipped": skipped}
