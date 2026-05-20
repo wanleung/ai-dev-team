@@ -295,6 +295,38 @@ def test_should_fire_no_items():
     assert _should_fire(cfg, [], force=False) is False
 
 
+def test_should_fire_schedule_fires_within_window():
+    """Every-minute schedule always fires (next from now-65min is always <= now)."""
+    from config_schema import IntakeTriageConfig
+    import datetime as _dt
+    fixed_now = _dt.datetime(2026, 5, 20, 8, 0, 0, tzinfo=_dt.timezone.utc)
+    cfg = IntakeTriageConfig(trigger={"schedule": "* * * * *"})
+    items = _make_items(1)
+    assert _should_fire(cfg, items, force=False, _now=fixed_now) is True
+
+
+def test_should_fire_schedule_does_not_fire_outside_window():
+    """Daily-midnight schedule: if now is 13:00, the next tick from 11:55 is tomorrow midnight."""
+    from config_schema import IntakeTriageConfig
+    import datetime as _dt
+    # now = 13:00 UTC; next midnight from (now - 65min = 11:55) is 00:00 next day → > now
+    fixed_now = _dt.datetime(2026, 5, 20, 13, 0, 0, tzinfo=_dt.timezone.utc)
+    cfg = IntakeTriageConfig(trigger={"schedule": "0 0 * * *"})
+    items = _make_items(1)
+    assert _should_fire(cfg, items, force=False, _now=fixed_now) is False
+
+
+def test_should_fire_schedule_fires_at_exact_boundary():
+    """Schedule exactly at now: get_next from (now - 65min) returns now, trigger fires."""
+    from config_schema import IntakeTriageConfig
+    import datetime as _dt
+    # now = exactly 08:00 UTC; schedule fires at 08:00 daily → next from 06:55 is 08:00 == now
+    fixed_now = _dt.datetime(2026, 5, 20, 8, 0, 0, tzinfo=_dt.timezone.utc)
+    cfg = IntakeTriageConfig(trigger={"schedule": "0 8 * * *"})
+    items = _make_items(1)
+    assert _should_fire(cfg, items, force=False, _now=fixed_now) is True
+
+
 def test_build_batch_context_format():
     items = _make_items(2, age_hours=1)
     items[0].title = "Apple releases iOS 19"

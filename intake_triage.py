@@ -98,6 +98,7 @@ def _should_fire(
     cfg: IntakeTriageConfig,
     items: list[TriageItem],
     force: bool = False,
+    _now: Optional[datetime] = None,
 ) -> bool:
     """Return True if the triage session should run now.
 
@@ -125,14 +126,15 @@ def _should_fire(
         return True
     if trigger.max_age_hours is not None and items:
         oldest = min(items, key=lambda x: x.created_at)
-        age = (datetime.now(timezone.utc) - oldest.created_at).total_seconds() / 3600
+        now_ts = _now or datetime.now(timezone.utc)
+        age = (now_ts - oldest.created_at).total_seconds() / 3600
         if age >= trigger.max_age_hours:
             return True
     if trigger.schedule:
         try:
             from croniter import croniter
             from datetime import timedelta
-            now = datetime.now(timezone.utc)
+            now = _now or datetime.now(timezone.utc)
             # Ask: "did the schedule fire in the last 65 minutes?"
             # get_prev() is exclusive at `now` so it returns yesterday when run
             # exactly on-schedule. Instead, advance from (now - 65min) forward.

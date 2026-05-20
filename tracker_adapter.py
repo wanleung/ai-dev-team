@@ -14,7 +14,7 @@ import requests
 
 
 TRIAGE_COMMENT_MARKER = "[INTAKE TRIAGE]"
-_NOTES_RE = re.compile(r"NOTES:\s*(.+)", re.DOTALL)
+_NOTES_RE = re.compile(r"^NOTES:\s*(.*)$", re.MULTILINE)
 
 
 @dataclass
@@ -190,7 +190,7 @@ class GitHubTrackerAdapter(TrackerAdapter):
                     if TRIAGE_COMMENT_MARKER in body:
                         m = _NOTES_RE.search(body)
                         if m:
-                            return True, m.group(1).strip().splitlines()[0]
+                            return True, m.group(1).strip()
                 if len(batch) < 100:
                     break
                 page += 1
