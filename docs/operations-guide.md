@@ -12,6 +12,10 @@
 8. [Repo Watcher Config (repos-available / repos-enabled)](#8-repo-watcher-config-repos-available--repos-enabled)
 9. [PR Watcher](#9-pr-watcher)
 10. [Multi-Agent Discussion Stages](#10-multi-agent-discussion-stages)
+11. [Cantonese & Traditional Chinese Translation Stages](#11-cantonese--traditional-chinese-translation-stages)
+12. [News Reviewer Agent](#12-news-reviewer-agent)
+13. [Editorial Triage Stage](#13-editorial-triage-stage)
+14. [Batch Intake Triage Module](#14-batch-intake-triage-module)
 
 ---
 
@@ -1224,3 +1228,226 @@ model_overrides:
 ```
 
 Individual participant `llm:` fields in the preset YAML take precedence over this override.
+
+---
+
+## 11. Cantonese & Traditional Chinese Translation Stages
+
+Two pipeline stages translate the finished English article into Hong Kong–style Written Cantonese and Taiwan/HK-style Traditional Chinese, committing both as separate `.md` files in the same PR.
+
+| Stage | Output field | Target locale | Style |
+|---|---|---|---|
+| `translate_cantonese` | `article_zh_hk` | `zh-hk` | Informal 口語書面語, HK press |
+| `translate_zh_traditional` | `article_zh_tw` | `zh-tw` | Formal 正式繁體中文, broadsheet |
+
+Both stages share a single `TranslatorAgent` class — the `target_language` parameter selects the output style. No extra LLM configuration is needed beyond the global `llm:` settings.
+
+The agent is driven by `roles/translator.md`.
+
+### Pipeline configuration
+
+Add the two stages after `news_editor` and before `news_reviewer` in `pipeline.yaml`:
+
+```yaml
+stages:
+  - ...
+  - news_editor
+  - translate_cantonese
+  - translate_zh_traditional
+  - news_reviewer
+  - news_article_pr
+```
+
+### PipelineResult fields
+
+| Field | Type | Description |
+|---|---|---|
+| `article_zh_hk` | `str` | Written Cantonese article body (Traditional characters) |
+| `article_zh_tw` | `str` | Traditional Chinese article body (Taiwan/HK Mandarin) |
+
+Both fields are `None` when the translation stages are not included in the pipeline.
+
+---
+
+## 12. News Reviewer Agent
+
+The `news_reviewer` stage runs one LLM call that checks all three language versions of the article before the PR is opened. It must appear **after all translation stages** and **before `news_article_pr`**.
+
+### Checks performed
+
+**English article:**
+- Fact plausibility against source (version numbers, dates, product names)
+- No invented quotes or statistics
+- No agent commentary in the article body
+- Grammar and headline–body consistency
+
+**zh-hk (Written Cantonese):**
+- All characters are Traditional (no Simplified — e.g. `國` not `国`)
+- Uses Cantonese vocabulary (`係`, `唔係`, `喺`, `咁`, `嘅`, `咗`, …)
+
+**zh-tw (Traditional Chinese):**
+- All characters Traditional
+- Uses Taiwanese Mandarin vocabulary (`軟體` not `软件`, `網路` not `网络`, …)
+- No Cantonese colloquialisms
+
+### Output and pipeline behaviour
+
+The reviewer emits a verdict line followed by an issues list:
+
+```
+VERDICT: PASS
+```
+
+or
+
+```
+VERDICT: NEEDS_REVISION
+ISSUES:
+- zh-hk: "国" (Simplified) found in paragraph 2 — should be "國"
+- en: Version number "3.1" contradicts source ("3.2")
+```
+
+On `NEEDS_REVISION` the pipeline **halts** and posts the issues list as a GitHub comment on the issue. The PR is not opened.
+
+### Pipeline configuration
+
+```yaml
+stages:
+  - ...
+  - translate_cantonese
+  - translate_zh_traditional
+  - news_reviewer
+  - news_article_pr
+```
+
+No additional `config.yaml` keys are required.
+
+---
+
+## 13. Editorial Triage Stage
+
+`news_triage` is the first stage in the press pipeline. Three AI editors convene to vote **PUBLISH** or **SKIP** before any writing or translation runs — avoiding wasted LLM calls on stories that are out of scope or too thin.
+
+### Pipeline position
+
+```
+RSS watcher → news_triage → discuss_news_analysis → news_writer → ...
+```
+
+### Participants
+
+| Persona | Evaluates |
+|---|---|
+| `editorial_director` | Strategic importance, substance, scope fit |
+| `audience_specialist` | Relevance to HK/Cantonese tech professionals |
+| `news_editor` | Source credibility, sufficient material to write from |
+
+### On SKIP
+
+The pipeline posts a comment to the GitHub issue with the reason and **closes the issue**. No downstream stages run.
+
+### On PUBLISH
+
+`editorial_notes` (angle guidance agreed in the triage discussion) is written to `PipelineResult` and automatically injected into the writer's prompt.
+
+### Configuration
+
+```yaml
+# config.yaml
+triage_scope: "Tech news relevant to HK Cantonese-speaking tech professionals."
+```
+
+```yaml
+# pipelines/press.yaml
+stages:
+  - news_triage
+  - discuss_news_analysis
+  - news_writer
+  - news_editor
+  - translate_cantonese
+  - translate_zh_traditional
+  - news_reviewer
+  - news_article_pr
+```
+
+---
+
+## 14. Batch Intake Triage Module
+
+A generic, reusable pre-pipeline triage layer. Items accumulate in a `triage-pending` state; an AI editorial team evaluates them **together** (with relative ranking), then approves or skips each one.
+
+Opt-in per repo — zero impact on repos that do not enable it.
+
+### Key properties
+
+- **Tracker-agnostic**: `GitHubTrackerAdapter` ships today; a JIRA interface is defined for future use.
+- **Standalone**: `intake_triage.py` can be run from cron or manually — no watcher changes required.
+- **Orchestrator integration**: `orchestrator.py`'s `news_triage` stage fast-passes items that have already been batch-triaged (skips the per-item LLM triage call).
+
+### Trigger logic
+
+Triggers are evaluated in order; the first that fires runs the batch:
+
+| Priority | Trigger | Default |
+|---|---|---|
+| 1 | `--run` flag | Manual override |
+| 2 | `min_count` | Fire when ≥ N items are pending (default: 5) |
+| 3 | `max_age_hours` | Fire when oldest pending item ≥ N hours old (default: 6) |
+| 4 | `schedule` | Cron expression (default: null / off) |
+
+### Flow
+
+1. `list_pending()` — fetches all issues labelled `triage-pending`
+2. AI batch discussion — editors see all N items together, rank and discuss
+3. Per-item verdict:
+   - **APPROVE** → removes `triage-pending`, adds `triage-approved` + trigger label, posts editorial notes as a comment
+   - **SKIP** → adds `triage-skipped`, closes issue, posts reason
+4. `orchestrator.py` `news_triage` fast-passes items already batch-triaged
+
+### Configuration
+
+```yaml
+# config.yaml
+intake_triage:
+  enabled: false              # flip to true to activate
+  tracker: github
+  scope: "Tech news relevant to HK Cantonese-speaking professionals."
+
+  labels:
+    pending:  triage-pending
+    approved: triage-approved
+    skipped:  triage-skipped
+    trigger:  press            # label the watcher watches for (added on approve)
+
+  trigger:
+    min_count: 5
+    max_age_hours: 6
+    schedule: null             # cron e.g. "0 9 * * *"
+
+  batch:
+    max_size: 10
+    body_preview_chars: 300
+
+  discussion:
+    preset: discussions/intake-triage.yaml
+```
+
+### Running the triage
+
+```bash
+# Manual one-shot run
+python intake_triage.py
+
+# Force run regardless of trigger conditions
+python intake_triage.py --run
+```
+
+**Cron example** (every 6 hours):
+
+```bash
+0 */6 * * * python /path/to/ai-software-house/intake_triage.py
+```
+
+### Human override
+
+Manually add the `triage-approved` label to any GitHub issue. The system respects it automatically — that item will be fast-passed by `news_triage` without re-running the batch discussion.
