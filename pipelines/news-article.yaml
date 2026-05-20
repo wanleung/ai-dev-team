@@ -12,4 +12,5 @@ stages:
   - news_editor                 # final polish + frontmatter
   - translate_cantonese         # translate to Written Cantonese (zh-hk)
   - translate_zh_traditional    # translate to Formal Traditional Chinese (zh-tw)
+  - news_reviewer               # review article quality and translation correctness
   - news_article_pr             # commit all articles, open PR in this repo

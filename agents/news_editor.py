@@ -19,6 +19,7 @@ class NewsEditorAgent(BaseAgent):
         article_draft: str,
         issue_body: str = "",
         discussion_synthesis: str = "",
+        reviewer_notes: str = "",
     ) -> dict:
         """Edit and finalise the article.
 
@@ -26,11 +27,18 @@ class NewsEditorAgent(BaseAgent):
             article_draft: The draft article from NewsWriterAgent (or discuss_news_draft synthesis).
             issue_body: The original brief for reference.
             discussion_synthesis: Optional synthesis from discuss_news_draft stage.
+            reviewer_notes: Optional reviewer feedback to address in this edit.
 
         Returns:
             dict with key:
                 - article (str): Final publication-ready markdown article
         """
+        reviewer_section = (
+            f"A reviewer found the following issues that must be fixed:\n\n"
+            f"---\n{reviewer_notes}\n---\n\n"
+            if reviewer_notes.strip()
+            else ""
+        )
         synthesis_section = (
             f"A draft review discussion has been conducted. Key feedback:\n\n"
             f"---\n{discussion_synthesis}\n---\n\n"
@@ -39,6 +47,7 @@ class NewsEditorAgent(BaseAgent):
         )
         original_brief = f"Original brief:\n---\n{issue_body}\n---\n\n" if issue_body.strip() else ""
         prompt = (
+            f"{reviewer_section}"
             f"{synthesis_section}"
             f"{original_brief}"
             f"Please edit and finalise the following news article draft:\n\n"

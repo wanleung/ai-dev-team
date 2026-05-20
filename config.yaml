@@ -127,6 +127,11 @@ llm:
     deployment_tester: "openai/gpt-4.1-mini"
     summariser: "openai/gpt-4.1"
     memory_bank_updater: "openai/gpt-4.1"
+    # ── Press team agents ──────────────────────────────────────────────────
+    # news_writer: "openai/gpt-4.1"
+    # news_editor: "openai/gpt-4.1-mini"
+    # news_reviewer: "openai/gpt-4.1-mini"
+    # translator: "openai/gpt-4.1-mini"
 
   # Per-backend concurrency limits. The watcher acquires a slot
   # from the named backend's pool before each LLM call. Use this
@@ -265,6 +270,7 @@ pipeline:
   # Set to 0 to disable. Applies to both unit tests and deployment tests.
   max_test_retries: 5
   max_deploy_retries: 5
+  reviewer_max_retries: 2
 
   # ── Pipeline chaining ────────────────────────────────────────────────────────
   # After a pipeline completes, the watcher can automatically re-label the issue

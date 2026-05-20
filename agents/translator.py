@@ -22,20 +22,28 @@ class TranslatorAgent(BaseAgent):
 
     role_name = "translator"
 
-    def run(self, article: str, target_language: Literal["cantonese", "traditional_chinese"]) -> dict:
+    def run(self, article: str, target_language: Literal["cantonese", "traditional_chinese"], reviewer_notes: str = "") -> dict:
         """Translate the article.
 
         Args:
             article: Full markdown article with YAML frontmatter (English source).
             target_language: "cantonese" for Written Cantonese (zh-hk),
                              "traditional_chinese" for Formal Traditional Chinese (zh-tw).
+            reviewer_notes: Optional reviewer feedback about issues with the previous translation.
 
         Returns:
             dict with key:
                 - translated_article (str): Full translated markdown with frontmatter
         """
         label = _LANGUAGE_LABELS.get(target_language, target_language)
+        notes_section = (
+            f"A reviewer found the following issues in the previous translation that must be fixed:\n\n"
+            f"---\n{reviewer_notes}\n---\n\n"
+            if reviewer_notes.strip()
+            else ""
+        )
         prompt = (
+            f"{notes_section}"
             f"Translate the following news article to {label}.\n\n"
             f"Follow your role instructions exactly.\n\n"
             f"<ARTICLE>\n{article}\n</ARTICLE>\n\n"

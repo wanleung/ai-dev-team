@@ -171,7 +171,7 @@ def test_stage_translate_sets_result_field():
     result.article = "# English Article\n\nContent."
     orch._stage_translate(result, "cantonese", "article_zh_hk")
     assert result.article_zh_hk == "# 粵語文章\n\n內容。"
-    mock_agent.run.assert_called_once_with("# English Article\n\nContent.", target_language="cantonese")
+    mock_agent.run.assert_called_once_with("# English Article\n\nContent.", target_language="cantonese", reviewer_notes="")
 
 
 def test_stage_translate_uses_article_draft_when_no_article():
@@ -260,3 +260,193 @@ def test_news_article_pr_only_english_when_no_translations():
         orch._stage_news_article_pr(result)
 
     assert len(result.all_files) == 1
+
+
+def test_pipeline_result_has_reviewer_fields():
+    from orchestrator import PipelineResult
+    r = PipelineResult()
+    assert hasattr(r, "article_reviewer_notes")
+    assert r.article_reviewer_notes == ""
+    assert hasattr(r, "article_review_retry_count")
+    assert r.article_review_retry_count == 0
+
+
+def test_pipeline_result_reviewer_fields_in_to_dict():
+    from orchestrator import PipelineResult
+    r = PipelineResult()
+    r.article_reviewer_notes = "Some issues"
+    r.article_review_retry_count = 1
+    d = r.to_dict()
+    assert d["article_reviewer_notes"] == "Some issues"
+    assert d["article_review_retry_count"] == 1
+
+
+def test_pipeline_result_reviewer_fields_from_dict():
+    from orchestrator import PipelineResult
+    r = PipelineResult.from_dict({
+        "requirement": "test",
+        "article_reviewer_notes": "Issues here",
+        "article_review_retry_count": 2,
+    })
+    assert r.article_reviewer_notes == "Issues here"
+    assert r.article_review_retry_count == 2
+
+
+def _make_minimal_orchestrator():
+    """Create a minimal Orchestrator with only press-related agents mocked."""
+    from unittest.mock import MagicMock
+    import orchestrator as orch_mod
+
+    o = object.__new__(orch_mod.Orchestrator)
+    o._reviewer_max_retries = 2
+    o.news_editor = MagicMock()
+    o.news_reviewer = MagicMock()
+    o.translator = MagicMock()
+    return o
+
+
+def test_stage_news_reviewer_pass_does_not_retry():
+    """PASS verdict — no retry, stage completes normally."""
+    from unittest.mock import MagicMock
+    from orchestrator import PipelineResult
+
+    result = PipelineResult()
+    result.article = "---\ntitle: Test\ndate: 2026-01-01\nsource_url: https://example.com\n---\n\nBody."
+    result.article_zh_hk = "# 文章"
+    result.article_zh_tw = "# 文章"
+
+    mock_reviewer = MagicMock()
+    mock_reviewer.run.return_value = {"verdict": "PASS", "issues": [], "confidence": "high"}
+
+    orch = _make_minimal_orchestrator()
+    orch.news_reviewer = mock_reviewer
+    orch._stage_news_reviewer(result)
+
+    assert mock_reviewer.run.call_count == 1
+    assert result.article_review_retry_count == 0
+
+
+def test_stage_news_reviewer_english_issue_retries_editor_and_translations():
+    """NEEDS_REVISION with English [FACT] — retries editor + both translations."""
+    from unittest.mock import MagicMock, call
+    from orchestrator import PipelineResult
+
+    result = PipelineResult()
+    result.article = "---\ntitle: Test\ndate: 2026-01-01\nsource_url: https://example.com\n---\n\nBody."
+    result.article_zh_hk = "# 文章"
+    result.article_zh_tw = "# 文章"
+
+    mock_reviewer = MagicMock()
+    mock_reviewer.run.side_effect = [
+        {"verdict": "NEEDS_REVISION", "issues": ["[FACT] Wrong version"], "confidence": "high"},
+        {"verdict": "PASS", "issues": [], "confidence": "high"},
+    ]
+
+    orch = _make_minimal_orchestrator()
+    orch.news_reviewer = mock_reviewer
+
+    editor_calls = []
+    translate_calls = []
+
+    def fake_editor(r, reviewer_notes=""):
+        editor_calls.append(reviewer_notes)
+
+    def fake_translate(r, lang, field, reviewer_notes=""):
+        translate_calls.append((lang, field))
+
+    orch._stage_news_editor = fake_editor
+    orch._stage_translate = fake_translate
+    orch._stage_news_reviewer(result)
+
+    assert mock_reviewer.run.call_count == 2
+    assert len(editor_calls) == 1
+    assert len(translate_calls) == 2  # both languages retried
+    assert result.article_review_retry_count == 1
+
+
+def test_stage_news_reviewer_zh_hk_only_retries_cantonese():
+    """NEEDS_REVISION with only [ZH_HK] — retries translate_cantonese only."""
+    from unittest.mock import MagicMock
+    from orchestrator import PipelineResult
+
+    result = PipelineResult()
+    result.article = "---\ntitle: Test\ndate: 2026-01-01\nsource_url: https://example.com\n---\n\nBody."
+    result.article_zh_hk = "# 文章"
+    result.article_zh_tw = "# 文章"
+
+    mock_reviewer = MagicMock()
+    mock_reviewer.run.side_effect = [
+        {"verdict": "NEEDS_REVISION", "issues": ["[ZH_HK] Simplified char"], "confidence": "high"},
+        {"verdict": "PASS", "issues": [], "confidence": "high"},
+    ]
+
+    orch = _make_minimal_orchestrator()
+    orch.news_reviewer = mock_reviewer
+
+    editor_calls = []
+    translate_calls = []
+    orch._stage_news_editor = lambda r, reviewer_notes="": editor_calls.append(reviewer_notes)
+    orch._stage_translate = lambda r, lang, field, reviewer_notes="": translate_calls.append(lang)
+    orch._stage_news_reviewer(result)
+
+    assert len(editor_calls) == 0
+    assert translate_calls == ["cantonese"]
+
+
+def test_stage_news_reviewer_stops_after_max_retries():
+    """After max retries, accept the article and continue regardless."""
+    from unittest.mock import MagicMock
+    from orchestrator import PipelineResult
+
+    result = PipelineResult()
+    result.article = "---\ntitle: Test\ndate: 2026-01-01\nsource_url: https://example.com\n---\n\nBody."
+    result.article_zh_hk = "# 文章"
+    result.article_zh_tw = "# 文章"
+
+    mock_reviewer = MagicMock()
+    mock_reviewer.run.return_value = {
+        "verdict": "NEEDS_REVISION",
+        "issues": ["[FACT] Wrong version"],
+        "confidence": "high",
+    }
+
+    orch = _make_minimal_orchestrator()
+    orch.news_reviewer = mock_reviewer
+    orch._reviewer_max_retries = 2
+    orch._stage_news_editor = lambda r, reviewer_notes="": None
+    orch._stage_translate = lambda r, lang, field, reviewer_notes="": None
+
+    orch._stage_news_reviewer(result)
+
+    assert result.article_review_retry_count == 2
+    assert mock_reviewer.run.call_count == 3  # initial + 2 retries
+
+
+def test_stage_news_reviewer_english_cascade_passes_notes_to_translations():
+    """English cascade must pass reviewer_notes to translations (mixed FACT+ZH issues)."""
+    from unittest.mock import MagicMock
+    from orchestrator import PipelineResult
+
+    result = PipelineResult()
+    result.article = "---\ntitle: Test\ndate: 2026-01-01\nsource_url: https://example.com\n---\n\nBody."
+    result.article_zh_hk = "# 文章"
+    result.article_zh_tw = "# 文章"
+
+    mock_reviewer = MagicMock()
+    mock_reviewer.run.side_effect = [
+        {"verdict": "NEEDS_REVISION", "issues": ["[FACT] Wrong version", "[ZH_HK] Simplified char"], "confidence": "high"},
+        {"verdict": "PASS", "issues": [], "confidence": "high"},
+    ]
+
+    orch = _make_minimal_orchestrator()
+    orch.news_reviewer = mock_reviewer
+
+    translate_calls = []
+    orch._stage_news_editor = lambda r, reviewer_notes="": None
+    orch._stage_translate = lambda r, lang, field, reviewer_notes="": translate_calls.append((lang, reviewer_notes))
+    orch._stage_news_reviewer(result)
+
+    # Both translate calls must receive the reviewer notes
+    assert len(translate_calls) == 2
+    for lang, notes in translate_calls:
+        assert "[ZH_HK] Simplified char" in notes, f"reviewer_notes not passed to {lang} translation"

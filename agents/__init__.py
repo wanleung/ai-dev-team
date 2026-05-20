@@ -13,6 +13,7 @@ from .documentation_agent import DocumentationAgent
 from .news_writer import NewsWriterAgent
 from .news_editor import NewsEditorAgent
 from .translator import TranslatorAgent
+from .news_reviewer import NewsReviewerAgent
 
 __all__ = [
     "BaseAgent",
@@ -29,4 +30,5 @@ __all__ = [
     "NewsWriterAgent",
     "NewsEditorAgent",
     "TranslatorAgent",
+    "NewsReviewerAgent",
 ]

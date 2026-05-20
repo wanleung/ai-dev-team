@@ -49,6 +49,7 @@ from agents.conflict_resolver import ConflictResolverAgent, PRContext
 from agents.deploy_backends import build_deploy_backend
 from agents.news_writer import NewsWriterAgent
 from agents.news_editor import NewsEditorAgent
+from agents.news_reviewer import NewsReviewerAgent
 from agents.translator import TranslatorAgent
 from framework_docs import FrameworkDocsLoader
 from github_client import GitHubClient, parse_target_repo
@@ -417,6 +418,9 @@ class PipelineResult:
     article: str = ""
     article_zh_hk: str = ""  # Written Cantonese translation
     article_zh_tw: str = ""  # Formal Traditional Chinese translation
+    # News reviewer stage outputs
+    article_reviewer_notes: str = ""   # last reviewer issue list (injected on retry)
+    article_review_retry_count: int = 0  # total reviewer retries across all loops
     # PRD/Design revision loop tracking
     prd_revision_count: int = 0
     design_revision_count: int = 0
@@ -491,6 +495,8 @@ class PipelineResult:
             "article": self.article,
             "article_zh_hk": self.article_zh_hk,
             "article_zh_tw": self.article_zh_tw,
+            "article_reviewer_notes": self.article_reviewer_notes,
+            "article_review_retry_count": self.article_review_retry_count,
             "progress_comment_id": self.progress_comment_id,
             "run_id": self.run_id,
             "total_cost_usd": self.total_cost_usd,
@@ -534,6 +540,7 @@ class PipelineResult:
                     "discussion_transcript", "discussion_synthesis",
                     "article_draft", "article",
                     "article_zh_hk", "article_zh_tw",
+                    "article_reviewer_notes", "article_review_retry_count",
                     "progress_comment_id",
                     "run_id", "total_cost_usd", "token_usage"]:
             setattr(r, key, data.get(key, getattr(r, key)))
@@ -692,6 +699,7 @@ class Orchestrator(TestFixLoopMixin):
         inter_call_delay: int = 0,
         max_test_retries: int = 5,
         max_deploy_retries: int = 5,
+        reviewer_max_retries: int = 2,
         framework_docs_loader: Optional["FrameworkDocsLoader"] = None,
         repo_context_loader: Optional["RepoContextLoader"] = None,
         llm_cfg: Optional[dict] = None,
@@ -738,6 +746,7 @@ class Orchestrator(TestFixLoopMixin):
         self.stop_on_design_issues = stop_on_design_issues
         self.max_test_retries = max_test_retries
         self.max_deploy_retries = max_deploy_retries
+        self._reviewer_max_retries = reviewer_max_retries
         self.skill_loader: Optional[SkillLoader] = skill_loader
         self.framework_docs_loader: FrameworkDocsLoader = framework_docs_loader or FrameworkDocsLoader(config={})
         self.repo_context_loader: Optional[RepoContextLoader] = repo_context_loader
@@ -829,6 +838,7 @@ class Orchestrator(TestFixLoopMixin):
         self.pm = ProductManagerAgent(**{**agent_kwargs, **_mk("product_manager")})
         self.news_writer = NewsWriterAgent(**{**agent_kwargs, **_mk("news_writer")})
         self.news_editor = NewsEditorAgent(**{**agent_kwargs, **_mk("news_editor")})
+        self.news_reviewer = NewsReviewerAgent(**{**agent_kwargs, **_mk("news_reviewer")})
         self.translator = TranslatorAgent(**{**agent_kwargs, **_mk("translator")})
         self.pm_reviewer = PMReviewerAgent(**{**agent_kwargs, **_mk("pm_reviewer")})
         self.architect = ArchitectAgent(tool_registry=rag_registry, **{**agent_kwargs, **_mk("architect")})
@@ -882,7 +892,7 @@ class Orchestrator(TestFixLoopMixin):
         self._original_system_prompts: dict = {
             agent: agent.system_prompt
             for agent in (
-                self.pm, self.news_writer, self.news_editor, self.pm_reviewer, self.architect, self.architect_reviewer,
+                self.pm, self.news_writer, self.news_editor, self.news_reviewer, self.pm_reviewer, self.architect, self.architect_reviewer,
                 self.engineer, self.junior_engineer, self.senior_engineer,
                 self.reviewer, self.qa_planner, self.qa,
                 self.deployment_tester,
@@ -1186,6 +1196,7 @@ class Orchestrator(TestFixLoopMixin):
             inter_call_delay=pipeline.get("inter_call_delay", 0),
             max_test_retries=pipeline.get("max_test_retries", 5),
             max_deploy_retries=pipeline.get("max_deploy_retries", 5),
+            reviewer_max_retries=pipeline.get("reviewer_max_retries", 2),
             framework_docs_loader=framework_docs_loader,
             repo_context_loader=repo_context_loader,
             llm_fallbacks=llm.get("fallbacks") or None,
@@ -1933,6 +1944,13 @@ class Orchestrator(TestFixLoopMixin):
                 description="Translating article to Traditional Chinese...",
                 checkpoint_key="translate_zh_traditional",
                 fn=lambda r: self._stage_translate(r, "traditional_chinese", "article_zh_tw"),
+            ),
+            "news_reviewer": PipelineStage(
+                name="news_reviewer",
+                label="🔍 News Reviewer",
+                description="Reviewing article quality and translation correctness...",
+                checkpoint_key="news_reviewer",
+                fn=lambda r: self._stage_news_reviewer(r),
             ),
             "news_article_pr": PipelineStage(
                 name="news_article_pr",
@@ -4208,14 +4226,17 @@ class Orchestrator(TestFixLoopMixin):
         # will overwrite it; if it doesn't run the editor should still see the
         # pre-write analysis synthesis from discuss_news_analysis.
 
-    def _stage_news_editor(self, result: PipelineResult) -> None:
+    def _stage_news_editor(self, result: PipelineResult, reviewer_notes: str = "") -> None:
         """Edit the article draft to publication standard."""
         issue_body = getattr(result, "issue_body", "") or result.requirement
         synthesis = result.discussion_synthesis or ""
+        # On reviewer retry, use the current article as the draft to preserve prior edits
+        draft = result.article if reviewer_notes and result.article else result.article_draft
         ed = self.news_editor.run(
-            result.article_draft,
+            draft,
             issue_body=issue_body,
             discussion_synthesis=synthesis,
+            reviewer_notes=reviewer_notes,
         )
         if not ed.get("article", "").strip():
             raise RuntimeError("NewsEditor produced an empty article — LLM may have returned no content.")
@@ -4224,7 +4245,7 @@ class Orchestrator(TestFixLoopMixin):
     _TRANSLATE_VALID_LANGUAGES = frozenset({"cantonese", "traditional_chinese"})
     _TRANSLATE_VALID_FIELDS = frozenset({"article_zh_hk", "article_zh_tw"})
 
-    def _stage_translate(self, result: "PipelineResult", target_language: str, result_field: str) -> None:
+    def _stage_translate(self, result: "PipelineResult", target_language: str, result_field: str, reviewer_notes: str = "") -> None:
         """Translate the final article into a target language."""
         if target_language not in self._TRANSLATE_VALID_LANGUAGES:
             raise ValueError(
@@ -4242,11 +4263,85 @@ class Orchestrator(TestFixLoopMixin):
                 f"translate ({target_language}): no source article found — "
                 "run news_writer or news_editor before translation stages"
             )
-        out = self.translator.run(source, target_language=target_language)
+        out = self.translator.run(source, target_language=target_language, reviewer_notes=reviewer_notes)
         translated = out.get("translated_article", "")
         if not translated.strip():
             raise RuntimeError(f"translate ({target_language}): empty output from translator")
         setattr(result, result_field, translated)
+
+    def _stage_news_reviewer(self, result: PipelineResult) -> None:
+        """Review article quality and translation correctness; retry on issues."""
+        import re as _re
+
+        max_retries: int = getattr(self, "_reviewer_max_retries", 2)
+
+        # Extract source_url from YAML frontmatter
+        source_url = ""
+        fm_match = _re.match(r"^---\s*\n(.*?)\n---", result.article or "", _re.DOTALL)
+        if fm_match:
+            try:
+                import yaml as _yaml
+                fm = _yaml.safe_load(fm_match.group(1)) or {}
+                source_url = str(fm.get("source_url", ""))
+            except Exception:
+                pass
+
+        for attempt in range(max_retries + 1):
+            out = self.news_reviewer.run(
+                result.article or result.article_draft,
+                result.article_zh_hk,
+                result.article_zh_tw,
+                source_url=source_url,
+            )
+            verdict = out.get("verdict", "PASS")
+            issues = out.get("issues", [])
+
+            if verdict == "PASS":
+                if attempt > 0:
+                    console.print(f"  ✅ [green]Reviewer passed after {attempt} retry(s)[/green]")
+                else:
+                    console.print("  ✅ [dim]Reviewer: PASS[/dim]")
+                return
+
+            if attempt >= max_retries:
+                console.print(
+                    f"  [yellow]⚠️  Reviewer still has issues after {max_retries} retries — accepting article[/yellow]"
+                )
+                return
+
+            # Classify issues
+            has_english = any(
+                i.startswith("[FACT]") or i.startswith("[WORDING]") for i in issues
+            )
+            has_zh_hk = any("[ZH_HK]" in i for i in issues)
+            has_zh_tw = any("[ZH_TW]" in i for i in issues)
+            notes = "\n".join(issues)
+            result.article_reviewer_notes = notes
+            result.article_review_retry_count += 1
+
+            console.print(
+                f"  [yellow]📝 Reviewer: NEEDS_REVISION (attempt {attempt + 1}/{max_retries})[/yellow]"
+            )
+            for issue in issues:
+                console.print(f"     {issue}")
+
+            if has_english:
+                console.print("  🔄 [dim]Retrying editor + all translations…[/dim]")
+                self._stage_news_editor(result, reviewer_notes=notes)
+                # Pass notes so translators also see any mixed ZH_HK/ZH_TW issues
+                self._stage_translate(result, "cantonese", "article_zh_hk", reviewer_notes=notes)
+                self._stage_translate(result, "traditional_chinese", "article_zh_tw", reviewer_notes=notes)
+            else:
+                if has_zh_hk:
+                    console.print("  🔄 [dim]Retrying Cantonese translation…[/dim]")
+                    self._stage_translate(
+                        result, "cantonese", "article_zh_hk", reviewer_notes=notes
+                    )
+                if has_zh_tw:
+                    console.print("  🔄 [dim]Retrying Traditional Chinese translation…[/dim]")
+                    self._stage_translate(
+                        result, "traditional_chinese", "article_zh_tw", reviewer_notes=notes
+                    )
 
     def _stage_news_article_pr(self, result: PipelineResult) -> None:
         """Commit the final article as a file and open a PR in the tracker repo."""
