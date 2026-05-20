@@ -171,21 +171,29 @@ class GitHubTrackerAdapter(TrackerAdapter):
         label_names = {l["name"] for l in issue.get("labels", [])}
         if self.approved_label not in label_names:
             return False, ""
-        # fetch notes from most recent INTAKE TRIAGE comment (newest first)
+        # fetch notes from most recent INTAKE TRIAGE comment (newest first, paginated)
         try:
-            cr = requests.get(
-                f"https://api.github.com/repos/{self.repo}/issues/{item_id}/comments",
-                headers=self._headers(),
-                params={"per_page": 100, "sort": "created", "direction": "desc"},
-                timeout=15,
-            )
-            cr.raise_for_status()
-            for comment in cr.json():
-                body = comment.get("body", "")
-                if TRIAGE_COMMENT_MARKER in body:
-                    m = _NOTES_RE.search(body)
-                    if m:
-                        return True, m.group(1).strip().splitlines()[0]
+            page = 1
+            while True:
+                cr = requests.get(
+                    f"https://api.github.com/repos/{self.repo}/issues/{item_id}/comments",
+                    headers=self._headers(),
+                    params={"per_page": 100, "sort": "created", "direction": "desc", "page": page},
+                    timeout=15,
+                )
+                cr.raise_for_status()
+                batch = cr.json()
+                if not batch:
+                    break
+                for comment in batch:
+                    body = comment.get("body", "")
+                    if TRIAGE_COMMENT_MARKER in body:
+                        m = _NOTES_RE.search(body)
+                        if m:
+                            return True, m.group(1).strip().splitlines()[0]
+                if len(batch) < 100:
+                    break
+                page += 1
         except Exception:
             pass
         return True, ""

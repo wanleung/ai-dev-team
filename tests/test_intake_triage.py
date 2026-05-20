@@ -180,8 +180,6 @@ def test_github_adapter_is_approved_true_when_label_present():
 
 # ── Task 3: Batch verdict parser ───────────────────────────────────────────
 
-from intake_triage import _parse_batch_verdicts
-
 
 def test_parse_batch_verdicts_all_publish():
     text = (

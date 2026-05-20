@@ -254,11 +254,11 @@ python intake_triage.py
 # Manual trigger — fires regardless of count/age/schedule
 python intake_triage.py --run
 
-# Dry run — shows what would happen, no API calls
+# Dry run — shows what would happen, no write/state-changing API calls
 python intake_triage.py --dry-run
 
 # Custom config file
-python intake_triage.py --config repos.yaml
+python intake_triage.py --config config.yaml
 ```
 
 ---
