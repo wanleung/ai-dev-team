@@ -235,3 +235,83 @@ def test_parse_batch_verdicts_notes_optional():
 def test_parse_batch_verdicts_empty_text():
     results = _parse_batch_verdicts("", item_count=2)
     assert results == [("PUBLISH", ""), ("PUBLISH", "")]
+
+
+# ── Task 4: intake_triage.py ───────────────────────────────────────────────
+
+from intake_triage import (
+    _parse_batch_verdicts,
+    _build_batch_context,
+    _should_fire,
+)
+from datetime import datetime, timezone, timedelta
+
+
+def _make_items(n: int, age_hours: float = 1.0) -> list:
+    now = datetime.now(timezone.utc)
+    return [
+        TriageItem(
+            id=str(i),
+            title=f"Story {i}",
+            body=f"Body for story {i} " * 20,
+            url=f"https://github.com/org/repo/issues/{i}",
+            created_at=now - timedelta(hours=age_hours),
+            metadata={},
+        )
+        for i in range(1, n + 1)
+    ]
+
+
+def test_should_fire_manual_flag():
+    from config_schema import IntakeTriageConfig
+    cfg = IntakeTriageConfig(trigger={"min_count": 10, "max_age_hours": 24})
+    items = _make_items(1, age_hours=0.5)
+    assert _should_fire(cfg, items, force=True) is True
+
+
+def test_should_fire_min_count_reached():
+    from config_schema import IntakeTriageConfig
+    cfg = IntakeTriageConfig(trigger={"min_count": 3, "max_age_hours": 24})
+    items = _make_items(3, age_hours=1)
+    assert _should_fire(cfg, items, force=False) is True
+
+
+def test_should_fire_min_count_not_reached():
+    from config_schema import IntakeTriageConfig
+    cfg = IntakeTriageConfig(trigger={"min_count": 5, "max_age_hours": 24})
+    items = _make_items(2, age_hours=1)
+    assert _should_fire(cfg, items, force=False) is False
+
+
+def test_should_fire_max_age_exceeded():
+    from config_schema import IntakeTriageConfig
+    cfg = IntakeTriageConfig(trigger={"min_count": 10, "max_age_hours": 6})
+    items = _make_items(1, age_hours=7)  # 7 > 6 → fire
+    assert _should_fire(cfg, items, force=False) is True
+
+
+def test_should_fire_no_items():
+    from config_schema import IntakeTriageConfig
+    cfg = IntakeTriageConfig(trigger={"min_count": 1, "max_age_hours": 1})
+    assert _should_fire(cfg, [], force=False) is False
+
+
+def test_build_batch_context_format():
+    items = _make_items(2, age_hours=1)
+    items[0].title = "Apple releases iOS 19"
+    items[0].body = "A" * 400  # will be truncated to 300
+    items[1].title = "Google acquires startup"
+    items[1].body = "B" * 100
+    ctx = _build_batch_context(items, scope="AI and HK tech", preview_chars=300)
+    assert "ITEM 1" in ctx
+    assert "Apple releases iOS 19" in ctx
+    assert "ITEM 2" in ctx
+    assert "Google acquires startup" in ctx
+    assert "A" * 301 not in ctx   # truncated
+    assert "AI and HK tech" in ctx
+
+
+def test_build_batch_context_item_count():
+    items = _make_items(3)
+    ctx = _build_batch_context(items, scope="tech", preview_chars=300)
+    assert "Item count: 3" in ctx
