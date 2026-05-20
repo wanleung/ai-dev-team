@@ -7,7 +7,7 @@ PUBLISH or SKIP on each item.
 Usage:
     python intake_triage.py              # normal cron run (respects trigger conditions)
     python intake_triage.py --run        # manual trigger, ignores min_count/max_age
-    python intake_triage.py --dry-run    # preview only, no API calls
+    python intake_triage.py --dry-run    # preview only, no write/state-changing API calls
     python intake_triage.py --config config.yaml
 """
 from __future__ import annotations
@@ -196,7 +196,7 @@ def run(
         repo: GitHub repository in ``owner/name`` format.
         model: LLM model identifier to pass to the DiscussionAgent.
         force: When True, bypass trigger conditions and process immediately.
-        dry_run: When True, log the batch context but make no API calls.
+        dry_run: When True, log the batch context but make no write/state-changing API calls.
         script_dir: Base directory for locating discussion preset files.
             Defaults to the directory containing this script.
 
@@ -274,7 +274,7 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(description="Batch intake triage runner")
     parser.add_argument("--run", action="store_true", help="Force run ignoring trigger conditions")
-    parser.add_argument("--dry-run", action="store_true", help="Preview only, no API calls")
+    parser.add_argument("--dry-run", action="store_true", help="Preview only, no write/state-changing API calls")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     parser.add_argument("--repo", default=None, help="GitHub repo (owner/name), overrides config")
     args = parser.parse_args()

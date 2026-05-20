@@ -171,16 +171,16 @@ class GitHubTrackerAdapter(TrackerAdapter):
         label_names = {l["name"] for l in issue.get("labels", [])}
         if self.approved_label not in label_names:
             return False, ""
-        # fetch notes from most recent INTAKE TRIAGE comment
+        # fetch notes from most recent INTAKE TRIAGE comment (newest first)
         try:
             cr = requests.get(
                 f"https://api.github.com/repos/{self.repo}/issues/{item_id}/comments",
                 headers=self._headers(),
-                params={"per_page": 100},
+                params={"per_page": 100, "sort": "created", "direction": "desc"},
                 timeout=15,
             )
             cr.raise_for_status()
-            for comment in reversed(cr.json()):
+            for comment in cr.json():
                 body = comment.get("body", "")
                 if TRIAGE_COMMENT_MARKER in body:
                     m = _NOTES_RE.search(body)

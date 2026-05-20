@@ -2,7 +2,8 @@
 from __future__ import annotations
 import pytest
 from config_schema import AppConfig, IntakeTriageConfig, load_config
-import tempfile, os
+import tempfile
+import os
 
 
 # ── Task 1: Config schema ──────────────────────────────────────────────────
