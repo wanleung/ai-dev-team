@@ -202,6 +202,7 @@ class IntakeTriageConfig(BaseModel):
 
     enabled: bool = False
     tracker: str = "github"
+    scope: str = "Tech news relevant to HK Cantonese-speaking professionals."
     labels: Dict[str, str] = Field(
         default_factory=lambda: {
             "pending":  "triage-pending",

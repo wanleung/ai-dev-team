@@ -4259,28 +4259,18 @@ class Orchestrator(TestFixLoopMixin):
         """
         if hasattr(self, "_cached_tracker_adapter"):
             return self._cached_tracker_adapter
-        cfg_dict = getattr(self, "_cfg", {})
-        it_cfg = cfg_dict.get("intake_triage", {}) if isinstance(cfg_dict, dict) else {}
-        if not it_cfg.get("enabled", False):
+        cfg_dict = getattr(self, "_cfg", {}) or {}
+        it_cfg_raw = cfg_dict.get("intake_triage", {}) if isinstance(cfg_dict, dict) else {}
+        if not it_cfg_raw.get("enabled", False):
             self._cached_tracker_adapter = None
             return None
         try:
             from config_schema import IntakeTriageConfig
-            from tracker_adapter import GitHubTrackerAdapter
-            import os
-            it = IntakeTriageConfig(**it_cfg)
+            from intake_triage import _make_adapter
+            it = IntakeTriageConfig(**it_cfg_raw)
             gh = getattr(self, "github", None) or getattr(self, "target_github", None)
             repo = str(getattr(gh, "repo", "")) if gh else ""
-            token = os.environ.get("GITHUB_TOKEN", "")
-            adapter = GitHubTrackerAdapter(
-                repo=repo,
-                token=token,
-                pending_label=it.labels.get("pending", "triage-pending"),
-                approved_label=it.labels.get("approved", "triage-approved"),
-                skipped_label=it.labels.get("skipped", "triage-skipped"),
-                trigger_label=it.labels.get("trigger", "press"),
-            )
-            self._cached_tracker_adapter = adapter
+            self._cached_tracker_adapter = _make_adapter(it, repo)
         except Exception as exc:
             log.warning("_get_tracker_adapter: failed to build adapter: %s", exc)
             self._cached_tracker_adapter = None

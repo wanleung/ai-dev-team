@@ -215,9 +215,7 @@ def run(
     log.info("intake_triage: processing batch of %d item(s)", len(batch))
 
     # Get triage scope from config
-    scope = getattr(cfg, "scope", None)
-    if not scope:
-        scope = "Tech news relevant to HK Cantonese-speaking professionals."
+    scope = cfg.scope
 
     context = _build_batch_context(batch, scope=scope, preview_chars=cfg.batch.body_preview_chars)
 
@@ -227,6 +225,7 @@ def run(
 
     # Run discussion
     preset_path = script_dir / cfg.discussion.get("preset", "discussions/intake-triage.yaml")
+    # Deferred to avoid loading the full agents package during config-only import paths.
     from agents.discussion_agent import DiscussionAgent
     agent = DiscussionAgent.from_file(
         config_path=str(preset_path),
@@ -234,7 +233,7 @@ def run(
         github_token=os.environ.get("GITHUB_TOKEN", ""),
     )
     disc_result = agent.run(context=context)
-    synthesis = disc_result.synthesis or disc_result.transcript or ""
+    synthesis = disc_result.synthesis or ""
 
     verdicts = _parse_batch_verdicts(synthesis, item_count=len(batch))
 

@@ -315,3 +315,27 @@ def test_build_batch_context_item_count():
     items = _make_items(3)
     ctx = _build_batch_context(items, scope="tech", preview_chars=300)
     assert "Item count: 3" in ctx
+
+
+# ── Task 4 (additional): run() integration ────────────────────────────────
+
+def test_run_returns_pending_when_trigger_not_met():
+    from intake_triage import run
+    from unittest.mock import patch
+    cfg = IntakeTriageConfig(trigger={"min_count": 10})
+    with patch("intake_triage._make_adapter") as mock_factory:
+        mock_factory.return_value.list_pending.return_value = _make_items(2)
+        result = run(cfg, repo="org/repo")
+    assert result == {"fired": False, "pending": 2}
+
+
+def test_run_dry_run_returns_batch_size():
+    from intake_triage import run
+    from unittest.mock import patch
+    cfg = IntakeTriageConfig(trigger={"min_count": 2})
+    with patch("intake_triage._make_adapter") as mock_factory:
+        mock_factory.return_value.list_pending.return_value = _make_items(3)
+        result = run(cfg, repo="org/repo", dry_run=True)
+    assert result["fired"] is True
+    assert result["dry_run"] is True
+    assert result["batch_size"] == 3

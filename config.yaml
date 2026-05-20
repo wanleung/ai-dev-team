@@ -479,6 +479,8 @@ intake_triage:
 
   tracker: github             # github | jira (future)
 
+  # scope: "Tech news relevant to HK Cantonese-speaking professionals."  # editorial scope passed to AI
+
   labels:
     pending:  triage-pending
     approved: triage-approved
