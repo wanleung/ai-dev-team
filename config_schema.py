@@ -173,6 +173,52 @@ class PressConfig(BaseModel):
     triage: TriageConfig = Field(default_factory=TriageConfig)
 
 
+# ── intake triage config ──────────────────────────────────────────────────────
+
+class IntakeTriggerConfig(BaseModel):
+    model_config = {"extra": "allow"}
+
+    min_count: Optional[int] = 5
+    max_age_hours: Optional[float] = 6.0
+    schedule: Optional[str] = None
+
+
+class IntakeBatchConfig(BaseModel):
+    model_config = {"extra": "allow"}
+
+    max_size: int = 10
+    body_preview_chars: int = 300
+
+
+class IntakeVerdictConfig(BaseModel):
+    model_config = {"extra": "allow"}
+
+    mode: str = "binary"
+    score_threshold: Optional[int] = None
+
+
+class IntakeTriageConfig(BaseModel):
+    model_config = {"extra": "allow"}
+
+    enabled: bool = False
+    tracker: str = "github"
+    scope: str = "Tech news relevant to HK Cantonese-speaking professionals."
+    labels: Dict[str, str] = Field(
+        default_factory=lambda: {
+            "pending":  "triage-pending",
+            "approved": "triage-approved",
+            "skipped":  "triage-skipped",
+            "trigger":  "press",
+        }
+    )
+    trigger: IntakeTriggerConfig = Field(default_factory=IntakeTriggerConfig)
+    batch: IntakeBatchConfig = Field(default_factory=IntakeBatchConfig)
+    verdict: IntakeVerdictConfig = Field(default_factory=IntakeVerdictConfig)
+    discussion: Dict[str, Any] = Field(
+        default_factory=lambda: {"preset": "discussions/intake-triage.yaml"}
+    )
+
+
 class AppConfig(BaseModel):
     model_config = {"extra": "forbid"}   # unknown top-level keys are errors
 
@@ -193,6 +239,7 @@ class AppConfig(BaseModel):
     reliability: Optional[ReliabilityConfig] = None
     rss_watcher: Optional[Dict[str, Any]] = None
     press: Optional[PressConfig] = None
+    intake_triage: IntakeTriageConfig = Field(default_factory=IntakeTriageConfig)
 
 
 # ── repos.yaml models ────────────────────────────────────────────────────────

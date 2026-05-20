@@ -470,3 +470,35 @@ framework_docs:
         - Class-based views preferred; `APIView` for DRF endpoints.
         - `settings.py` for config; use `django-environ` for env vars.
         - Run `python manage.py migrate` after model changes.
+
+# ── Batch Intake Triage ───────────────────────────────────────────────────────
+# Pre-pipeline batch triage: holds items in triage-pending until editors
+# vote on the whole batch. Disabled by default; zero impact when off.
+intake_triage:
+  enabled: false              # flip to true to activate
+
+  tracker: github             # github | jira (future)
+
+  # scope: "Tech news relevant to HK Cantonese-speaking professionals."  # editorial scope passed to AI
+
+  labels:
+    pending:  triage-pending
+    approved: triage-approved
+    skipped:  triage-skipped
+    trigger:  press            # label the watcher watches for (added on approve)
+
+  trigger:
+    min_count: 5              # fire when >= N items have triage-pending label
+    max_age_hours: 6          # fire when oldest triage-pending item >= N hours old
+    schedule: null            # cron expression e.g. "0 9 * * *", null = off
+
+  batch:
+    max_size: 10              # max items per session (overflow stays pending)
+    body_preview_chars: 300   # chars of body shown to editors per item
+
+  discussion:
+    preset: discussions/intake-triage.yaml
+
+  verdict:
+    mode: binary              # binary (PUBLISH/SKIP) | score (future)
+    # score_threshold: 6      # future: items scoring >= this -> PUBLISH

@@ -74,6 +74,7 @@ class DiscussionConfig:
     name: str = "discussion"
     memory: bool = True  # persist transcript to MemoryStore after each run
     auto_participants: dict | None = None
+    verdict_format: str = ""  # optional format instruction appended to synthesis prompt
     # Format: {"pool": ["role1", "role2", ...], "select": 3}
     # "pool" = available role names (must have persona files in roles/)
     # "select" = how many to pick
@@ -152,6 +153,7 @@ class DiscussionConfig:
             output_mode=str(data.get("output_mode", "both")),
             context_fields=list(data.get("context_fields", ["issue_body"])),
             name=p.stem.replace("-", "_"),
+            verdict_format=str(data.get("verdict_format", "")),
         )
 
 
@@ -472,6 +474,13 @@ class DiscussionAgent:
         try:
             backend = self._make_backend(moderator.llm)
             transcript_text = self._format_transcript_for_prompt(transcript)
+            synthesis_instruction = (
+                "Please synthesise the discussion into a clear proposal or recommendation."
+            )
+            if self.config.verdict_format:
+                synthesis_instruction = (
+                    f"{synthesis_instruction}\n\n{self.config.verdict_format}"
+                )
             messages = [
                 {"role": "system", "content": moderator.persona},
                 {
@@ -479,7 +488,7 @@ class DiscussionAgent:
                     "content": (
                         f"## Context\n\n{context}\n\n"
                         f"## Full Discussion\n\n{transcript_text}\n\n"
-                        "Please synthesise the discussion into a clear proposal or recommendation."
+                        f"{synthesis_instruction}"
                     ),
                 },
             ]
