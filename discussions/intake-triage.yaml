@@ -1,0 +1,44 @@
+# discussions/intake-triage.yaml
+# Batch intake triage discussion — editors vote on a batch of pending items.
+#
+# Called by intake_triage.py with standalone context= mode.
+# Context is a pre-formatted list of all pending items (see _build_batch_context).
+
+topic: >
+  Batch editorial triage: review the pending items below and vote PUBLISH or SKIP
+  for each one. Consider relative importance, audience fit, and news value.
+  An item that might pass in isolation may still be SKIP if better items are present.
+
+max_rounds: 2
+early_exit: CONSENSUS_REACHED
+
+participants:
+  - role: editorial_director
+    persona_file: roles/editorial_director.md
+    homework_llm: "ollama/thinker"
+
+  - role: audience_specialist
+    persona_file: roles/audience_specialist.md
+    homework_llm: "ollama/thinker"
+
+  - role: news_editor
+    persona_file: roles/news_editor.md
+
+homework_round: true
+
+moderator:
+  persona_file: roles/moderator.md
+
+output_mode: synthesis
+
+verdict_format: |
+  At the end of your final synthesis, include a verdict block for EVERY item,
+  using exactly this format (one block per item, in order):
+
+  ITEM 1: PUBLISH
+  NOTES: <one sentence: the angle or focus the writer should take>
+
+  ITEM 2: SKIP
+  NOTES: <one sentence: why this story was skipped>
+
+  Only PUBLISH and SKIP are valid verdicts. Every item must have a verdict.

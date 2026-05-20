@@ -175,3 +175,63 @@ def test_github_adapter_is_approved_true_when_label_present():
         approved, notes = adapter.is_approved("5")
     assert approved is True
     assert "HK angle" in notes
+
+
+# ── Task 3: Batch verdict parser ───────────────────────────────────────────
+
+from intake_triage import _parse_batch_verdicts
+
+
+def test_parse_batch_verdicts_all_publish():
+    text = (
+        "ITEM 1: PUBLISH\nNOTES: Focus on HK angle.\n\n"
+        "ITEM 2: PUBLISH\nNOTES: Strong security story.\n"
+    )
+    results = _parse_batch_verdicts(text, item_count=2)
+    assert results == [("PUBLISH", "Focus on HK angle."), ("PUBLISH", "Strong security story.")]
+
+
+def test_parse_batch_verdicts_mixed():
+    text = (
+        "ITEM 1: PUBLISH\nNOTES: Lead with Cantonese angle.\n\n"
+        "ITEM 2: SKIP\nNOTES: No HK relevance.\n\n"
+        "ITEM 3: PUBLISH\nNOTES: Strong enterprise angle.\n"
+    )
+    results = _parse_batch_verdicts(text, item_count=3)
+    assert results[0] == ("PUBLISH", "Lead with Cantonese angle.")
+    assert results[1] == ("SKIP", "No HK relevance.")
+    assert results[2] == ("PUBLISH", "Strong enterprise angle.")
+
+
+def test_parse_batch_verdicts_fail_open_on_missing():
+    """Missing items default to PUBLISH (fail-open)."""
+    text = "ITEM 1: PUBLISH\nNOTES: Good.\n"
+    results = _parse_batch_verdicts(text, item_count=3)
+    assert results[0] == ("PUBLISH", "Good.")
+    assert results[1] == ("PUBLISH", "")   # missing → fail-open
+    assert results[2] == ("PUBLISH", "")   # missing → fail-open
+
+
+def test_parse_batch_verdicts_skip_all():
+    text = "ITEM 1: SKIP\nNOTES: Not relevant.\n\nITEM 2: SKIP\nNOTES: Old news.\n"
+    results = _parse_batch_verdicts(text, item_count=2)
+    assert results == [("SKIP", "Not relevant."), ("SKIP", "Old news.")]
+
+
+def test_parse_batch_verdicts_case_insensitive_verdict():
+    text = "ITEM 1: publish\nNOTES: ok\n"
+    results = _parse_batch_verdicts(text, item_count=1)
+    assert results[0][0] == "PUBLISH"
+
+
+def test_parse_batch_verdicts_notes_optional():
+    """NOTES line is optional — verdict still parsed."""
+    text = "ITEM 1: PUBLISH\n\nITEM 2: SKIP\n"
+    results = _parse_batch_verdicts(text, item_count=2)
+    assert results[0] == ("PUBLISH", "")
+    assert results[1] == ("SKIP", "")
+
+
+def test_parse_batch_verdicts_empty_text():
+    results = _parse_batch_verdicts("", item_count=2)
+    assert results == [("PUBLISH", ""), ("PUBLISH", "")]
