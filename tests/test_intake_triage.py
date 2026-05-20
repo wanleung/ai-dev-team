@@ -67,3 +67,111 @@ intake_triage:
     assert cfg.intake_triage.labels["trigger"] == "ai-press"
     assert cfg.intake_triage.trigger.min_count == 3
     assert cfg.intake_triage.batch.max_size == 5
+
+
+# ── Task 2: TrackerAdapter ─────────────────────────────────────────────────
+
+from tracker_adapter import TriageItem, TrackerAdapter, GitHubTrackerAdapter
+from datetime import datetime, timezone
+from unittest.mock import patch, MagicMock
+
+
+def _make_item(n: int = 1) -> TriageItem:
+    return TriageItem(
+        id=str(n),
+        title=f"Story {n}",
+        body="Body content here",
+        url=f"https://github.com/org/repo/issues/{n}",
+        created_at=datetime(2026, 5, 20, 10, 0, 0, tzinfo=timezone.utc),
+        metadata={"number": n, "labels": ["triage-pending"]},
+    )
+
+
+def test_triage_item_fields():
+    item = _make_item(42)
+    assert item.id == "42"
+    assert item.title == "Story 42"
+    assert item.created_at.tzinfo is not None
+
+
+def test_tracker_adapter_is_abstract():
+    """TrackerAdapter cannot be instantiated directly."""
+    with pytest.raises(TypeError):
+        TrackerAdapter()
+
+
+def test_github_adapter_list_pending_empty():
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = []
+    mock_resp.raise_for_status = MagicMock()
+    with patch("tracker_adapter.requests.get", return_value=mock_resp):
+        adapter = GitHubTrackerAdapter(
+            repo="org/repo",
+            token="test-token",
+            pending_label="triage-pending",
+            approved_label="triage-approved",
+            skipped_label="triage-skipped",
+            trigger_label="press",
+        )
+        result = adapter.list_pending()
+    assert result == []
+
+
+def test_github_adapter_list_pending_returns_items():
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = [
+        {
+            "number": 5,
+            "title": "Big story",
+            "body": "Some body text",
+            "html_url": "https://github.com/org/repo/issues/5",
+            "created_at": "2026-05-20T08:00:00Z",
+            "labels": [{"name": "triage-pending"}],
+        }
+    ]
+    mock_resp.raise_for_status = MagicMock()
+    with patch("tracker_adapter.requests.get", return_value=mock_resp):
+        adapter = GitHubTrackerAdapter(
+            repo="org/repo", token="t", pending_label="triage-pending",
+            approved_label="triage-approved", skipped_label="triage-skipped",
+            trigger_label="press",
+        )
+        items = adapter.list_pending()
+    assert len(items) == 1
+    assert items[0].id == "5"
+    assert items[0].title == "Big story"
+
+
+def test_github_adapter_is_approved_false_when_label_absent():
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"labels": [{"name": "triage-pending"}], "body": "x"}
+    mock_resp.raise_for_status = MagicMock()
+    with patch("tracker_adapter.requests.get", return_value=mock_resp):
+        adapter = GitHubTrackerAdapter(
+            repo="org/repo", token="t", pending_label="triage-pending",
+            approved_label="triage-approved", skipped_label="triage-skipped",
+            trigger_label="press",
+        )
+        approved, notes = adapter.is_approved("5")
+    assert approved is False
+    assert notes == ""
+
+
+def test_github_adapter_is_approved_true_when_label_present():
+    issue_resp = MagicMock()
+    issue_resp.json.return_value = {"labels": [{"name": "triage-approved"}]}
+    issue_resp.raise_for_status = MagicMock()
+    comments_resp = MagicMock()
+    comments_resp.json.return_value = [
+        {"body": "[INTAKE TRIAGE]\nVERDICT: PUBLISH\nNOTES: Focus on HK angle."}
+    ]
+    comments_resp.raise_for_status = MagicMock()
+    with patch("tracker_adapter.requests.get", side_effect=[issue_resp, comments_resp]):
+        adapter = GitHubTrackerAdapter(
+            repo="org/repo", token="t", pending_label="triage-pending",
+            approved_label="triage-approved", skipped_label="triage-skipped",
+            trigger_label="press",
+        )
+        approved, notes = adapter.is_approved("5")
+    assert approved is True
+    assert "HK angle" in notes
