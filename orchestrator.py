@@ -421,6 +421,10 @@ class PipelineResult:
     # News reviewer stage outputs
     article_reviewer_notes: str = ""   # last reviewer issue list (injected on retry)
     article_review_retry_count: int = 0  # total reviewer retries across all loops
+    # Editorial triage stage outputs
+    editorial_verdict: str = ""   # "PUBLISH" or "SKIP"
+    editorial_notes: str = ""     # angle/focus for writer, or reason for skip
+    triage_scope: str = ""        # injected from config; passed to discussion as context
     # PRD/Design revision loop tracking
     prd_revision_count: int = 0
     design_revision_count: int = 0
@@ -497,6 +501,9 @@ class PipelineResult:
             "article_zh_tw": self.article_zh_tw,
             "article_reviewer_notes": self.article_reviewer_notes,
             "article_review_retry_count": self.article_review_retry_count,
+            "editorial_verdict": self.editorial_verdict,
+            "editorial_notes": self.editorial_notes,
+            "triage_scope": self.triage_scope,
             "progress_comment_id": self.progress_comment_id,
             "run_id": self.run_id,
             "total_cost_usd": self.total_cost_usd,
@@ -541,6 +548,7 @@ class PipelineResult:
                     "article_draft", "article",
                     "article_zh_hk", "article_zh_tw",
                     "article_reviewer_notes", "article_review_retry_count",
+                    "editorial_verdict", "editorial_notes", "triage_scope",
                     "progress_comment_id",
                     "run_id", "total_cost_usd", "token_usage"]:
             setattr(r, key, data.get(key, getattr(r, key)))
@@ -1916,6 +1924,15 @@ class Orchestrator(TestFixLoopMixin):
                 description="Scanning repo and generating .github/AGENTS.md...",
                 checkpoint_key="bootstrap_patterns",
                 fn=lambda r: self._stage_bootstrap_patterns(r),
+            ),
+            "news_triage": PipelineStage(
+                name="news_triage",
+                label="🗞️  Editorial Triage",
+                description="Editorial team voting: publish or skip?",
+                checkpoint_key="news_triage",
+                fn=lambda r: self._stage_news_triage(r),
+                stop_if=lambda r: r.editorial_verdict == "SKIP",
+                stop_message="🚫 Editorial triage: story skipped — pipeline aborted.",
             ),
             "news_writer": PipelineStage(
                 name="news_writer",
@@ -4214,10 +4231,83 @@ class Orchestrator(TestFixLoopMixin):
             result.test_retry_count = _orig_count
             result.test_fix_history = _orig_history
 
+    @staticmethod
+    def _parse_triage_verdict(text) -> dict:
+        """Parse VERDICT and EDITORIAL_NOTES from triage discussion synthesis.
+
+        Returns {"verdict": "PUBLISH"|"SKIP", "notes": str}.
+        Always returns PUBLISH on any parse failure (fail-open — never silently drops a story).
+        """
+        try:
+            if not isinstance(text, str):
+                return {"verdict": "PUBLISH", "notes": ""}
+            verdict_match = re.search(r"VERDICT\s*:\s*(PUBLISH|SKIP)", text, re.IGNORECASE)
+            if not verdict_match:
+                return {"verdict": "PUBLISH", "notes": ""}
+            verdict = verdict_match.group(1).upper()
+            notes_match = re.search(r"EDITORIAL_NOTES\s*:\s*(.+(?:\n.+)*)", text, re.IGNORECASE)
+            notes = notes_match.group(1).strip() if notes_match else ""
+            return {"verdict": verdict, "notes": notes}
+        except Exception:
+            return {"verdict": "PUBLISH", "notes": ""}
+
+    def _stage_news_triage(self, result: "PipelineResult") -> None:
+        """Run the editorial triage discussion and act on the verdict.
+
+        PUBLISH: stores editorial_verdict + editorial_notes on result; pipeline continues.
+        SKIP:    posts a comment to the GitHub issue, closes it, sets editorial_verdict=SKIP.
+                 The stage registry's stop_if=lambda r: r.editorial_verdict=="SKIP" halts the pipeline.
+        Fail-open: any exception → PUBLISH; story is never silently dropped.
+        """
+        # Inject triage scope from config (DiscussionAgent reads it via context_fields)
+        press_cfg = (self._cfg or {}).get("press", {}) or {}
+        triage_cfg = press_cfg.get("triage", {}) or {}
+        result.triage_scope = str(triage_cfg.get("scope", "")).strip()
+
+        discussions_dir = getattr(self, "_discussions_dir", None) or Path(__file__).parent / "discussions"
+        config_path = str(discussions_dir / "news-triage.yaml")
+        try:
+            self._stage_discuss(result, config_path=config_path)
+        except Exception as exc:
+            log.warning("_stage_news_triage: discussion failed (%s) — defaulting to PUBLISH (fail-open)", exc)
+            result.editorial_verdict = "PUBLISH"
+            result.editorial_notes = ""
+            return
+
+        synthesis = result.discussion_synthesis or ""
+        parsed = self._parse_triage_verdict(synthesis)
+        result.editorial_verdict = parsed["verdict"]
+        result.editorial_notes = parsed["notes"]
+
+        if parsed["verdict"] == "SKIP":
+            log.info("Editorial triage SKIP: %s", parsed["notes"])
+            console.print(f"  🚫 [bold yellow]Editorial triage: SKIP[/bold yellow] — {parsed['notes']}")
+            gh = self.target_github or self.github
+            if gh and result.issue_number:
+                comment = (
+                    f"## 🚫 Editorial Triage: SKIP\n\n"
+                    f"**Reason:** {parsed['notes']}\n\n"
+                    f"<details><summary>Discussion summary</summary>\n\n{synthesis}\n\n</details>\n\n"
+                    f"_This story was reviewed by the editorial team and will not be published._"
+                )
+                try:
+                    gh.add_issue_comment(result.issue_number, comment)
+                except Exception as exc:
+                    log.warning("_stage_news_triage: failed to post skip comment: %s", exc)
+                try:
+                    gh.close_issue(result.issue_number)
+                except Exception as exc:
+                    log.warning("_stage_news_triage: failed to close issue: %s", exc)
+        else:
+            console.print(f"  ✅ [green]Editorial triage: PUBLISH[/green] — {parsed['notes']}")
+
     def _stage_news_writer(self, result: PipelineResult) -> None:
         """Write a first-draft news article from the issue brief."""
         issue_body = getattr(result, "issue_body", "") or result.requirement
         synthesis = result.discussion_synthesis or ""
+        # Prepend editorial triage notes so the writer knows the agreed angle
+        if result.editorial_notes:
+            issue_body = f"[EDITORIAL NOTES]\n{result.editorial_notes}\n\n" + issue_body
         wr = self.news_writer.run(issue_body, discussion_synthesis=synthesis)
         if not wr.get("article_draft", "").strip():
             raise RuntimeError("NewsWriter produced an empty draft — LLM may have returned no content.")

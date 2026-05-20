@@ -6,6 +6,7 @@
 # from ai-software-house/discussions/.
 
 stages:
+  - news_triage                 # editorial triage: PUBLISH continues, SKIP closes issue + aborts
   - discuss_news_analysis       # research + angle debate (homework round)
   - news_writer                 # write article draft
   - discuss_news_draft          # writer/editor review of draft

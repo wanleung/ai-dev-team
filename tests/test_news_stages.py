@@ -450,3 +450,115 @@ def test_stage_news_reviewer_english_cascade_passes_notes_to_translations():
     assert len(translate_calls) == 2
     for lang, notes in translate_calls:
         assert "[ZH_HK] Simplified char" in notes, f"reviewer_notes not passed to {lang} translation"
+
+
+# ── _stage_news_triage() tests ───────────────────────────────────────────────
+
+def _make_triage_orch():
+    """Minimal Orchestrator for _stage_news_triage() tests."""
+    from unittest.mock import MagicMock
+    from orchestrator import Orchestrator
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.model = "gpt-4.1"
+    orch.model_overrides = {}
+    orch._stage_timeouts = {}
+    orch._discussions_dir = None
+    orch._cfg = {}
+    orch.github = MagicMock()
+    orch.target_github = MagicMock()
+    return orch
+
+
+def test_stage_triage_publish_path():
+    """PUBLISH verdict: editorial_notes stored, no abort, issue not closed."""
+    from unittest.mock import patch, MagicMock
+
+    result = PipelineResult(requirement="test story brief")
+    result.issue_number = 42
+
+    synthesis = (
+        "This story is highly relevant to our HK tech audience.\n"
+        "VERDICT: PUBLISH\n"
+        "EDITORIAL_NOTES: Focus on the open-source tooling implications for local DevOps teams."
+    )
+
+    orch = _make_triage_orch()
+    orch._cfg = {"press": {"triage": {"scope": "AI, cybersecurity", "min_score": 2}}}
+
+    def fake_discuss(r, config_path):
+        r.discussion_synthesis = synthesis
+
+    with patch.object(orch, "_stage_discuss", side_effect=fake_discuss):
+        orch._stage_news_triage(result)
+
+    assert result.editorial_verdict == "PUBLISH"
+    assert "open-source" in result.editorial_notes
+    assert result.triage_scope == "AI, cybersecurity"
+    orch.target_github.add_issue_comment.assert_not_called()
+    orch.target_github.close_issue.assert_not_called()
+
+
+def test_stage_triage_skip_path():
+    """SKIP verdict: editorial_verdict=SKIP, GitHub issue closed with comment."""
+    from unittest.mock import patch, MagicMock
+
+    result = PipelineResult(requirement="test story brief")
+    result.issue_number = 99
+
+    synthesis = (
+        "This story has no tech angle.\n"
+        "VERDICT: SKIP\n"
+        "EDITORIAL_NOTES: Off-topic — covers entertainment, not IT."
+    )
+
+    orch = _make_triage_orch()
+    orch._cfg = {"press": {"triage": {"scope": "AI, cybersecurity", "min_score": 2}}}
+
+    def fake_discuss(r, config_path):
+        r.discussion_synthesis = synthesis
+
+    with patch.object(orch, "_stage_discuss", side_effect=fake_discuss):
+        orch._stage_news_triage(result)
+
+    assert result.editorial_verdict == "SKIP"
+    assert "entertainment" in result.editorial_notes
+    orch.target_github.add_issue_comment.assert_called_once()
+    comment_body = orch.target_github.add_issue_comment.call_args[0][1]
+    assert "SKIP" in comment_body
+    orch.target_github.close_issue.assert_called_once_with(99)
+
+
+def test_stage_triage_fail_open():
+    """If _stage_discuss raises, verdict defaults to PUBLISH (never blocks pipeline)."""
+    from unittest.mock import patch
+
+    result = PipelineResult(requirement="test")
+    result.issue_number = 1
+    orch = _make_triage_orch()
+    orch._cfg = {"press": {"triage": {"scope": "AI", "min_score": 2}}}
+
+    with patch.object(orch, "_stage_discuss", side_effect=RuntimeError("LLM timeout")):
+        orch._stage_news_triage(result)
+
+    assert result.editorial_verdict == "PUBLISH"
+    assert result.editorial_notes == ""
+
+def test_stage_news_writer_prepends_editorial_notes():
+    """If result.editorial_notes is set, issue_body passed to news_writer includes notes."""
+    from unittest.mock import patch, MagicMock
+
+    result = PipelineResult(requirement="brief")
+    result.editorial_notes = "Focus on the security angle for HK enterprises."
+    result.discussion_synthesis = ""
+
+    orch = _make_triage_orch()
+    orch.news_writer = MagicMock()
+    orch.news_writer.run.return_value = {"article_draft": "# Draft\n\nBody."}
+
+    orch._stage_news_writer(result)
+
+    assert result.article_draft.strip()
+    call_args = orch.news_writer.run.call_args
+    issue_body_arg = call_args[0][0]  # first positional arg
+    assert "EDITORIAL NOTES" in issue_body_arg
+    assert "security angle" in issue_body_arg

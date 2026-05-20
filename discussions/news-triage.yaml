@@ -1,0 +1,44 @@
+# discussions/news-triage.yaml
+# Editorial triage discussion — vote PUBLISH or SKIP before pipeline runs.
+#
+# Usage in press pipeline:
+#   stages:
+#     - news_triage             # ← first stage; wraps this discussion, aborts on SKIP
+#     - discuss_news_analysis
+#     - news_writer
+
+topic: "Editorial triage: should we publish this story? Vote PUBLISH or SKIP with brief rationale."
+max_rounds: 2
+early_exit: CONSENSUS_REACHED
+
+participants:
+  - role: editorial_director
+    persona_file: roles/editorial_director.md
+    homework_llm: "ollama/thinker"
+
+  - role: audience_specialist
+    persona_file: roles/audience_specialist.md
+    homework_llm: "ollama/thinker"
+
+  - role: news_editor
+    persona_file: roles/news_editor.md
+
+homework_round: true
+
+moderator:
+  persona_file: roles/moderator.md
+
+output_mode: both
+
+context_fields:
+  - issue_body
+  - triage_scope
+
+verdict_format: |
+  At the end of your final message, include exactly:
+  VERDICT: PUBLISH
+  EDITORIAL_NOTES: <one sentence: the angle or focus the writer should take>
+
+  OR if the story should be skipped:
+  VERDICT: SKIP
+  EDITORIAL_NOTES: <one sentence: why this story was skipped>

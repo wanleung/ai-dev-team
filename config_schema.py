@@ -157,6 +157,22 @@ class ReliabilityConfig(BaseModel):
     degradation: DegradationConfig = Field(default_factory=DegradationConfig)
 
 
+class TriageConfig(BaseModel):
+    model_config = {"extra": "allow"}
+
+    scope: str = (
+        "Focus areas: AI, software development tools, cybersecurity, Hong Kong tech scene, "
+        "enterprise software, open-source.\n"
+        "Audience: HK Cantonese-speaking tech professionals."
+    )
+
+
+class PressConfig(BaseModel):
+    model_config = {"extra": "allow"}
+
+    triage: TriageConfig = Field(default_factory=TriageConfig)
+
+
 class AppConfig(BaseModel):
     model_config = {"extra": "forbid"}   # unknown top-level keys are errors
 
@@ -176,6 +192,7 @@ class AppConfig(BaseModel):
     project: Optional[Dict[str, Any]] = None
     reliability: Optional[ReliabilityConfig] = None
     rss_watcher: Optional[Dict[str, Any]] = None
+    press: Optional[PressConfig] = None
 
 
 # ── repos.yaml models ────────────────────────────────────────────────────────

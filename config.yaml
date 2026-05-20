@@ -306,6 +306,15 @@ pipeline:
   max_pr_retries: 3
   watch_draft_prs: false
 
+# ── Press Pipeline Configuration ────────────────────────────────────────────
+# Configuration for the AI IT press pipeline (news triage, analysis, writing).
+press:
+  triage:
+    scope: |
+      Focus areas: AI, software development tools, cybersecurity, Hong Kong tech scene,
+      enterprise software, open-source.
+      Audience: HK Cantonese-speaking tech professionals.
+
 # ── Token usage & cost tracking ────────────────────────────────────────────
 # Tracks LLM token consumption per pipeline run for client chargeback.
 # Persisted to a local SQLite database; optionally posted to the GitHub issue.
