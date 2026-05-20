@@ -23,3 +23,4 @@ config.local.yaml
 
 # AI tooling memory (not source code)
 memory-bank/
+.superpowers/
