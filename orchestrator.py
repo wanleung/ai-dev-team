@@ -4805,16 +4805,24 @@ class Orchestrator(TestFixLoopMixin):
         gh: "GitHubClient",
         branch: str,
     ) -> None:
-        """Commit updated memory bank files to the feature branch."""
-        if not updated_bank or not branch:
+        """Commit updated memory bank files directly to the default branch.
+
+        Writing to the default branch (not the article PR branch) avoids
+        merge conflicts when multiple article branches run concurrently.
+        """
+        if not updated_bank:
             return
+        try:
+            target_branch = gh.get_default_branch()
+        except Exception:
+            target_branch = "main"
         for name, content in updated_bank.items():
             try:
                 gh.commit_file(
                     f"memory-bank/{name}",
                     content,
                     f"memory: update {name} after pipeline run",
-                    branch,
+                    target_branch,
                 )
                 console.print(f"  🧠 [dim]Memory bank updated: {name}[/dim]")
             except Exception as exc:
