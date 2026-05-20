@@ -721,7 +721,11 @@ class Orchestrator(TestFixLoopMixin):
         update_branch_enabled: bool = False,
         conflict_resolver_model: Optional[str] = None,
         deploy_cfg: dict | None = None,
+        press_cfg: dict | None = None,
+        raw_cfg: dict | None = None,
     ) -> None:
+        self._press_cfg: dict = press_cfg or {}
+        self._raw_cfg: dict = raw_cfg or {}
         self.model = model
         self.num_engineers = num_engineers
         self.num_junior_engineers = num_junior_engineers
@@ -1215,6 +1219,8 @@ class Orchestrator(TestFixLoopMixin):
             tdd_commit_tests=pipeline.get("tdd_commit_tests", False),
             cost_tracking=cfg.get("cost_tracking", {}),
             deploy_cfg=cfg.get("deploy", {"mode": "docker"}),
+            press_cfg=cfg.get("press", {}),
+            raw_cfg=cfg,
         )
 
     # ── Revision helpers ──────────────────────────────────────────────────────
@@ -4259,7 +4265,7 @@ class Orchestrator(TestFixLoopMixin):
         """
         if hasattr(self, "_cached_tracker_adapter"):
             return self._cached_tracker_adapter
-        cfg_dict = getattr(self, "_cfg", {}) or {}
+        cfg_dict = self._raw_cfg
         it_cfg_raw = cfg_dict.get("intake_triage", {}) if isinstance(cfg_dict, dict) else {}
         if not it_cfg_raw.get("enabled", False):
             self._cached_tracker_adapter = None
@@ -4309,7 +4315,7 @@ class Orchestrator(TestFixLoopMixin):
             return
 
         # Inject triage scope from config (DiscussionAgent reads it via context_fields)
-        press_cfg = (self._cfg or {}).get("press", {}) or {}
+        press_cfg = self._press_cfg
         triage_cfg = press_cfg.get("triage", {}) or {}
         result.triage_scope = str(triage_cfg.get("scope", "")).strip()
 

@@ -463,7 +463,8 @@ def _make_triage_orch():
     orch.model_overrides = {}
     orch._stage_timeouts = {}
     orch._discussions_dir = None
-    orch._cfg = {}
+    orch._press_cfg = {}
+    orch._raw_cfg = {}
     orch.github = MagicMock()
     orch.target_github = MagicMock()
     return orch
@@ -483,7 +484,7 @@ def test_stage_triage_publish_path():
     )
 
     orch = _make_triage_orch()
-    orch._cfg = {"press": {"triage": {"scope": "AI, cybersecurity", "min_score": 2}}}
+    orch._press_cfg = {"triage": {"scope": "AI, cybersecurity", "min_score": 2}}
 
     def fake_discuss(r, config_path):
         r.discussion_synthesis = synthesis
@@ -512,7 +513,7 @@ def test_stage_triage_skip_path():
     )
 
     orch = _make_triage_orch()
-    orch._cfg = {"press": {"triage": {"scope": "AI, cybersecurity", "min_score": 2}}}
+    orch._press_cfg = {"triage": {"scope": "AI, cybersecurity", "min_score": 2}}
 
     def fake_discuss(r, config_path):
         r.discussion_synthesis = synthesis
@@ -535,7 +536,7 @@ def test_stage_triage_fail_open():
     result = PipelineResult(requirement="test")
     result.issue_number = 1
     orch = _make_triage_orch()
-    orch._cfg = {"press": {"triage": {"scope": "AI", "min_score": 2}}}
+    orch._press_cfg = {"triage": {"scope": "AI", "min_score": 2}}
 
     with patch.object(orch, "_stage_discuss", side_effect=RuntimeError("LLM timeout")):
         orch._stage_news_triage(result)
@@ -575,7 +576,8 @@ def _make_triage_orch_with_intake(approved: bool, notes: str = ""):
     orch.model_overrides = {}
     orch._stage_timeouts = {}
     orch._discussions_dir = None
-    orch._cfg = {"intake_triage": {"enabled": True}}
+    orch._press_cfg = {}
+    orch._raw_cfg = {"intake_triage": {"enabled": True}}
     orch.github = MagicMock()
     orch.target_github = MagicMock()
 
@@ -626,7 +628,8 @@ def test_news_triage_fast_pass_disabled_when_no_adapter():
     orch.model_overrides = {}
     orch._stage_timeouts = {}
     orch._discussions_dir = None
-    orch._cfg = {}   # no intake_triage key
+    orch._press_cfg = {}
+    orch._raw_cfg = {}   # no intake_triage key
     orch.github = MagicMock()
     orch.target_github = MagicMock()
     orch._cached_tracker_adapter = None
