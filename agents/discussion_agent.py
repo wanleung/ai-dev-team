@@ -341,27 +341,45 @@ class DiscussionAgent:
         return Turn(role=participant.role, content=content, round_num=round_num)
 
     def _run_homework_round(self, context: str) -> list[Turn]:
-        """Run homework round: all participants think independently in parallel."""
+        """Run homework round: all participants think independently in parallel.
+
+        Falls back to sequential execution if the thread pool cannot be created
+        (e.g. interpreter shutdown during a leaked background thread).
+        """
         transcript: list[Turn] = []
-        with ThreadPoolExecutor(max_workers=len(self.config.participants)) as pool:
-            futures = {
-                pool.submit(self._call_participant, p, context, [], 0): p
-                for p in self.config.participants
-            }
-            # as_completed() yields in completion order, not submission order.
-            # Homework transcript ordering is therefore non-deterministic across runs.
-            for future in as_completed(futures):
-                participant = futures[future]
+        try:
+            with ThreadPoolExecutor(max_workers=len(self.config.participants)) as pool:
+                futures = {
+                    pool.submit(self._call_participant, p, context, [], 0): p
+                    for p in self.config.participants
+                }
+                # as_completed() yields in completion order, not submission order.
+                # Homework transcript ordering is therefore non-deterministic across runs.
+                for future in as_completed(futures):
+                    participant = futures[future]
+                    try:
+                        transcript.append(future.result())
+                    except Exception as exc:
+                        logger.warning(
+                            "DiscussionAgent: %s failed in homework round: %s",
+                            participant.role, exc,
+                        )
+                        transcript.append(
+                            Turn(role=participant.role, content=f"[Error: {exc}]", round_num=0)
+                        )
+        except RuntimeError as exc:
+            # ThreadPoolExecutor cannot be created (interpreter shutdown in a leaked
+            # background thread). Run participants sequentially as fallback.
+            logger.warning(
+                "DiscussionAgent: parallel homework unavailable (%s) — running sequentially", exc
+            )
+            transcript = []
+            for p in self.config.participants:
                 try:
-                    transcript.append(future.result())
-                except Exception as exc:
-                    logger.warning(
-                        "DiscussionAgent: %s failed in homework round: %s",
-                        participant.role, exc,
-                    )
-                    transcript.append(
-                        Turn(role=participant.role, content=f"[Error: {exc}]", round_num=0)
-                    )
+                    transcript.append(self._call_participant(p, context, [], 0))
+                except Exception as e:
+                    logger.warning("DiscussionAgent: %s failed in homework: %s", p.role, e)
+                    transcript.append(Turn(role=p.role, content=f"[Error: {e}]", round_num=0))
         return transcript
 
     def _select_participants(self, context: str) -> list[Participant]:

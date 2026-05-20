@@ -4689,12 +4689,21 @@ class Orchestrator(TestFixLoopMixin):
             progress.add_task("running", total=None)
             try:
                 if timeout_s is not None:
-                    executor = ThreadPoolExecutor(max_workers=1)
-                    future = executor.submit(fn)
-                    try:
-                        future.result(timeout=timeout_s)
-                    except FuturesTimeout:
-                        executor.shutdown(wait=False)  # don't block; thread runs until LLM returns
+                    import threading as _threading
+                    exc_box: list[BaseException] = []
+
+                    def _run_fn() -> None:
+                        try:
+                            fn()
+                        except BaseException as _e:
+                            exc_box.append(_e)
+
+                    t = _threading.Thread(target=_run_fn, daemon=True)
+                    t.start()
+                    t.join(timeout=timeout_s)
+                    if t.is_alive():
+                        # Thread leaked — it runs until LLM returns, but as a daemon
+                        # thread it will not block interpreter shutdown.
                         _record_leaked_thread(name)
                         error_msg = (
                             f"{name} timed out after {timeout_s}s "
@@ -4703,8 +4712,8 @@ class Orchestrator(TestFixLoopMixin):
                         result.add_error(error_msg)
                         console.print(f"  ⏱️  [yellow]{error_msg}[/yellow]")
                         return
-                    else:
-                        executor.shutdown(wait=False)
+                    if exc_box:
+                        raise exc_box[0]
                 else:
                     fn()
                 if required_output_fields:
