@@ -4251,6 +4251,60 @@ class Orchestrator(TestFixLoopMixin):
         except Exception:
             return {"verdict": "PUBLISH", "notes": ""}
 
+    def _get_tracker_adapter(self):
+        """Return a TrackerAdapter if intake_triage is enabled, else None.
+
+        Result is cached on self._cached_tracker_adapter to avoid repeated
+        config lookups within a pipeline run.
+        """
+        if hasattr(self, "_cached_tracker_adapter"):
+            return self._cached_tracker_adapter
+        cfg_dict = getattr(self, "_cfg", {})
+        it_cfg = cfg_dict.get("intake_triage", {}) if isinstance(cfg_dict, dict) else {}
+        if not it_cfg.get("enabled", False):
+            self._cached_tracker_adapter = None
+            return None
+        try:
+            from config_schema import IntakeTriageConfig
+            from tracker_adapter import GitHubTrackerAdapter
+            import os
+            it = IntakeTriageConfig(**it_cfg)
+            gh = getattr(self, "github", None) or getattr(self, "target_github", None)
+            repo = str(getattr(gh, "repo", "")) if gh else ""
+            token = os.environ.get("GITHUB_TOKEN", "")
+            adapter = GitHubTrackerAdapter(
+                repo=repo,
+                token=token,
+                pending_label=it.labels.get("pending", "triage-pending"),
+                approved_label=it.labels.get("approved", "triage-approved"),
+                skipped_label=it.labels.get("skipped", "triage-skipped"),
+                trigger_label=it.labels.get("trigger", "press"),
+            )
+            self._cached_tracker_adapter = adapter
+        except Exception as exc:
+            log.warning("_get_tracker_adapter: failed to build adapter: %s", exc)
+            self._cached_tracker_adapter = None
+        return self._cached_tracker_adapter
+
+    def _intake_triage_approved(self, result) -> bool:
+        """Check if item was already approved by batch intake triage.
+
+        Sets result.editorial_verdict and result.editorial_notes if approved.
+        Returns True if fast-pass should apply.
+        """
+        adapter = self._get_tracker_adapter()
+        if adapter is None:
+            return False
+        try:
+            approved, notes = adapter.is_approved(str(result.issue_number))
+        except Exception as exc:
+            log.warning("_intake_triage_approved: adapter error (%s) — proceeding with per-story triage", exc)
+            return False
+        if approved:
+            result.editorial_verdict = "PUBLISH"
+            result.editorial_notes = notes
+        return approved
+
     def _stage_news_triage(self, result: "PipelineResult") -> None:
         """Run the editorial triage discussion and act on the verdict.
 
@@ -4259,6 +4313,11 @@ class Orchestrator(TestFixLoopMixin):
                  The stage registry's stop_if=lambda r: r.editorial_verdict=="SKIP" halts the pipeline.
         Fail-open: any exception → PUBLISH; story is never silently dropped.
         """
+        # ── Fast-pass if already approved by batch intake triage ─────────────
+        if self._intake_triage_approved(result):
+            log.info("news_triage: batch intake triage already approved this item — fast-pass")
+            return
+
         # Inject triage scope from config (DiscussionAgent reads it via context_fields)
         press_cfg = (self._cfg or {}).get("press", {}) or {}
         triage_cfg = press_cfg.get("triage", {}) or {}

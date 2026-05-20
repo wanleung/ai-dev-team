@@ -562,3 +562,83 @@ def test_stage_news_writer_prepends_editorial_notes():
     issue_body_arg = call_args[0][0]  # first positional arg
     assert "EDITORIAL NOTES" in issue_body_arg
     assert "security angle" in issue_body_arg
+
+
+# ── intake triage fast-pass tests ─────────────────────────────────────────
+
+def _make_triage_orch_with_intake(approved: bool, notes: str = ""):
+    """Orchestrator with intake_triage enabled and mocked adapter."""
+    from unittest.mock import MagicMock, patch
+    from orchestrator import Orchestrator
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.model = "gpt-4.1"
+    orch.model_overrides = {}
+    orch._stage_timeouts = {}
+    orch._discussions_dir = None
+    orch._cfg = {"intake_triage": {"enabled": True}}
+    orch.github = MagicMock()
+    orch.target_github = MagicMock()
+
+    mock_adapter = MagicMock()
+    mock_adapter.is_approved.return_value = (approved, notes)
+    orch._cached_tracker_adapter = mock_adapter
+    return orch
+
+
+def test_news_triage_fast_pass_when_batch_approved():
+    """If triage-approved label present, news_triage sets PUBLISH and returns early."""
+    orch = _make_triage_orch_with_intake(approved=True, notes="Focus on HK angle.")
+    result = MagicMock()
+    result.issue_number = 42
+    result.editorial_verdict = None
+    result.editorial_notes = ""
+
+    with patch.object(orch, "_stage_discuss") as mock_discuss:
+        orch._stage_news_triage(result)
+
+    mock_discuss.assert_not_called()
+    assert result.editorial_verdict == "PUBLISH"
+    assert result.editorial_notes == "Focus on HK angle."
+
+
+def test_news_triage_no_fast_pass_when_not_approved():
+    """If triage-approved absent, falls through to per-story triage."""
+    orch = _make_triage_orch_with_intake(approved=False)
+    result = MagicMock()
+    result.issue_number = 43
+    result.editorial_verdict = None
+    result.editorial_notes = ""
+    result.errors = []
+
+    with patch.object(orch, "_stage_discuss") as mock_discuss:
+        with patch.object(orch, "_parse_triage_verdict", return_value={"verdict": "PUBLISH", "notes": ""}):
+            orch._stage_news_triage(result)
+
+    mock_discuss.assert_called_once()
+
+
+def test_news_triage_fast_pass_disabled_when_no_adapter():
+    """When intake_triage is disabled (no adapter), per-story triage always runs."""
+    from orchestrator import Orchestrator
+    from unittest.mock import MagicMock, patch
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.model = "gpt-4.1"
+    orch.model_overrides = {}
+    orch._stage_timeouts = {}
+    orch._discussions_dir = None
+    orch._cfg = {}   # no intake_triage key
+    orch.github = MagicMock()
+    orch.target_github = MagicMock()
+    orch._cached_tracker_adapter = None
+
+    result = MagicMock()
+    result.issue_number = 44
+    result.editorial_verdict = None
+    result.editorial_notes = ""
+    result.errors = []
+
+    with patch.object(orch, "_stage_discuss") as mock_discuss:
+        with patch.object(orch, "_parse_triage_verdict", return_value={"verdict": "PUBLISH", "notes": ""}):
+            orch._stage_news_triage(result)
+
+    mock_discuss.assert_called_once()
