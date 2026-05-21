@@ -4333,6 +4333,27 @@ class Orchestrator(TestFixLoopMixin):
             result.editorial_notes = notes
         return approved
 
+    def _issue_has_trigger_label(self, result) -> bool:
+        """Return True if the GitHub issue already carries the intake triage trigger label (e.g. 'press').
+
+        Falls back to False on any error so that triage still runs rather than silently skipping.
+        """
+        if not result.issue_number:
+            return False
+        cfg_dict = self._raw_cfg
+        it_cfg_raw = cfg_dict.get("intake_triage", {}) if isinstance(cfg_dict, dict) else {}
+        trigger_label = (it_cfg_raw.get("labels") or {}).get("trigger", "press")
+        gh = getattr(self, "target_github", None) or getattr(self, "github", None)
+        if gh is None:
+            return False
+        try:
+            issue = gh.get_issue(int(result.issue_number))
+            label_names = {lb["name"] for lb in issue.get("labels", [])}
+            return trigger_label in label_names
+        except Exception as exc:
+            log.warning("_issue_has_trigger_label: could not fetch labels for #%s (%s) — proceeding with triage", result.issue_number, exc)
+            return False
+
     def _stage_news_triage(self, result: "PipelineResult") -> None:
         """Run the editorial triage discussion and act on the verdict.
 
@@ -4350,6 +4371,14 @@ class Orchestrator(TestFixLoopMixin):
         press_cfg = self._press_cfg
         triage_cfg = press_cfg.get("triage", {}) or {}
         result.triage_scope = str(triage_cfg.get("scope", "")).strip()
+
+        # ── Fast-pass if trigger label already present and config allows it ──
+        if triage_cfg.get("skip_if_trigger_label", False):
+            if self._issue_has_trigger_label(result):
+                log.info("news_triage: trigger label already present — skip_if_trigger_label fast-pass")
+                result.editorial_verdict = "PUBLISH"
+                result.editorial_notes = "Pre-approved: trigger label already applied."
+                return
 
         discussions_dir = getattr(self, "_discussions_dir", None) or Path(__file__).parent / "discussions"
         config_path = str(discussions_dir / "news-triage.yaml")

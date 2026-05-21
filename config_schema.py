@@ -165,6 +165,9 @@ class TriageConfig(BaseModel):
         "enterprise software, open-source.\n"
         "Audience: HK Cantonese-speaking tech professionals."
     )
+    skip_if_trigger_label: bool = False
+    """If True, skip editorial triage when the issue already carries the trigger label
+    (e.g. 'press') — treating a manually-applied label as pre-approval."""
 
 
 class PressConfig(BaseModel):
