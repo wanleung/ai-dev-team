@@ -22,7 +22,7 @@ def test_intake_triage_config_defaults():
     assert cfg.batch.max_size == 10
     assert cfg.batch.body_preview_chars == 300
     assert cfg.verdict.mode == "binary"
-    assert cfg.verdict.score_threshold is None
+    assert cfg.verdict.score_threshold == 6.0
 
 
 def test_app_config_accepts_intake_triage():

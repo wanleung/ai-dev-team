@@ -77,6 +77,11 @@ def _is_copilot_model(model: str) -> bool:
     return model.startswith("copilot/")
 
 
+def _is_dashscope_model(model: str) -> bool:
+    """Return True if the model should use the Alibaba DashScope API."""
+    return model.startswith("dashscope/")
+
+
 class BaseAgent:
     """Base class for all software house agents.
 
@@ -106,6 +111,11 @@ class BaseAgent:
         opencode_go_base_url: Optional[str] = None,
         nvidia_nim_api_key: Optional[str] = None,
         nvidia_nim_base_url: Optional[str] = None,
+        dashscope_api_key: Optional[str] = None,
+        dashscope_url: Optional[str] = None,
+        dashscope_think: bool = False,
+        dashscope_preserve_thinking: bool = False,
+        dashscope_stream: bool = True,
         retry_delay: int = 15,
         max_api_retries: int = 5,
         inter_call_delay: int = 0,
@@ -142,6 +152,11 @@ class BaseAgent:
                 opencode_go_base_url=opencode_go_base_url,
                 nvidia_nim_api_key=nvidia_nim_api_key,
                 nvidia_nim_base_url=nvidia_nim_base_url,
+                dashscope_api_key=dashscope_api_key,
+                dashscope_url=dashscope_url,
+                dashscope_think=dashscope_think,
+                dashscope_preserve_thinking=dashscope_preserve_thinking,
+                dashscope_stream=dashscope_stream,
                 retry_delay=retry_delay,
                 max_api_retries=max_api_retries,
                 inter_call_delay=inter_call_delay,
@@ -232,6 +247,11 @@ class BaseAgent:
         opencode_go_base_url: Optional[str],
         nvidia_nim_api_key: Optional[str],
         nvidia_nim_base_url: Optional[str],
+        dashscope_api_key: Optional[str],
+        dashscope_url: Optional[str],
+        dashscope_think: bool,
+        dashscope_preserve_thinking: bool,
+        dashscope_stream: bool,
         retry_delay: int,
         max_api_retries: int,
         inter_call_delay: int,
@@ -249,10 +269,13 @@ class BaseAgent:
         use_copilot = (backend == "copilot") or (
             backend is None and _is_copilot_model(model)
         )
+        use_dashscope = (backend == "dashscope") or (
+            backend is None and _is_dashscope_model(model)
+        )
         use_anthropic = (backend == "anthropic") or (
             backend is None
             and not use_opencode_zen and not use_opencode_go
-            and not use_nvidia_nim and not use_copilot
+            and not use_nvidia_nim and not use_copilot and not use_dashscope
             and _is_anthropic_model(model)
         )
         use_ollama = (backend == "ollama") or (
@@ -317,6 +340,18 @@ class BaseAgent:
                 think=ollama_think,
                 preserve_thinking=ollama_preserve_thinking,
                 stream=ollama_stream,
+                **common,
+            )
+
+        if use_dashscope:
+            from agents.backends.dashscope import DashScopeBackend
+            return DashScopeBackend(
+                model=model,
+                dashscope_api_key=dashscope_api_key,
+                dashscope_url=dashscope_url,
+                think=dashscope_think,
+                preserve_thinking=dashscope_preserve_thinking,
+                stream=dashscope_stream,
                 **common,
             )
 

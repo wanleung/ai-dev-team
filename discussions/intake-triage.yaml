@@ -15,11 +15,11 @@ early_exit: CONSENSUS_REACHED
 participants:
   - role: editorial_director
     persona_file: roles/editorial_director.md
-    homework_llm: "ollama/thinker"
+    homework_llm: "dashscope/qwen3.6-plus"
 
   - role: audience_specialist
     persona_file: roles/audience_specialist.md
-    homework_llm: "ollama/thinker"
+    homework_llm: "dashscope/qwen3.6-plus"
 
   - role: news_editor
     persona_file: roles/news_editor.md
@@ -36,9 +36,13 @@ verdict_format: |
   using exactly this format (one block per item, in order):
 
   ITEM 1: PUBLISH
+  SCORES: relevance=N news_value=N audience_fit=N urgency=N originality=N
   NOTES: <one sentence: the angle or focus the writer should take>
 
   ITEM 2: SKIP
+  SCORES: relevance=N news_value=N audience_fit=N urgency=N originality=N
   NOTES: <one sentence: why this story was skipped>
 
-  Only PUBLISH and SKIP are valid verdicts. Every item must have a verdict.
+  Where N is an integer from 0 to 10 for each dimension. SCORES must appear
+  for every item. Only PUBLISH and SKIP are valid verdicts. Every item must
+  have a verdict.

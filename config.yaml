@@ -96,6 +96,28 @@ llm:
   opencode_stream: true
   github_models_stream: true
 
+  # ── Alibaba DashScope ──────────────────────────────────────────────────────
+  # API key for Alibaba DashScope (Qwen models via OpenAI-compatible API).
+  # Alternatively set env var DASHSCOPE_API_KEY.
+  # dashscope_api_key: "sk-xxx"
+  #
+  # Optional base URL override (defaults to international endpoint):
+  # dashscope_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+  #
+  # Enable thinking mode (qwen3 and other reasoning models):
+  # dashscope_think: true
+  # dashscope_preserve_thinking: false  # keep <think> blocks in output?
+  # dashscope_stream: true
+
+  # ── Global fallback chain ─────────────────────────────────────────────────
+  # If the primary model fails (timeout, rate-limit, 5xx), these are tried in
+  # order. Each entry inherits all parent settings; its own keys take priority.
+  # Per-agent overrides can define their own `fallbacks:` to override this list.
+  #
+  # fallbacks:
+  #   - model: "ollama/qwen3.5"          # local fallback for any cloud model
+  #   - model: "anthropic/claude-haiku-4-5"  # last resort (needs ANTHROPIC_API_KEY)
+
   # Per-agent model overrides — mix backends freely per agent.
   # Example: use Claude for reasoning-heavy roles, GPT-4.1-mini for repetitive ones.
   overrides:
@@ -143,6 +165,7 @@ llm:
     opencode-zen: 5
     opencode-go: 5
     nvidia_nim: 5
+    dashscope: 5         # Alibaba DashScope (Qwen models)
     # Backends not listed default to 5
 
 # ── GitHub Settings ─────────────────────────────────────────────────────────
@@ -475,11 +498,16 @@ framework_docs:
 # Pre-pipeline batch triage: holds items in triage-pending until editors
 # vote on the whole batch. Disabled by default; zero impact when off.
 intake_triage:
-  enabled: false              # flip to true to activate
+  enabled: true              # flip to true to activate
 
   tracker: github             # github | jira (future)
 
-  # scope: "Tech news relevant to HK Cantonese-speaking professionals."  # editorial scope passed to AI
+  # scope: "Tech news relevant to HK Cantonese-speaking professionals. Mainly realated to Linux, Opensource, Opensource sftware, Opensource solution, Security, Network, Cloud Soultion and A.I. It is better related to any Opensource and benefit for Opensource community."  # editorial scope passed to AI
+
+  scope: >
+    Tech news relevant to HK Cantonese-speaking professionals in IT,
+    software development, cybersecurity, and open source. Must have
+    enough substance to write a 600-word article. If the topic is about "OpenSource Hong Kong" or "Hong Kong OpenSource Conference", it is a must and is ok for 100-word article.
 
   labels:
     pending:  triage-pending
@@ -490,15 +518,23 @@ intake_triage:
   trigger:
     min_count: 5              # fire when >= N items have triage-pending label
     max_age_hours: 6          # fire when oldest triage-pending item >= N hours old
-    schedule: null            # cron expression e.g. "0 9 * * *", null = off
+    schedule: "0 7,13,19 * * *"            # cron expression e.g. "0 9 * * *", null = off
 
   batch:
-    max_size: 10              # max items per session (overflow stays pending)
+    max_size: 30              # max items per session (overflow stays pending)
     body_preview_chars: 300   # chars of body shown to editors per item
 
   discussion:
     preset: discussions/intake-triage.yaml
 
   verdict:
-    mode: binary              # binary (PUBLISH/SKIP) | score (future)
-    # score_threshold: 6      # future: items scoring >= this -> PUBLISH
+    mode: score
+    score_threshold: 6.0
+    score_formula: "(relevance*1.5 + news_value*2.0 + audience_fit*1.0 + urgency*1.5 + originality*1.0) / 7.0"
+    score_dimensions:
+      - relevance
+      - news_value
+      - audience_fit
+      - urgency
+      - originality
+    score_scale: 10

@@ -169,6 +169,12 @@ class DiscussionAgent:
         console=None,
         roles_dir: Optional[Path] = None,
         tool_registry=None,
+        dashscope_api_key: Optional[str] = None,
+        dashscope_url: Optional[str] = None,
+        dashscope_think: bool = False,
+        dashscope_preserve_thinking: bool = False,
+        dashscope_stream: bool = True,
+        fallbacks: Optional[list] = None,
     ) -> None:
         """Initialise with a resolved DiscussionConfig.
 
@@ -201,6 +207,12 @@ class DiscussionAgent:
         self.console = console
         self.roles_dir: Path = roles_dir if roles_dir is not None else Path(__file__).parent.parent / "roles"
         self.tool_registry = tool_registry
+        self.dashscope_api_key = dashscope_api_key
+        self.dashscope_url = dashscope_url
+        self.dashscope_think = dashscope_think
+        self.dashscope_preserve_thinking = dashscope_preserve_thinking
+        self.dashscope_stream = dashscope_stream
+        self.fallbacks: list = fallbacks or []
         self._backend_cache: dict = {}
 
     @classmethod
@@ -211,22 +223,43 @@ class DiscussionAgent:
         github_token: Optional[str] = None,
         ollama_url: str = "http://localhost:11434",
         tool_registry=None,
+        dashscope_api_key: Optional[str] = None,
+        dashscope_url: Optional[str] = None,
+        dashscope_think: bool = False,
+        dashscope_preserve_thinking: bool = False,
+        dashscope_stream: bool = True,
+        fallbacks: Optional[list] = None,
     ) -> "DiscussionAgent":
         """Load config from a preset YAML file and return a DiscussionAgent."""
         config = DiscussionConfig.from_yaml(config_path)
-        return cls(config, model, github_token, ollama_url, tool_registry=tool_registry)
+        return cls(
+            config, model, github_token, ollama_url,
+            tool_registry=tool_registry,
+            dashscope_api_key=dashscope_api_key,
+            dashscope_url=dashscope_url,
+            dashscope_think=dashscope_think,
+            dashscope_preserve_thinking=dashscope_preserve_thinking,
+            dashscope_stream=dashscope_stream,
+            fallbacks=fallbacks,
+        )
 
     def _make_backend(self, llm_override: Optional[str] = None):
-        """Build an LLMBackend for a participant, cached per model string."""
-        from agents.base_agent import BaseAgent
+        """Build an LLMBackend (or FallbackLLMBackend) for a participant, cached per model string."""
+        from agents.backends.factory import create_backend
         model = llm_override or self.model
         if model not in self._backend_cache:
-            agent = BaseAgent(
-                model=model,
-                github_token=self.github_token,
-                ollama_url=self.ollama_url,
-            )
-            self._backend_cache[model] = agent._llm
+            cfg: dict = {
+                "model": model,
+                "ollama_url": self.ollama_url,
+                "dashscope_api_key": self.dashscope_api_key,
+                "dashscope_url": self.dashscope_url,
+                "think": self.dashscope_think,
+                "preserve_thinking": self.dashscope_preserve_thinking,
+                "stream": self.dashscope_stream,
+            }
+            if self.fallbacks:
+                cfg["fallbacks"] = self.fallbacks
+            self._backend_cache[model] = create_backend(cfg, github_token=self.github_token)
         return self._backend_cache[model]
 
     def _build_context(self, result: "PipelineResult") -> str:
@@ -320,10 +353,23 @@ class DiscussionAgent:
         # Homework round: use tool-calling if a homework_llm and tool_registry are set
         if is_homework and participant.homework_llm and self.tool_registry is not None:
             from agents.base_agent import BaseAgent
+            hw_cfg: dict = {
+                "model": participant.homework_llm,
+                "ollama_url": self.ollama_url,
+                "dashscope_api_key": self.dashscope_api_key,
+                "dashscope_url": self.dashscope_url,
+                "think": self.dashscope_think,
+                "preserve_thinking": self.dashscope_preserve_thinking,
+                "stream": self.dashscope_stream,
+            }
+            if self.fallbacks:
+                hw_cfg["fallbacks"] = self.fallbacks
+            from agents.backends.factory import create_backend
+            hw_llm = create_backend(hw_cfg, github_token=self.github_token)
             hw_agent = BaseAgent(
                 model=participant.homework_llm,
+                llm=hw_llm,
                 github_token=self.github_token,
-                ollama_url=self.ollama_url,
                 system_prompt=participant.persona,
             )
             try:

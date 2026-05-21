@@ -6,6 +6,7 @@ Future: JiraTrackerAdapter follows the same interface.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -46,6 +47,20 @@ class TrackerAdapter(ABC):
     @abstractmethod
     def is_approved(self, item_id: str) -> tuple[bool, str]:
         """Return (approved, editorial_notes). Used by orchestrator fast-pass."""
+
+    @abstractmethod
+    def add_score_label(self, item: TriageItem, score: float) -> None:
+        """Ensure label 'score-{math.floor(score + 0.5)}' exists in repo and attach it to item."""
+
+    @abstractmethod
+    def post_score_comment(
+        self,
+        item: TriageItem,
+        score: float,
+        dimension_scores: dict[str, int],
+        score_scale: int = 10,
+    ) -> None:
+        """Post a comment with the editorial score summary on the item."""
 
 
 class GitHubTrackerAdapter(TrackerAdapter):
@@ -205,3 +220,67 @@ class GitHubTrackerAdapter(TrackerAdapter):
                 page += 1
         except Exception as exc:
             log.warning("tracker_adapter: failed to fetch triage comments for #%s: %s", item_id, exc)
+
+    def add_score_label(self, item: TriageItem, score: float) -> None:
+        """Ensure label 'score-{math.floor(score + 0.5)}' exists in repo and attach it to item."""
+        label_name = f"score-{math.floor(score + 0.5)}"
+        # Only genuine 404 ("label not found") triggers creation.
+        # Auth failures, timeouts, and other HTTP errors must propagate.
+        try:
+            self._api("GET", f"/repos/{self.repo}/labels/{label_name}")
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                try:
+                    self._api(
+                        "POST",
+                        f"/repos/{self.repo}/labels",
+                        json={"name": label_name, "color": "0075ca"},
+                    )
+                except requests.HTTPError as create_exc:
+                    if create_exc.response is not None and create_exc.response.status_code == 422:
+                        # Concurrent run already created the label — fall through to attach.
+                        pass
+                    else:
+                        log.warning("tracker_adapter: could not create label %r: %s", label_name, create_exc)
+                        return   # don't try to attach a label that wasn't created
+                except Exception as create_exc:
+                    log.warning("tracker_adapter: could not create label %r: %s", label_name, create_exc)
+                    return   # don't try to attach a label that wasn't created
+            else:
+                log.warning(
+                    "tracker_adapter: unexpected error checking label %r (%s): %s",
+                    label_name,
+                    getattr(exc.response, "status_code", "?"),
+                    exc,
+                )
+                raise
+        try:
+            self._api(
+                "POST",
+                f"/repos/{self.repo}/issues/{item.id}/labels",
+                json={"labels": [label_name]},
+            )
+        except Exception as exc:
+            log.warning("tracker_adapter: failed to add score label to #%s: %s", item.id, exc)
+
+    def post_score_comment(
+        self,
+        item: TriageItem,
+        score: float,
+        dimension_scores: dict[str, int],
+        score_scale: int = 10,
+    ) -> None:
+        """Post a comment with the editorial score summary on the item."""
+        dim_line = " | ".join(f"{k}={v}" for k, v in dimension_scores.items())
+        body = (
+            f"**Editorial Score: {score:.1f}/{score_scale}**\n"
+            f"{dim_line}"
+        )
+        try:
+            self._api(
+                "POST",
+                f"/repos/{self.repo}/issues/{item.id}/comments",
+                json={"body": body},
+            )
+        except Exception as exc:
+            log.warning("tracker_adapter: failed to post score comment on #%s: %s", item.id, exc)

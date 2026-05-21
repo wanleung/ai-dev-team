@@ -194,7 +194,17 @@ class IntakeVerdictConfig(BaseModel):
     model_config = {"extra": "allow"}
 
     mode: str = "binary"
-    score_threshold: Optional[int] = None
+    score_threshold: Optional[float] = 6.0
+    score_formula: str = (
+        "(relevance*1.5 + news_value*2.0 + audience_fit*1.0"
+        " + urgency*1.5 + originality*1.0) / 7.0"
+    )
+    score_dimensions: List[str] = Field(
+        default_factory=lambda: [
+            "relevance", "news_value", "audience_fit", "urgency", "originality"
+        ]
+    )
+    score_scale: int = 10
 
 
 class IntakeTriageConfig(BaseModel):

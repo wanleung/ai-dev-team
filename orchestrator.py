@@ -1080,6 +1080,14 @@ class Orchestrator(TestFixLoopMixin):
                 factory_cfg["nvidia_nim_api_key"] = cfg["nvidia_nim_api_key"]
             if cfg.get("nvidia_nim_base_url"):
                 factory_cfg["nvidia_nim_base_url"] = cfg["nvidia_nim_base_url"]
+        elif model.startswith("dashscope/"):
+            if cfg.get("dashscope_api_key"):
+                factory_cfg["dashscope_api_key"] = cfg["dashscope_api_key"]
+            if cfg.get("dashscope_url"):
+                factory_cfg["dashscope_url"] = cfg["dashscope_url"]
+            factory_cfg["think"] = cfg.get("dashscope_think", False)
+            factory_cfg["preserve_thinking"] = cfg.get("dashscope_preserve_thinking", False)
+            factory_cfg["stream"] = cfg.get("dashscope_stream", True)
         elif model.startswith("opencode-go/") or model.startswith("opencode-zen/"):
             factory_cfg["stream"] = cfg.get("opencode_stream", True)
         # opencode/ (bare prefix) is a subprocess CLI backend that has no stream parameter; no translation needed.
@@ -1551,12 +1559,19 @@ class Orchestrator(TestFixLoopMixin):
         _overrides = getattr(self, "model_overrides", {})
         _disc_override = _overrides.get("discussion", self.model)
         _disc_model = _disc_override.get("model", self.model) if isinstance(_disc_override, dict) else _disc_override
+        _llm_cfg = getattr(self, "_llm_cfg", {})
         agent = DiscussionAgent.from_file(
             config_path=config_path,
             model=_disc_model,
             github_token=self._github_token,
             ollama_url=self.ollama_url,
             tool_registry=getattr(self, "_rag_registry", None),
+            dashscope_api_key=_llm_cfg.get("dashscope_api_key"),
+            dashscope_url=_llm_cfg.get("dashscope_url"),
+            dashscope_think=_llm_cfg.get("dashscope_think", False),
+            dashscope_preserve_thinking=_llm_cfg.get("dashscope_preserve_thinking", False),
+            dashscope_stream=_llm_cfg.get("dashscope_stream", True),
+            fallbacks=_llm_cfg.get("fallbacks") or None,
         )
         active_repo = str(getattr(self.target_github, "repo", None) or "local") if getattr(self, "target_github", None) else "local"
         agent.run(result, memory_store=getattr(self, "memory", None), repo=active_repo)
