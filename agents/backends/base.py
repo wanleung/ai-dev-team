@@ -42,10 +42,11 @@ _FAST_FAIL_RETRY_AFTER: int = int(os.environ.get("AGENT_FAST_FAIL_RETRY_AFTER", 
 # infrastructure failures (not caller errors). These are reclassified as
 # ConnectionError so FallbackLLMBackend can switch to the next backend.
 _TRANSIENT_400_CODES: frozenset[str] = frozenset({
-    "no_db_connection",       # opencode-go service lost its database connection
-    "data_inspection_failed", # Alibaba content filter — fall back to next backend
-    "AllocationQuota.FreeTierOnly",  # DashScope 403: free tier exhausted — fall back
-    "AllocationQuota",        # DashScope 403: any allocation quota exceeded
+    "no_db_connection",                     # opencode-go service lost its database connection
+    "data_inspection_failed",               # Alibaba content filter (lowercase variant)
+    "InternalError.Algo.DataInspectionFailed",  # DashScope content filter (full error type)
+    "AllocationQuota.FreeTierOnly",         # DashScope 403: free tier exhausted — fall back
+    "AllocationQuota",                      # DashScope 403: any allocation quota exceeded
 })
 
 # Errors that FallbackLLMBackend uses to trigger a switch to the next backend.
