@@ -1,6 +1,14 @@
 import io, json, logging
 import threading
 import pytest
+from logging_setup import clear_run_id
+
+
+@pytest.fixture(autouse=True)
+def _clear_run_id_after_test():
+    """Prevent structlog contextvars from leaking between tests."""
+    yield
+    clear_run_id()
 
 
 def test_configure_logging_no_crash():

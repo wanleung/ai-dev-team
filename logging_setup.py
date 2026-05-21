@@ -96,7 +96,7 @@ class _RunFilter(logging.Filter):
         self._tid = threading.get_ident()
 
     def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
-        return threading.get_ident() == self._tid
+        return record.thread == self._tid
 
 
 @contextmanager
