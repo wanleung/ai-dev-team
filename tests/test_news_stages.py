@@ -312,7 +312,6 @@ def test_stage_news_reviewer_pass_does_not_retry():
 
     result = PipelineResult()
     result.article = "---\ntitle: Test\ndate: 2026-01-01\nsource_url: https://example.com\n---\n\nBody."
-    result.article_zh_hk = "# 文章"
     result.article_zh_tw = "# 文章"
 
     mock_reviewer = MagicMock()
@@ -327,13 +326,12 @@ def test_stage_news_reviewer_pass_does_not_retry():
 
 
 def test_stage_news_reviewer_english_issue_retries_editor_and_translations():
-    """NEEDS_REVISION with English [FACT] — retries editor + both translations."""
+    """NEEDS_REVISION with English [FACT] — retries editor + translation."""
     from unittest.mock import MagicMock, call
     from orchestrator import PipelineResult
 
     result = PipelineResult()
     result.article = "---\ntitle: Test\ndate: 2026-01-01\nsource_url: https://example.com\n---\n\nBody."
-    result.article_zh_hk = "# 文章"
     result.article_zh_tw = "# 文章"
 
     mock_reviewer = MagicMock()
@@ -360,23 +358,23 @@ def test_stage_news_reviewer_english_issue_retries_editor_and_translations():
 
     assert mock_reviewer.run.call_count == 2
     assert len(editor_calls) == 1
-    assert len(translate_calls) == 2  # both languages retried
+    assert len(translate_calls) == 1  # only traditional_chinese retried
+    assert translate_calls[0][0] == "traditional_chinese"
     assert result.article_review_retry_count == 1
 
 
-def test_stage_news_reviewer_zh_hk_only_retries_cantonese():
-    """NEEDS_REVISION with only [ZH_HK] — retries translate_cantonese only."""
+def test_stage_news_reviewer_zh_tw_only_retries_translation():
+    """NEEDS_REVISION with only [ZH_TW] — retries translate_zh_traditional only."""
     from unittest.mock import MagicMock
     from orchestrator import PipelineResult
 
     result = PipelineResult()
     result.article = "---\ntitle: Test\ndate: 2026-01-01\nsource_url: https://example.com\n---\n\nBody."
-    result.article_zh_hk = "# 文章"
     result.article_zh_tw = "# 文章"
 
     mock_reviewer = MagicMock()
     mock_reviewer.run.side_effect = [
-        {"verdict": "NEEDS_REVISION", "issues": ["[ZH_HK] Simplified char"], "confidence": "high"},
+        {"verdict": "NEEDS_REVISION", "issues": ["[ZH_TW] Simplified char"], "confidence": "high"},
         {"verdict": "PASS", "issues": [], "confidence": "high"},
     ]
 
@@ -390,7 +388,7 @@ def test_stage_news_reviewer_zh_hk_only_retries_cantonese():
     orch._stage_news_reviewer(result)
 
     assert len(editor_calls) == 0
-    assert translate_calls == ["cantonese"]
+    assert translate_calls == ["traditional_chinese"]
 
 
 def test_stage_news_reviewer_stops_after_max_retries():
@@ -400,7 +398,6 @@ def test_stage_news_reviewer_stops_after_max_retries():
 
     result = PipelineResult()
     result.article = "---\ntitle: Test\ndate: 2026-01-01\nsource_url: https://example.com\n---\n\nBody."
-    result.article_zh_hk = "# 文章"
     result.article_zh_tw = "# 文章"
 
     mock_reviewer = MagicMock()
@@ -423,18 +420,17 @@ def test_stage_news_reviewer_stops_after_max_retries():
 
 
 def test_stage_news_reviewer_english_cascade_passes_notes_to_translations():
-    """English cascade must pass reviewer_notes to translations (mixed FACT+ZH issues)."""
+    """English cascade must pass reviewer_notes to translations."""
     from unittest.mock import MagicMock
     from orchestrator import PipelineResult
 
     result = PipelineResult()
     result.article = "---\ntitle: Test\ndate: 2026-01-01\nsource_url: https://example.com\n---\n\nBody."
-    result.article_zh_hk = "# 文章"
     result.article_zh_tw = "# 文章"
 
     mock_reviewer = MagicMock()
     mock_reviewer.run.side_effect = [
-        {"verdict": "NEEDS_REVISION", "issues": ["[FACT] Wrong version", "[ZH_HK] Simplified char"], "confidence": "high"},
+        {"verdict": "NEEDS_REVISION", "issues": ["[FACT] Wrong version", "[ZH_TW] Simplified char"], "confidence": "high"},
         {"verdict": "PASS", "issues": [], "confidence": "high"},
     ]
 
@@ -446,10 +442,10 @@ def test_stage_news_reviewer_english_cascade_passes_notes_to_translations():
     orch._stage_translate = lambda r, lang, field, reviewer_notes="": translate_calls.append((lang, reviewer_notes))
     orch._stage_news_reviewer(result)
 
-    # Both translate calls must receive the reviewer notes
-    assert len(translate_calls) == 2
-    for lang, notes in translate_calls:
-        assert "[ZH_HK] Simplified char" in notes, f"reviewer_notes not passed to {lang} translation"
+    # Translation call must receive the reviewer notes
+    assert len(translate_calls) == 1
+    assert translate_calls[0][0] == "traditional_chinese"
+    assert "[ZH_TW] Simplified char" in translate_calls[0][1]
 
 
 # ── _stage_news_triage() tests ───────────────────────────────────────────────

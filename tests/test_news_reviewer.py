@@ -28,14 +28,9 @@ ISSUES:
 - [WORDING] Awkward phrasing in paragraph 2
 CONFIDENCE: high"""
 
-NEEDS_REVISION_ZH_HK = """VERDICT: NEEDS_REVISION
-ISSUES:
-- [ZH_HK] Simplified character found: "软" should be "軟"
-CONFIDENCE: high"""
-
 NEEDS_REVISION_ZH_TW = """VERDICT: NEEDS_REVISION
 ISSUES:
-- [ZH_TW] Mainland vocabulary: "软件" should be "軟體"
+- [ZH_TW] Simplified character found: "软" should be "軟"
 CONFIDENCE: high"""
 
 
@@ -44,7 +39,7 @@ class TestNewsReviewerAgent:
         from agents.news_reviewer import NewsReviewerAgent
         agent = _make_agent(NewsReviewerAgent, "news_reviewer")
         with patch.object(agent, "call", return_value=PASS_OUTPUT):
-            result = agent.run("# Article", "# 文章", "# 文章", source_url="https://example.com")
+            result = agent.run("# Article", "# 文章", source_url="https://example.com")
         assert result["verdict"] == "PASS"
         assert result["issues"] == []
         assert result["confidence"] == "high"
@@ -53,24 +48,16 @@ class TestNewsReviewerAgent:
         from agents.news_reviewer import NewsReviewerAgent
         agent = _make_agent(NewsReviewerAgent, "news_reviewer")
         with patch.object(agent, "call", return_value=NEEDS_REVISION_ENGLISH):
-            result = agent.run("# Article", "# 文章", "# 文章", source_url="https://example.com")
+            result = agent.run("# Article", "# 文章", source_url="https://example.com")
         assert result["verdict"] == "NEEDS_REVISION"
         assert any("[FACT]" in i for i in result["issues"])
         assert any("[WORDING]" in i for i in result["issues"])
-
-    def test_run_detects_zh_hk_issues(self):
-        from agents.news_reviewer import NewsReviewerAgent
-        agent = _make_agent(NewsReviewerAgent, "news_reviewer")
-        with patch.object(agent, "call", return_value=NEEDS_REVISION_ZH_HK):
-            result = agent.run("# Article", "# 文章", "# 文章", source_url="https://example.com")
-        assert result["verdict"] == "NEEDS_REVISION"
-        assert any("[ZH_HK]" in i for i in result["issues"])
 
     def test_run_detects_zh_tw_issues(self):
         from agents.news_reviewer import NewsReviewerAgent
         agent = _make_agent(NewsReviewerAgent, "news_reviewer")
         with patch.object(agent, "call", return_value=NEEDS_REVISION_ZH_TW):
-            result = agent.run("# Article", "# 文章", "# 文章", source_url="https://example.com")
+            result = agent.run("# Article", "# 文章", source_url="https://example.com")
         assert result["verdict"] == "NEEDS_REVISION"
         assert any("[ZH_TW]" in i for i in result["issues"])
 
@@ -78,14 +65,14 @@ class TestNewsReviewerAgent:
         from agents.news_reviewer import NewsReviewerAgent
         agent = _make_agent(NewsReviewerAgent, "news_reviewer")
         with patch.object(agent, "call", return_value="Something went wrong, here is a summary..."):
-            result = agent.run("# Article", "# 文章", "# 文章", source_url="https://example.com")
+            result = agent.run("# Article", "# 文章", source_url="https://example.com")
         assert result["verdict"] == "PASS"  # fail-safe: never block on bad reviewer output
 
     def test_run_works_without_source_url(self):
         from agents.news_reviewer import NewsReviewerAgent
         agent = _make_agent(NewsReviewerAgent, "news_reviewer")
         with patch.object(agent, "call", return_value=PASS_OUTPUT):
-            result = agent.run("# Article", "# 文章", "# 文章", source_url="")
+            result = agent.run("# Article", "# 文章", source_url="")
         assert result["verdict"] == "PASS"
 
     def test_run_injects_source_content_into_prompt(self):
@@ -97,7 +84,8 @@ class TestNewsReviewerAgent:
             return PASS_OUTPUT
         with patch.object(agent, "call", side_effect=capture):
             with patch("agents.news_reviewer._fetch_source", return_value="Source text here"):
-                agent.run("# Article", "# 文章", "# 文章", source_url="https://example.com")
+                agent.run("# Article", "# 文章", source_url="https://example.com")
+        assert "Source text here" in captured["prompt"]
         assert "Source text here" in captured["prompt"]
 
     def test_exports_from_agents_package(self):
