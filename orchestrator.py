@@ -4500,7 +4500,6 @@ class Orchestrator(TestFixLoopMixin):
         for attempt in range(max_retries + 1):
             out = self.news_reviewer.run(
                 result.article or result.article_draft,
-                result.article_zh_hk,
                 result.article_zh_tw,
                 source_url=source_url,
             )
@@ -4524,7 +4523,6 @@ class Orchestrator(TestFixLoopMixin):
             has_english = any(
                 i.startswith("[FACT]") or i.startswith("[WORDING]") for i in issues
             )
-            has_zh_hk = any("[ZH_HK]" in i for i in issues)
             has_zh_tw = any("[ZH_TW]" in i for i in issues)
             notes = "\n".join(issues)
             result.article_reviewer_notes = notes
@@ -4537,22 +4535,14 @@ class Orchestrator(TestFixLoopMixin):
                 console.print(f"     {issue}")
 
             if has_english:
-                console.print("  🔄 [dim]Retrying editor + all translations…[/dim]")
+                console.print("  🔄 [dim]Retrying editor + translation…[/dim]")
                 self._stage_news_editor(result, reviewer_notes=notes)
-                # Pass notes so translators also see any mixed ZH_HK/ZH_TW issues
-                self._stage_translate(result, "cantonese", "article_zh_hk", reviewer_notes=notes)
                 self._stage_translate(result, "traditional_chinese", "article_zh_tw", reviewer_notes=notes)
-            else:
-                if has_zh_hk:
-                    console.print("  🔄 [dim]Retrying Cantonese translation…[/dim]")
-                    self._stage_translate(
-                        result, "cantonese", "article_zh_hk", reviewer_notes=notes
-                    )
-                if has_zh_tw:
-                    console.print("  🔄 [dim]Retrying Traditional Chinese translation…[/dim]")
-                    self._stage_translate(
-                        result, "traditional_chinese", "article_zh_tw", reviewer_notes=notes
-                    )
+            elif has_zh_tw:
+                console.print("  🔄 [dim]Retrying Traditional Chinese translation…[/dim]")
+                self._stage_translate(
+                    result, "traditional_chinese", "article_zh_tw", reviewer_notes=notes
+                )
 
     def _stage_news_article_pr(self, result: PipelineResult) -> None:
         """Commit the final article as a file and open a PR in the tracker repo."""

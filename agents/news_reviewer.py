@@ -1,12 +1,11 @@
 """
-NewsReviewerAgent: reviews a finalised news article (English + translations).
+NewsReviewerAgent: reviews a finalised news article (English + Traditional Chinese translation).
 
 Checks:
   - English: fact plausibility against source URL, wording QA
-  - zh-hk: Traditional Chinese characters, Cantonese vocabulary
-  - zh-tw: Traditional Chinese characters, Formal Mandarin vocabulary
+  - zh-tw: Traditional Chinese characters, Hong Kong vocabulary and press conventions
 
-Input:  article (str), article_zh_hk (str), article_zh_tw (str), source_url (str)
+Input:  article (str), article_zh_tw (str), source_url (str)
 Output: dict with 'verdict' (PASS|NEEDS_REVISION), 'issues' (list[str]), 'confidence' (str)
 """
 from __future__ import annotations
@@ -108,7 +107,6 @@ class NewsReviewerAgent(BaseAgent):
     def run(
         self,
         article: str,
-        article_zh_hk: str,
         article_zh_tw: str,
         source_url: str = "",
     ) -> dict:
@@ -116,8 +114,7 @@ class NewsReviewerAgent(BaseAgent):
 
         Args:
             article: Final English article (markdown + frontmatter).
-            article_zh_hk: Written Cantonese translation.
-            article_zh_tw: Formal Traditional Chinese translation.
+            article_zh_tw: Traditional Chinese (Hong Kong) translation.
             source_url: Original source URL for fact-checking (may be empty).
 
         Returns:
@@ -147,9 +144,8 @@ class NewsReviewerAgent(BaseAgent):
         prompt = (
             f"{source_section}"
             f"<ENGLISH_ARTICLE>\n{article}\n</ENGLISH_ARTICLE>\n\n"
-            f"<ZH_HK_ARTICLE>\n{article_zh_hk}\n</ZH_HK_ARTICLE>\n\n"
             f"<ZH_TW_ARTICLE>\n{article_zh_tw}\n</ZH_TW_ARTICLE>\n\n"
-            "Review all three articles according to your role instructions.\n"
+            "Review both articles according to your role instructions.\n"
             "Output ONLY the structured verdict in the exact format specified."
         )
 

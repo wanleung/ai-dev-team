@@ -54,9 +54,9 @@ class FallbackLLMBackend(LLMBackend):
             except FALLBACK_ERRORS as exc:
                 if i < len(self._backends) - 1:
                     next_model = self._backends[i + 1].model
-                    print(
-                        f"⚠️  {backend.model} unreachable ({type(exc).__name__}: {exc}), "
-                        f"falling back to {next_model}"
+                    logger.warning(
+                        "⚠️  %s unreachable (%s: %s), falling back to %s",
+                        backend.model, type(exc).__name__, str(exc)[:120], next_model,
                     )
                 else:
                     raise
@@ -80,9 +80,9 @@ class FallbackLLMBackend(LLMBackend):
             except FALLBACK_ERRORS as exc:
                 if i < len(tool_backends) - 1:
                     next_model = tool_backends[i + 1].model
-                    print(
-                        f"⚠️  {backend.model} unreachable ({type(exc).__name__}: {exc}), "
-                        f"falling back to {next_model}"
+                    logger.warning(
+                        "⚠️  %s unreachable (%s: %s), falling back to %s",
+                        backend.model, type(exc).__name__, str(exc)[:120], next_model,
                     )
                 else:
                     raise
