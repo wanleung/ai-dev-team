@@ -24,6 +24,7 @@ from openai import (
     AuthenticationError as _OAIAuthError,
     BadRequestError as _OAIBadRequest,
     InternalServerError as _OAIServerError,
+    PermissionDeniedError as _OAIPermissionDenied,
     RateLimitError as _OAIRateLimit,
 )
 
@@ -43,6 +44,8 @@ _FAST_FAIL_RETRY_AFTER: int = int(os.environ.get("AGENT_FAST_FAIL_RETRY_AFTER", 
 _TRANSIENT_400_CODES: frozenset[str] = frozenset({
     "no_db_connection",       # opencode-go service lost its database connection
     "data_inspection_failed", # Alibaba content filter — fall back to next backend
+    "AllocationQuota.FreeTierOnly",  # DashScope 403: free tier exhausted — fall back
+    "AllocationQuota",        # DashScope 403: any allocation quota exceeded
 })
 
 # Errors that FallbackLLMBackend uses to trigger a switch to the next backend.
@@ -90,7 +93,7 @@ def _retry_with_backoff(
         _OAIRateLimit,
         _OAIServerError,
     ]
-    _non_retryable = (_OAIAuthError, _OAIBadRequest)
+    _non_retryable = (_OAIAuthError, _OAIBadRequest, _OAIPermissionDenied)
 
     try:
         import anthropic as _ant
@@ -310,6 +313,7 @@ class OpenAICompatibleBackend(LLMBackend):
                        silently ignored otherwise (no crash).
         """
         self._pre_call()
+        _log.info("LLM call → %s (%d msgs)", self.model, len(messages))
         if self._stream:
             return self._stream_call(messages, run_id=run_id, on_token=on_token)
         if self._inter_call_delay > 0:
@@ -347,6 +351,7 @@ class OpenAICompatibleBackend(LLMBackend):
         run_id: str | None = None,
     ) -> str:
         messages = list(messages)  # local copy for tool loop
+        _log.info("LLM call_with_tools → %s (%d msgs)", self.model, len(messages))
 
         cb = _get_cb_registry().get_or_create("backend", self.model)  # fetch once; stable for all turns
         for _ in range(max_turns):
