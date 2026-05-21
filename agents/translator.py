@@ -13,7 +13,7 @@ from .base_agent import BaseAgent
 
 _LANGUAGE_LABELS = {
     "cantonese": "Written Cantonese (zh-hk)",
-    "traditional_chinese": "Formal Traditional Chinese (zh-tw)",
+    "traditional_chinese": "Traditional Chinese — Hong Kong (zh-tw)",
 }
 
 
