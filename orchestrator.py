@@ -857,7 +857,7 @@ class Orchestrator(TestFixLoopMixin):
             return {"llm": backend}
 
         self.pm = ProductManagerAgent(**{**agent_kwargs, **_mk("product_manager")})
-        self.news_writer = NewsWriterAgent(**{**agent_kwargs, **_mk("news_writer")})
+        self.news_writer = NewsWriterAgent(tool_registry=search_registry, **{**agent_kwargs, **_mk("news_writer")})
         self.news_editor = NewsEditorAgent(**{**agent_kwargs, **_mk("news_editor")})
         self.news_reviewer = NewsReviewerAgent(tool_registry=search_registry, **{**agent_kwargs, **_mk("news_reviewer")})
         self.translator = TranslatorAgent(**{**agent_kwargs, **_mk("translator")})
@@ -1343,7 +1343,7 @@ class Orchestrator(TestFixLoopMixin):
             model=_model("pr_analyst"),
             github_token=self._github_token,
             ollama_url=self.ollama_url,
-            tool_registry=self._rag_registry,
+            tool_registry=getattr(self, "_search_registry", None) or self._rag_registry,
         )
         context = {
             "issue_body": result.requirement or "",
@@ -1574,7 +1574,7 @@ class Orchestrator(TestFixLoopMixin):
             model=_disc_model,
             github_token=self._github_token,
             ollama_url=self.ollama_url,
-            tool_registry=getattr(self, "_rag_registry", None),
+            tool_registry=getattr(self, "_search_registry", None) or getattr(self, "_rag_registry", None),
             dashscope_api_key=_llm_cfg.get("dashscope_api_key"),
             dashscope_url=_llm_cfg.get("dashscope_url"),
             dashscope_think=_llm_cfg.get("dashscope_think", False),

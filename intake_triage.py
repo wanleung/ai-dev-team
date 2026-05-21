@@ -200,6 +200,7 @@ def run(
     dashscope_preserve_thinking: bool = False,
     dashscope_stream: bool = True,
     fallbacks: Optional[list] = None,
+    mcp_servers: Optional[list] = None,
 ) -> dict:
     """Run one intake triage cycle.
 
@@ -253,11 +254,23 @@ def run(
     preset_path = script_dir / cfg.discussion.get("preset", "discussions/intake-triage.yaml")
     # Deferred to avoid loading the full agents package during config-only import paths.
     from agents.discussion_agent import DiscussionAgent
+
+    # Build search tool registry from MCP servers if available
+    search_registry = None
+    search_servers = [s for s in (mcp_servers or []) if s.get("name") == "google_search"]
+    if search_servers:
+        try:
+            from tools.mcp_registry import MCPToolRegistry
+            search_registry = MCPToolRegistry(search_servers)
+        except Exception as exc:
+            log.warning("intake_triage: Google Search MCP init failed: %s — homework search disabled", exc)
+
     agent = DiscussionAgent.from_file(
         config_path=str(preset_path),
         model=model,
         github_token=os.environ.get("GITHUB_TOKEN", ""),
         ollama_url=ollama_url,
+        tool_registry=search_registry,
         dashscope_api_key=dashscope_api_key,
         dashscope_url=dashscope_url,
         dashscope_think=dashscope_think,
@@ -555,6 +568,7 @@ def _main_locked(args, cfg_path: Path) -> None:
 
     # ── Run triage for each repo (parallel) ──────────────────────────────────
     errors: list[str] = []
+    mcp_servers = (merged_cfg.get("mcp") or {}).get("servers") or []
 
     def _run_repo(entry: tuple) -> None:
         repo, repo_llm, repo_intake = entry
@@ -576,6 +590,7 @@ def _main_locked(args, cfg_path: Path) -> None:
             dashscope_preserve_thinking=effective_llm.get("dashscope_preserve_thinking", False),
             dashscope_stream=effective_llm.get("dashscope_stream", True),
             fallbacks=effective_llm.get("fallbacks") or None,
+            mcp_servers=mcp_servers,
         )
 
     if len(repo_entries) == 1:

@@ -6,13 +6,23 @@ Output: dict with 'article_draft' (markdown string with YAML frontmatter)
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base_agent import BaseAgent
+
+if TYPE_CHECKING:
+    from tools.registry import ToolRegistry
 
 
 class NewsWriterAgent(BaseAgent):
     """Write a first-draft news article from an issue brief and optional discussion synthesis."""
 
     role_name = "news_writer"
+    _tool_registry: "ToolRegistry | None" = None
+
+    def __init__(self, *args, tool_registry: "ToolRegistry | None" = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._tool_registry = tool_registry
 
     def run(self, issue_body: str, discussion_synthesis: str = "") -> dict:
         """Write a news article draft.
@@ -32,11 +42,21 @@ class NewsWriterAgent(BaseAgent):
             if discussion_synthesis.strip()
             else ""
         )
+        research_instruction = (
+            "Use google_fetch_page or google_search tools to research the source URL "
+            "and any related stories before writing. "
+            if self._tool_registry is not None
+            else ""
+        )
         prompt = (
             f"{synthesis_section}"
             f"Write a news article based on the following brief:\n\n"
             f"---\n{issue_body}\n---\n\n"
+            f"{research_instruction}"
             f"Follow your role instructions. Output the full article in markdown with YAML frontmatter."
         )
-        article_draft = self.call(prompt)
+        if self._tool_registry is not None:
+            article_draft = self.call_with_tools(prompt, self._tool_registry)
+        else:
+            article_draft = self.call(prompt)
         return {"article_draft": article_draft}
