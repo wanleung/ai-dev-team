@@ -11,7 +11,6 @@ stages:
   - news_writer                 # write article draft
   - discuss_news_draft          # writer/editor review of draft
   - news_editor                 # final polish + frontmatter
-  - translate_cantonese         # translate to Written Cantonese (zh-hk)
-  - translate_zh_traditional    # translate to Formal Traditional Chinese (zh-tw)
+  - translate_zh_traditional    # translate to Traditional Chinese (Hong Kong)
   - news_reviewer               # review article quality and translation correctness
   - news_article_pr             # commit all articles, open PR in this repo
