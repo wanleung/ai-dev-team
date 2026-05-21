@@ -817,71 +817,85 @@ def _dispatch(
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
 
-    with open(log_file, "w", encoding="utf-8") as fh:
-        old_stdout, old_stderr = sys.stdout, sys.stderr
-        sys.stdout = sys.stderr = fh
-        try:
-            from orchestrator import Orchestrator
-            from github_client import GitHubClient
+    # ── Per-run file logging (thread-safe: no sys.stdout redirect) ────────────
+    from logging_setup import configure_logging as _configure_logging
+    _configure_logging(log_file=log_file)
+    _run_fh = next(
+        (h for h in logging.getLogger().handlers
+         if isinstance(h, logging.FileHandler)
+         and h.baseFilename == str(Path(log_file).resolve())),
+        None,
+    )
+    try:
+        from orchestrator import Orchestrator
+        from github_client import GitHubClient
 
-            tracker_gh = GitHubClient(tracker_repo, token)
-            issue = tracker_gh.get_issue(issue_number)
-            issue_body = issue.get("body") or ""
-            requirement = (issue_body or issue.get("title") or "").strip()
+        tracker_gh = GitHubClient(tracker_repo, token)
+        issue = tracker_gh.get_issue(issue_number)
+        issue_body = issue.get("body") or ""
+        requirement = (issue_body or issue.get("title") or "").strip()
 
-            # Collect prior issue comments and append to trigger_issue_body so
-            # agents receive the prior PRD, architecture, reviews, and human
-            # feedback as context when this issue is re-processed.
-            prior_ctx = _collect_issue_prior_context(tracker_gh, issue_number)
-            trigger_issue_body = issue_body + prior_ctx if prior_ctx else issue_body
+        # Collect prior issue comments and append to trigger_issue_body so
+        # agents receive the prior PRD, architecture, reviews, and human
+        # feedback as context when this issue is re-processed.
+        prior_ctx = _collect_issue_prior_context(tracker_gh, issue_number)
+        trigger_issue_body = issue_body + prior_ctx if prior_ctx else issue_body
 
-            orch = Orchestrator(
-                model=effective_model,
-                model_overrides=model_overrides,
-                github_token=token,
-                github_repo=tracker_repo,
-                target_repo=target_repo,
-                num_engineers=num_engineers,
-                use_github=True,
-                ollama_url=ollama_url,
-                nvidia_nim_api_key=nvidia_nim_api_key,
-                nvidia_nim_base_url=nvidia_nim_base_url,
-                retry_delay=retry_delay,
-                max_api_retries=max_api_retries,
-                inter_call_delay=inter_call_delay,
-                deploy_cfg=deploy_cfg,
-                llm_fallbacks=_llm.get("fallbacks") or None,
-            )
+        orch = Orchestrator(
+            model=effective_model,
+            model_overrides=model_overrides,
+            github_token=token,
+            github_repo=tracker_repo,
+            target_repo=target_repo,
+            num_engineers=num_engineers,
+            use_github=True,
+            ollama_url=ollama_url,
+            nvidia_nim_api_key=nvidia_nim_api_key,
+            nvidia_nim_base_url=nvidia_nim_base_url,
+            retry_delay=retry_delay,
+            max_api_retries=max_api_retries,
+            inter_call_delay=inter_call_delay,
+            deploy_cfg=deploy_cfg,
+            llm_fallbacks=_llm.get("fallbacks") or None,
+        )
 
-            # pipeline_file: fetch pipeline YAML from tracker repo via GitHub API
-            if pipeline_file:
-                raw = tracker_gh.get_file_content(pipeline_file)
-                if raw:
-                    import yaml as _yaml
-                    data = _yaml.safe_load(raw)
-                    if not isinstance(data, dict):
-                        _log.warning("    pipeline_file %r: expected YAML mapping, got %s — falling back to label lookup", pipeline_file, type(data).__name__)
-                        data = {}
-                    fetched_stages = data.get("stages")
-                    if fetched_stages is not None:
-                        orch._validate_pipeline_stages(pipeline_file, fetched_stages)
-                        orch._pipeline_yaml_stages = fetched_stages
-                        _log.info("    Using pipeline_file: %s (%d stages)", pipeline_file, len(fetched_stages))
-                else:
-                    _log.warning("    pipeline_file %r not found in %s — falling back to label lookup", pipeline_file, tracker_repo)
-
-            # Resolve pipeline stages for this label (project override → builtin)
-            stages = orch.load_pipeline_for_label(label)
-            if stages is not None:
-                orch._pipeline_yaml_stages = stages
-                _log.info("    Using pipelines/%s.yaml (%d stages)", label, len(stages))
+        # pipeline_file: fetch pipeline YAML from tracker repo via GitHub API
+        if pipeline_file:
+            raw = tracker_gh.get_file_content(pipeline_file)
+            if raw:
+                import yaml as _yaml
+                data = _yaml.safe_load(raw)
+                if not isinstance(data, dict):
+                    _log.warning(
+                        "    pipeline_file %r: expected YAML mapping, got %s — falling back to label lookup",
+                        pipeline_file, type(data).__name__,
+                    )
+                    data = {}
+                fetched_stages = data.get("stages")
+                if fetched_stages is not None:
+                    orch._validate_pipeline_stages(pipeline_file, fetched_stages)
+                    orch._pipeline_yaml_stages = fetched_stages
+                    _log.info("    Using pipeline_file: %s (%d stages)", pipeline_file, len(fetched_stages))
             else:
-                _log.info("    Using built-in default pipeline (no pipelines/%s.yaml)", label)
+                _log.warning(
+                    "    pipeline_file %r not found in %s — falling back to label lookup",
+                    pipeline_file, tracker_repo,
+                )
 
-            result = orch.run(requirement, trigger_issue_body=trigger_issue_body, issue_number=issue_number)
-            return result
-        finally:
-            sys.stdout, sys.stderr = old_stdout, old_stderr
+        # Resolve pipeline stages for this label (project override → builtin)
+        stages = orch.load_pipeline_for_label(label)
+        if stages is not None:
+            orch._pipeline_yaml_stages = stages
+            _log.info("    Using pipelines/%s.yaml (%d stages)", label, len(stages))
+        else:
+            _log.info("    Using built-in default pipeline (no pipelines/%s.yaml)", label)
+
+        result = orch.run(requirement, trigger_issue_body=trigger_issue_body, issue_number=issue_number)
+        return result
+    finally:
+        if _run_fh is not None:
+            logging.getLogger().removeHandler(_run_fh)
+            _run_fh.close()
 
 
 def _resolve_next_label(result: "PipelineResult", chaining_cfg: dict) -> Optional[str]:
@@ -963,62 +977,70 @@ def _run_pr_revision(
     add_label(target_repo, pr_number, attempt_label)
 
     try:
-        with open(log_file, "w", encoding="utf-8") as fh:
-            old_stdout, old_stderr = sys.stdout, sys.stderr
-            sys.stdout = sys.stderr = fh
-            try:
-                from orchestrator import Orchestrator
+        # ── Per-run file logging (thread-safe: no sys.stdout redirect) ────────
+        from logging_setup import configure_logging as _configure_logging
+        _configure_logging(log_file=log_file)
+        _run_fh = next(
+            (h for h in logging.getLogger().handlers
+             if isinstance(h, logging.FileHandler)
+             and h.baseFilename == str(Path(log_file).resolve())),
+            None,
+        )
+        try:
+            from orchestrator import Orchestrator
 
-                orch = Orchestrator(
-                    model=effective_model,
-                    model_overrides=model_overrides,
-                    github_token=token,
-                    github_repo=tracker_repo,
-                    target_repo=target_repo,
-                    num_engineers=num_engineers,
-                    use_github=True,
-                    ollama_url=ollama_url,
-                    nvidia_nim_api_key=nvidia_nim_api_key,
-                    nvidia_nim_base_url=nvidia_nim_base_url,
-                    retry_delay=retry_delay,
-                    max_api_retries=max_api_retries,
-                    inter_call_delay=inter_call_delay,
-                    update_branch_enabled=update_branch_enabled,
-                    conflict_resolver_model=conflict_resolver_model,
-                    llm_fallbacks=_llm.get("fallbacks") or None,
-                )
+            orch = Orchestrator(
+                model=effective_model,
+                model_overrides=model_overrides,
+                github_token=token,
+                github_repo=tracker_repo,
+                target_repo=target_repo,
+                num_engineers=num_engineers,
+                use_github=True,
+                ollama_url=ollama_url,
+                nvidia_nim_api_key=nvidia_nim_api_key,
+                nvidia_nim_base_url=nvidia_nim_base_url,
+                retry_delay=retry_delay,
+                max_api_retries=max_api_retries,
+                inter_call_delay=inter_call_delay,
+                update_branch_enabled=update_branch_enabled,
+                conflict_resolver_model=conflict_resolver_model,
+                llm_fallbacks=_llm.get("fallbacks") or None,
+            )
 
-                result = orch.run_revision(pr_number)
-                status = result.get("status", "ok")
+            result = orch.run_revision(pr_number)
+            status = result.get("status", "ok")
 
-                if status in ("max_revisions_reached", "error"):
-                    add_label(target_repo, pr_number, LABEL_FAILED)
-                    remove_label(target_repo, pr_number, LABEL_RUNNING)
-                    post_comment(
-                        target_repo, pr_number,
-                        f"❌ PR fix attempt {attempt} could not complete "
-                        f"(status: `{status}`). Log: `{log_file}`\n\n"
-                        "Remove `agent-failed` to retry manually.",
-                    )
-                    _log.info("  ❌ PR #%d fix attempt %d: %s", pr_number, attempt, status)
-                else:
-                    add_label(target_repo, pr_number, LABEL_COMPLETE)
-                    remove_label(target_repo, pr_number, LABEL_RUNNING)
-                    # Remove trigger label so next cycle doesn't re-trigger
-                    remove_label(target_repo, pr_number, pr_fix_label)
-                    _log.info("  ✅ PR #%d fix attempt %d complete", pr_number, attempt)
-
-            except Exception as exc:  # noqa: BLE001
-                _log.error("  ❌ PR #%d fix attempt %d unhandled error: %s", pr_number, attempt, _sanitise(str(exc), token))
+            if status in ("max_revisions_reached", "error"):
                 add_label(target_repo, pr_number, LABEL_FAILED)
                 remove_label(target_repo, pr_number, LABEL_RUNNING)
                 post_comment(
                     target_repo, pr_number,
-                    f"❌ PR fix attempt {attempt} failed with error: `{_sanitise(str(exc), token)}`\n"
-                    f"Log: `{log_file}`\n\nRemove `agent-failed` to retry.",
+                    f"❌ PR fix attempt {attempt} could not complete "
+                    f"(status: `{status}`). Log: `{log_file}`\n\n"
+                    "Remove `agent-failed` to retry manually.",
                 )
-            finally:
-                sys.stdout, sys.stderr = old_stdout, old_stderr
+                _log.info("  ❌ PR #%d fix attempt %d: %s", pr_number, attempt, status)
+            else:
+                add_label(target_repo, pr_number, LABEL_COMPLETE)
+                remove_label(target_repo, pr_number, LABEL_RUNNING)
+                # Remove trigger label so next cycle doesn't re-trigger
+                remove_label(target_repo, pr_number, pr_fix_label)
+                _log.info("  ✅ PR #%d fix attempt %d complete", pr_number, attempt)
+
+        except Exception as exc:  # noqa: BLE001
+            _log.error("  ❌ PR #%d fix attempt %d unhandled error: %s", pr_number, attempt, _sanitise(str(exc), token))
+            add_label(target_repo, pr_number, LABEL_FAILED)
+            remove_label(target_repo, pr_number, LABEL_RUNNING)
+            post_comment(
+                target_repo, pr_number,
+                f"❌ PR fix attempt {attempt} failed with error: `{_sanitise(str(exc), token)}`\n"
+                f"Log: `{log_file}`\n\nRemove `agent-failed` to retry.",
+            )
+        finally:
+            if _run_fh is not None:
+                logging.getLogger().removeHandler(_run_fh)
+                _run_fh.close()
     except OSError as exc:  # noqa: BLE001
         _log.error("  ❌ PR #%d: could not open log file %s: %s", pr_number, log_file, _sanitise(str(exc), token))
         add_label(target_repo, pr_number, LABEL_FAILED)

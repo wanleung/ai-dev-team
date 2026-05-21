@@ -107,3 +107,70 @@ def test_dispatch_uses_llm_cfg_when_provided(monkeypatch, tmp_path):
 
     assert captured.get("model") == "ollama/qwen3.5"
     assert captured.get("model_overrides", {}).get("engineer") == "ollama/qwen3.5"
+
+
+def test_concurrent_dispatch_does_not_redirect_global_stdout(tmp_path):
+    """Concurrent _dispatch calls must not clobber sys.stdout/sys.stderr."""
+    import threading
+    import sys
+    from unittest.mock import MagicMock, patch
+    from watcher import _dispatch
+
+    log1 = tmp_path / "run1.log"
+    log2 = tmp_path / "run2.log"
+
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+
+    # A fake PipelineResult
+    fake_result = MagicMock()
+    fake_result.errors = []
+    fake_result.next_label = None
+
+    mock_orch_instance = MagicMock()
+    mock_orch_instance.run.return_value = fake_result
+    mock_orch_instance.load_pipeline_for_label.return_value = None
+    mock_orch_class = MagicMock(return_value=mock_orch_instance)
+
+    fake_gh_instance = MagicMock()
+    fake_gh_instance.get_issue.return_value = {"title": "t", "body": "", "labels": []}
+    fake_gh_instance.get_issue_comments.return_value = []
+    fake_gh_class = MagicMock(return_value=fake_gh_instance)
+
+    errors = []
+
+    def run_dispatch(log_file):
+        try:
+            _dispatch(
+                label="ai-feature",
+                tracker_repo="owner/repo",
+                target_repo="owner/repo",
+                issue_number=1,
+                model="gpt-4.1",
+                num_engineers=1,
+                log_file=log_file,
+                logger=None,
+            )
+        except Exception as exc:
+            errors.append(str(exc))
+
+    # Inject fakes into sys.modules BEFORE spawning threads so both threads
+    # share the same patched state without racing.  local `from x import Y`
+    # inside _dispatch re-reads sys.modules on every call, picking up our fakes.
+    with patch.dict(sys.modules, {
+        "orchestrator": MagicMock(Orchestrator=mock_orch_class),
+        "github_client": MagicMock(GitHubClient=fake_gh_class),
+    }), patch("watcher._collect_issue_prior_context", return_value=""), \
+       patch("watcher._load_pipeline_config", return_value={"llm": {}, "pipeline": {}}):
+
+        t1 = threading.Thread(target=run_dispatch, args=(log1,))
+        t2 = threading.Thread(target=run_dispatch, args=(log2,))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+    # After both threads complete, global stdout/stderr must be unchanged
+    assert sys.stdout is original_stdout, "sys.stdout was corrupted by _dispatch"
+    assert sys.stderr is original_stderr, "sys.stderr was corrupted by _dispatch"
+    assert errors == [], f"Dispatch raised errors: {errors}"
