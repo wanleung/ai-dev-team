@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 import uuid
-from logging_setup import configure_logging, bind_run_id, clear_run_id
+from logging_setup import configure_logging, bind_run_id, clear_run_id, file_logging as _file_logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -818,7 +818,6 @@ def _dispatch(
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
 
     # ── Per-run file logging (thread-safe: no sys.stdout redirect) ────────────
-    from logging_setup import file_logging as _file_logging
     with _file_logging(log_file):
         from orchestrator import Orchestrator
         from github_client import GitHubClient
@@ -967,7 +966,6 @@ def _run_pr_revision(
 
     try:
         # ── Per-run file logging (thread-safe: no sys.stdout redirect) ────────
-        from logging_setup import file_logging as _file_logging
         with _file_logging(log_file):
             try:
                 from orchestrator import Orchestrator

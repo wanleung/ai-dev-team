@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Generator, Optional
 
 import structlog
 
@@ -87,8 +88,19 @@ def clear_run_id() -> None:
     structlog.contextvars.unbind_contextvars("run_id")
 
 
+class _RunFilter(logging.Filter):
+    """Only pass log records emitted from the thread that created this handler."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._tid = threading.get_ident()
+
+    def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
+        return threading.get_ident() == self._tid
+
+
 @contextmanager
-def file_logging(log_file):
+def file_logging(log_file: "str | Path") -> "Generator[logging.FileHandler, None, None]":
     """Context manager: add a per-run JSON FileHandler for the duration of a with-block.
 
     Creates the handler directly (bypassing configure_logging's idempotency check)
@@ -114,6 +126,7 @@ def file_logging(log_file):
     )
     fh = logging.FileHandler(str(log_file), encoding="utf-8")
     fh.setFormatter(json_fmt)
+    fh.addFilter(_RunFilter())   # ← only pass records from the creating thread
     logging.getLogger().addHandler(fh)
     try:
         yield fh
