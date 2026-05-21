@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -84,3 +85,38 @@ def bind_run_id(run_id: str) -> None:
 def clear_run_id() -> None:
     """Remove run_id binding (call between test runs or pipeline resets)."""
     structlog.contextvars.unbind_contextvars("run_id")
+
+
+@contextmanager
+def file_logging(log_file):
+    """Context manager: add a per-run JSON FileHandler for the duration of a with-block.
+
+    Creates the handler directly (bypassing configure_logging's idempotency check)
+    so concurrent callers with different log paths never interfere with each other.
+    Removes and closes the handler on exit, even if an exception occurs.
+
+    Usage:
+        with file_logging(log_file):
+            run_orchestrator(...)
+    """
+    log_file = Path(log_file)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    shared_processors = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+    ]
+    json_fmt = structlog.stdlib.ProcessorFormatter(
+        processor=structlog.processors.JSONRenderer(),
+        foreign_pre_chain=shared_processors,
+    )
+    fh = logging.FileHandler(str(log_file), encoding="utf-8")
+    fh.setFormatter(json_fmt)
+    logging.getLogger().addHandler(fh)
+    try:
+        yield fh
+    finally:
+        logging.getLogger().removeHandler(fh)
+        fh.close()

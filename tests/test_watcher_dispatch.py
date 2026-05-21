@@ -174,3 +174,17 @@ def test_concurrent_dispatch_does_not_redirect_global_stdout(tmp_path):
     assert sys.stdout is original_stdout, "sys.stdout was corrupted by _dispatch"
     assert sys.stderr is original_stderr, "sys.stderr was corrupted by _dispatch"
     assert errors == [], f"Dispatch raised errors: {errors}"
+
+    import logging as _logging
+
+    # Both log files must have been created (logging actually reached the file)
+    assert log1.exists(), f"run1 log was not created at {log1}"
+    assert log2.exists(), f"run2 log was not created at {log2}"
+
+    # No FileHandlers for these paths should remain (no handler leaks)
+    leaked = [
+        h for h in _logging.getLogger().handlers
+        if isinstance(h, _logging.FileHandler)
+        and h.baseFilename in (str(log1.resolve()), str(log2.resolve()))
+    ]
+    assert leaked == [], f"FileHandler(s) leaked onto root logger: {leaked}"
