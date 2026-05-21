@@ -1,6 +1,8 @@
 # Progress
 
 ## Done
+- Cloud storage security feature for document handling — Implementation focused on preventing misconfigured S3 bucket exposures for sensitive documents (passports, IDs, selfies); security-first architecture based on Tabiq breach case study
+- 7-Eleven/ShinyHunters data breach article processed through news-article pipeline; article output to `articles/` with YAML frontmatter; dual translation outputs (zh-hk, zh-tw); GitHub PR automation triggered
 - Infrastructure modules: `shipping_config`, `email_service`, `image_pipeline`, `observability`
 - Backend stack: FastAPI + SQLAlchemy + PostgreSQL 15 with Alembic migrations
 - Models: Product, Category, Cart, CartItem, Order, OrderItem, Review, User (with improved relationship definitions and database constraints)
@@ -20,7 +22,10 @@
 - PR/Marketing Campaign role prompts: `roles/pr_analyst.md`, `roles/pr_creative.md`, `roles/pr_proposal.md`
 
 ## In Progress
-- None
+- Linux 7.1-rc4 News Summarizer — Phoronix source processed (pipeline run completed, no implementation produced)
+- Google Chromium vulnerability exposure news feature — BleepingComputer source processed; requirement specification captured; full implementation (PRD, architecture, code) pending
+- Microsoft Defender zero-day vulnerabilities coverage — BleepingComputer source processed; requirement specification captured; full implementation (PRD, architecture, code) pending
+- CVE-2026-46333 Linux kernel privilege escalation vulnerability feature — requirement specification captured; PRD, architecture, and code implementation pending
 
 ## Not Started
 - Frontend component implementation (storefront and admin UI)
@@ -31,6 +36,18 @@
 - UK VAT/GBP handling for cart & checkout
 
 ## Known Issues / Tech Debt
+- Linux 7.1-rc4 News Summarizer pipeline run produced no implementation artifacts — only requirement specification captured; full PRD, architecture, and code pending
+- Google Chromium vulnerability pipeline run produced no implementation artifacts — only requirement specification captured; full PRD, architecture, and code pending
+- Microsoft Defender zero-day pipeline run produced no implementation artifacts — only requirement specification captured; full PRD, architecture, and code pending
+- CVE-2026-46333 pipeline run produced no implementation artifacts — only requirement specification captured; full PRD, architecture, and code pending
+- Pattern observed: Multiple consecutive pipeline runs completing without populating PRD, Architecture, or Code Review sections
+- Cloud storage security feature: PRD excerpt not provided — requirements may need clarification
+- Cloud storage security feature: Architecture Design excerpt empty — architectural decisions not documented
+- Cloud storage security feature: Code Review Notes empty — no review feedback recorded yet
+- Cloud storage security feature: Implementation details not captured in summary — specific files/modules/APIs unknown
+- PRD, Architecture Design, and Code Review sections left empty in 7-Eleven/ShinyHunters breach brief
+- No specific reviewer feedback captured for this breach type
+- Pattern for handling franchisee data vs. customer data distinctions not documented
 - **Product→Review relationship asymmetry** (`backend/app/models/product.py:38-43`): filtered `primaryjoin` with `back_populates` creates asymmetric bidirectional relationship that will break admin moderation workflow — blocks merge
 - **Guest cart Redis implementation unverified**: cart model and service files omitted from code review — critical path for checkout, still unresolved from previous runs
 - Known Issue: None at this time — all agent LLM calls use BaseAgent.call() correctly.

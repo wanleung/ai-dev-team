@@ -65,14 +65,14 @@ def test_stage_news_writer_sets_article_draft():
     from orchestrator import PipelineResult, Orchestrator
     orch = Orchestrator.__new__(Orchestrator)
     mock_agent = MagicMock()
-    mock_agent.run.return_value = {"article_draft": "# My Draft\n\nContent."}
+    mock_agent.run.return_value = {"article_draft": "---\ntitle: My Draft\n---\n\nContent."}
     orch.news_writer = mock_agent
 
     result = PipelineResult(requirement="Test article")
     result.issue_body = "https://example.com"
     result.discussion_synthesis = "Key point: important"
     orch._stage_news_writer(result)
-    assert result.article_draft == "# My Draft\n\nContent."
+    assert result.article_draft == "---\ntitle: My Draft\n---\n\nContent."
 
 
 def test_stage_news_editor_sets_article():
@@ -164,28 +164,28 @@ def test_stage_translate_sets_result_field():
     from orchestrator import PipelineResult, Orchestrator
     orch = Orchestrator.__new__(Orchestrator)
     mock_agent = MagicMock()
-    mock_agent.run.return_value = {"translated_article": "# 粵語文章\n\n內容。"}
+    mock_agent.run.return_value = {"translated_article": "---\ntitle: 粵語文章\n---\n\n內容。"}
     orch.translator = mock_agent
 
     result = PipelineResult(requirement="Test")
-    result.article = "# English Article\n\nContent."
+    result.article = "---\ntitle: English Article\n---\n\nContent."
     orch._stage_translate(result, "cantonese", "article_zh_hk")
-    assert result.article_zh_hk == "# 粵語文章\n\n內容。"
-    mock_agent.run.assert_called_once_with("# English Article\n\nContent.", target_language="cantonese", reviewer_notes="")
+    assert result.article_zh_hk == "---\ntitle: 粵語文章\n---\n\n內容。"
+    mock_agent.run.assert_called_once_with("---\ntitle: English Article\n---\n\nContent.", target_language="cantonese", reviewer_notes="")
 
 
 def test_stage_translate_uses_article_draft_when_no_article():
     from orchestrator import PipelineResult, Orchestrator
     orch = Orchestrator.__new__(Orchestrator)
     mock_agent = MagicMock()
-    mock_agent.run.return_value = {"translated_article": "# 草稿翻譯"}
+    mock_agent.run.return_value = {"translated_article": "---\ntitle: 草稿翻譯\n---\n\n"}
     orch.translator = mock_agent
 
     result = PipelineResult(requirement="Test")
     result.article = ""
-    result.article_draft = "# Draft Article"
+    result.article_draft = "---\ntitle: Draft Article\n---\n\nBody."
     orch._stage_translate(result, "traditional_chinese", "article_zh_tw")
-    assert result.article_zh_tw == "# 草稿翻譯"
+    assert result.article_zh_tw == "---\ntitle: 草稿翻譯\n---\n\n"
 
 
 def test_stage_translate_raises_when_no_source():
@@ -208,7 +208,7 @@ def test_stage_translate_raises_on_empty_output():
     orch.translator = mock_agent
 
     result = PipelineResult(requirement="Test")
-    result.article = "# Article"
+    result.article = "---\ntitle: Article\n---\n\nContent."
     with pytest.raises(RuntimeError, match="empty output"):
         orch._stage_translate(result, "cantonese", "article_zh_hk")
 
@@ -550,7 +550,7 @@ def test_stage_news_writer_prepends_editorial_notes():
 
     orch = _make_triage_orch()
     orch.news_writer = MagicMock()
-    orch.news_writer.run.return_value = {"article_draft": "# Draft\n\nBody."}
+    orch.news_writer.run.return_value = {"article_draft": "---\ntitle: Draft\n---\n\nBody."}
 
     orch._stage_news_writer(result)
 

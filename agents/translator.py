@@ -47,7 +47,9 @@ class TranslatorAgent(BaseAgent):
             f"Translate the following news article to {label}.\n\n"
             f"Follow your role instructions exactly.\n\n"
             f"<ARTICLE>\n{article}\n</ARTICLE>\n\n"
-            f"Output the translated article only."
+            f"Output the COMPLETE translated article in full, starting with '---' (YAML frontmatter). "
+            f"Do NOT describe changes, list corrections, or provide commentary. "
+            f"Your entire response must be the translated article itself."
         )
         translated_article = self.call(prompt)
         return {"translated_article": translated_article}

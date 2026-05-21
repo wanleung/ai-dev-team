@@ -53,7 +53,10 @@ class NewsWriterAgent(BaseAgent):
             f"Write a news article based on the following brief:\n\n"
             f"---\n{issue_body}\n---\n\n"
             f"{research_instruction}"
-            f"Follow your role instructions. Output the full article in markdown with YAML frontmatter."
+            f"Follow your role instructions. "
+            f"Output ONLY the complete article in markdown with YAML frontmatter, starting with '---'. "
+            f"Do NOT describe what you are doing, mention file paths, or say the article was written anywhere. "
+            f"Your entire response must be the article itself."
         )
         if self._tool_registry is not None:
             article_draft = self.call_with_tools(prompt, self._tool_registry)

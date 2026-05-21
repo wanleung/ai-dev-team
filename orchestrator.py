@@ -4430,9 +4430,15 @@ class Orchestrator(TestFixLoopMixin):
         pub_date = _datetime.utcnow().strftime("%Y-%m-%dT%H:%M:00")
         issue_body = f"[PUBLICATION DATE: {pub_date}]\n\n" + issue_body
         wr = self.news_writer.run(issue_body, discussion_synthesis=synthesis)
-        if not wr.get("article_draft", "").strip():
+        draft = wr.get("article_draft", "").strip()
+        if not draft:
             raise RuntimeError("NewsWriter produced an empty draft — LLM may have returned no content.")
-        result.article_draft = wr["article_draft"]
+        if not draft.startswith("---"):
+            raise RuntimeError(
+                f"NewsWriter output is not a valid article (missing YAML frontmatter). "
+                f"Got: {draft[:120]!r}"
+            )
+        result.article_draft = draft
         # Do NOT clear discussion_synthesis here — if discuss_news_draft runs next it
         # will overwrite it; if it doesn't run the editor should still see the
         # pre-write analysis synthesis from discuss_news_analysis.
@@ -4451,7 +4457,13 @@ class Orchestrator(TestFixLoopMixin):
         )
         if not ed.get("article", "").strip():
             raise RuntimeError("NewsEditor produced an empty article — LLM may have returned no content.")
-        result.article = ed["article"]
+        edited = ed["article"].strip()
+        if not edited.startswith("---"):
+            raise RuntimeError(
+                f"NewsEditor output is not a valid article (missing YAML frontmatter). "
+                f"Got: {edited[:120]!r}"
+            )
+        result.article = edited
 
     _TRANSLATE_VALID_LANGUAGES = frozenset({"cantonese", "traditional_chinese"})
     _TRANSLATE_VALID_FIELDS = frozenset({"article_zh_hk", "article_zh_tw"})
@@ -4478,6 +4490,11 @@ class Orchestrator(TestFixLoopMixin):
         translated = out.get("translated_article", "")
         if not translated.strip():
             raise RuntimeError(f"translate ({target_language}): empty output from translator")
+        if not translated.strip().startswith("---"):
+            raise RuntimeError(
+                f"translate ({target_language}): output is not a valid article (missing YAML frontmatter). "
+                f"Got: {translated.strip()[:120]!r}"
+            )
         setattr(result, result_field, translated)
 
     def _stage_news_reviewer(self, result: PipelineResult) -> None:
@@ -4553,10 +4570,17 @@ class Orchestrator(TestFixLoopMixin):
         if not article.strip():
             result.add_error("news_article_pr: no article content to commit.")
             return
+        if not article.strip().startswith("---"):
+            result.add_error(
+                f"news_article_pr: article is missing YAML frontmatter — refusing to commit garbage content. "
+                f"Content preview: {article.strip()[:120]!r}"
+            )
+            return
 
         # Parse frontmatter for date and title
         date_str = ""
-        title_slug = "article"
+        title_slug = ""
+        source_url = ""
         fm_match = re.match(r"^---\s*\n(.*?)\n---", article, re.DOTALL)
         if fm_match:
             try:
@@ -4564,6 +4588,7 @@ class Orchestrator(TestFixLoopMixin):
                 raw_date = str(fm.get("date", ""))
                 date_str = raw_date[:10].replace("-", "") if raw_date else ""
                 title = str(fm.get("title", ""))
+                source_url = str(fm.get("source_url", ""))
                 title_slug = re.sub(r"[^a-z0-9]+", "-", title.lower())[:40].strip("-")
             except Exception:  # noqa: BLE001
                 pass
@@ -4571,6 +4596,17 @@ class Orchestrator(TestFixLoopMixin):
         if not date_str:
             from datetime import datetime
             date_str = datetime.utcnow().strftime("%Y%m%d")
+
+        # Fall back to source URL hostname + path slug when title is empty (e.g. all-Chinese title)
+        if not title_slug and source_url:
+            try:
+                from urllib.parse import urlparse as _urlparse
+                parsed = _urlparse(source_url)
+                host_slug = re.sub(r"[^a-z0-9]+", "-", parsed.hostname.lower()).strip("-")[:20] if parsed.hostname else ""
+                path_slug = re.sub(r"[^a-z0-9]+", "-", parsed.path.lower()).strip("-")[:20] if parsed.path else ""
+                title_slug = f"{host_slug}-{path_slug}".strip("-")[:40]
+            except Exception:  # noqa: BLE001
+                pass
 
         issue_part = f"{result.issue_number}-" if result.issue_number else ""
         filename = f"articles/{date_str}-{issue_part}{title_slug or 'article'}.md"
