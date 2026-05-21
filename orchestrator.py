@@ -1038,7 +1038,7 @@ class Orchestrator(TestFixLoopMixin):
         _FACTORY_PREFIXES = (
             "ollama/", "copilot/", "nvidia-nim/",
             "opencode/", "opencode-zen/", "opencode-go/",
-            "claude-",
+            "claude-", "dashscope/",
         )
         # Route to GitHub Models for bare names OR unknown-prefix names
         # (e.g. "openai/gpt-4.1", "meta/llama-3.1-405b-instruct").
@@ -3171,6 +3171,14 @@ class Orchestrator(TestFixLoopMixin):
             result.progress_comment_id = self._tracker.comment_id
             self._save_checkpoint(result)
             return self._finish(result, start_time)
+        except BudgetExceededError:
+            # The token budget was exhausted mid-pipeline.  Save the checkpoint so
+            # partial progress is not lost and the run can be inspected/resumed.
+            logging.warning("Token budget exceeded — saving checkpoint and aborting pipeline")
+            result.add_error("Pipeline aborted: token budget exceeded")
+            result.progress_comment_id = self._tracker.comment_id
+            self._save_checkpoint(result)
+            return self._finish(result, start_time)
 
 
     # ── Stage implementations ────────────────────────────────────────────────
@@ -4373,11 +4381,16 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_news_writer(self, result: PipelineResult) -> None:
         """Write a first-draft news article from the issue brief."""
+        from datetime import datetime as _datetime
         issue_body = getattr(result, "issue_body", "") or result.requirement
         synthesis = result.discussion_synthesis or ""
         # Prepend editorial triage notes so the writer knows the agreed angle
         if result.editorial_notes:
             issue_body = f"[EDITORIAL NOTES]\n{result.editorial_notes}\n\n" + issue_body
+        # Inject today's publication date so the writer uses it in frontmatter,
+        # not the source article's original publication date.
+        pub_date = _datetime.utcnow().strftime("%Y-%m-%dT%H:%M:00")
+        issue_body = f"[PUBLICATION DATE: {pub_date}]\n\n" + issue_body
         wr = self.news_writer.run(issue_body, discussion_synthesis=synthesis)
         if not wr.get("article_draft", "").strip():
             raise RuntimeError("NewsWriter produced an empty draft — LLM may have returned no content.")
