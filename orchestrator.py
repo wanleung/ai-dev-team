@@ -791,6 +791,15 @@ class Orchestrator(TestFixLoopMixin):
         self._rag_registry = rag_registry
         self.repo_auto_indexer = RepoAutoIndexer() if rag_registry else None
 
+        # Extract Google Search MCP for web-search-capable agents (news_reviewer etc.)
+        search_servers = [s for s in (mcp_servers or []) if s.get("name") == "google_search"]
+        try:
+            search_registry = MCPToolRegistry(search_servers) if search_servers else None
+        except Exception as exc:
+            log.warning("[orchestrator] Google Search MCP init failed: %s — web search disabled", exc)
+            search_registry = None
+        self._search_registry = search_registry
+
         # Shared kwargs for all agents (kept for backward compat; tests check agent_kwargs)
         agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
                               "ollama_api_key": ollama_api_key,
@@ -850,7 +859,7 @@ class Orchestrator(TestFixLoopMixin):
         self.pm = ProductManagerAgent(**{**agent_kwargs, **_mk("product_manager")})
         self.news_writer = NewsWriterAgent(**{**agent_kwargs, **_mk("news_writer")})
         self.news_editor = NewsEditorAgent(**{**agent_kwargs, **_mk("news_editor")})
-        self.news_reviewer = NewsReviewerAgent(**{**agent_kwargs, **_mk("news_reviewer")})
+        self.news_reviewer = NewsReviewerAgent(tool_registry=search_registry, **{**agent_kwargs, **_mk("news_reviewer")})
         self.translator = TranslatorAgent(**{**agent_kwargs, **_mk("translator")})
         self.pm_reviewer = PMReviewerAgent(**{**agent_kwargs, **_mk("pm_reviewer")})
         self.architect = ArchitectAgent(tool_registry=rag_registry, **{**agent_kwargs, **_mk("architect")})

@@ -17,8 +17,12 @@ import re
 import socket
 import urllib.parse
 import urllib.request
+from typing import TYPE_CHECKING
 
 from .base_agent import BaseAgent
+
+if TYPE_CHECKING:
+    from tools.registry import ToolRegistry
 
 _log = logging.getLogger("news_reviewer")
 _FETCH_TIMEOUT = 10  # seconds
@@ -95,6 +99,11 @@ class NewsReviewerAgent(BaseAgent):
     """Review a finalised news article and its translations for quality."""
 
     role_name = "news_reviewer"
+    _tool_registry: "ToolRegistry | None" = None  # set by __init__ when search MCP is available
+
+    def __init__(self, *args, tool_registry: "ToolRegistry | None" = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._tool_registry = tool_registry
 
     def run(
         self,
@@ -118,11 +127,22 @@ class NewsReviewerAgent(BaseAgent):
                 - confidence (str): "high" | "medium" | "low"
         """
         source_content = _fetch_source(source_url)
-        source_section = (
-            f"<SOURCE_CONTENT>\n{source_content[:8000]}\n</SOURCE_CONTENT>\n\n"
-            if source_content
-            else "<SOURCE_CONTENT>Not available — skip fact check, still check wording and characters.</SOURCE_CONTENT>\n\n"
-        )
+        source_fetched = bool(source_content)
+
+        if source_content:
+            source_section = f"<SOURCE_CONTENT>\n{source_content[:8000]}\n</SOURCE_CONTENT>\n\n"
+        elif source_url and self._tool_registry is not None:
+            # Source URL was blocked (e.g. 403). Instruct the LLM to use google_search /
+            # google_fetch_page tools to find corroborating sources for fact-checking.
+            _log.info("news_reviewer: source fetch failed for %r — will use web search tools", source_url)
+            source_section = (
+                f"<SOURCE_CONTENT>Direct fetch of {source_url!r} was blocked (HTTP 403 or similar). "
+                "Use the google_fetch_page tool to retrieve it, or use google_search to find "
+                "corroborating sources for the article's key claims. Perform fact-checking based "
+                "on what you find.</SOURCE_CONTENT>\n\n"
+            )
+        else:
+            source_section = "<SOURCE_CONTENT>Not available — skip fact check, still check wording and characters.</SOURCE_CONTENT>\n\n"
 
         prompt = (
             f"{source_section}"
@@ -133,5 +153,10 @@ class NewsReviewerAgent(BaseAgent):
             "Output ONLY the structured verdict in the exact format specified."
         )
 
-        output = self.call(prompt)
+        # Use tool-calling path when web search tools are available and source was not
+        # directly fetched (blocked URL or no URL).
+        if not source_fetched and self._tool_registry is not None:
+            output = self.call_with_tools(prompt, self._tool_registry)
+        else:
+            output = self.call(prompt)
         return _parse_verdict(output)
