@@ -14,11 +14,11 @@ early_exit: CONSENSUS_REACHED
 participants:
   - role: news_writer
     persona_file: roles/news_writer.md
-    homework_llm: "dashscope/qwen3-plus"  # research round: fetch source, search related stories
+    homework_llm: "dashscope/qwen3-32b"  # research round: fetch source, search related stories
 
   - role: news_editor
     persona_file: roles/news_editor.md
-    homework_llm: "dashscope/qwen3-plus"
+    homework_llm: "dashscope/qwen3-32b"
 
 homework_round: true    # participants research the story independently first
 
