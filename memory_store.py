@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -51,6 +52,9 @@ class MemoryStore:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.commit()
+        self._lock = threading.Lock()
         self._init_schema()
 
     # ── Schema ────────────────────────────────────────────────────────────────
@@ -93,23 +97,24 @@ class MemoryStore:
         period_label: str = "",
     ) -> int:
         """Persist a summary entry. Returns the row ID."""
-        cur = self._conn.execute(
-            """INSERT INTO runs
-               (repo, run_id, created_at, summary, tags, mode, tier, period_label)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (
-                repo,
-                run_id or "",
-                datetime.now(timezone.utc).isoformat(),
-                summary,
-                json.dumps(tags or []),
-                mode,
-                tier,
-                period_label or "",
-            ),
-        )
-        self._conn.commit()
-        return cur.lastrowid
+        with self._lock:
+            cur = self._conn.execute(
+                """INSERT INTO runs
+                   (repo, run_id, created_at, summary, tags, mode, tier, period_label)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    repo,
+                    run_id or "",
+                    datetime.now(timezone.utc).isoformat(),
+                    summary,
+                    json.dumps(tags or []),
+                    mode,
+                    tier,
+                    period_label or "",
+                ),
+            )
+            self._conn.commit()
+            return cur.lastrowid
 
     # ── Consolidation ─────────────────────────────────────────────────────────
 
@@ -145,13 +150,20 @@ class MemoryStore:
 
         Returns:
             Row ID of the new monthly entry, or None if nothing to consolidate.
+
+        Note:
+            The LLM call is performed *outside* the lock so we never hold the write
+            lock for the potentially multi-second network round-trip.  Only the DB
+            reads and writes are protected by ``self._lock``.
         """
-        rows = self._conn.execute(
-            """SELECT id, created_at, mode, summary
-               FROM runs WHERE repo=? AND tier='run' AND consolidated=0
-               ORDER BY id ASC""",
-            (repo,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id, created_at, mode, summary
+                   FROM runs WHERE repo=? AND tier='run' AND consolidated=0
+                   ORDER BY id ASC""",
+                (repo,),
+            ).fetchall()
+
         if not rows:
             return None
 
@@ -180,22 +192,32 @@ Write a consolidated monthly snapshot (max 600 words) covering:
 Be concise and factual. Future AI agents will read this to understand the project's history.
 Output plain text only."""
 
+        # LLM call happens OUTSIDE the lock — may take several seconds
         consolidated_text = llm_fn(prompt)
 
-        # Save monthly snapshot
-        new_id = self.save(
-            repo=repo,
-            summary=consolidated_text,
-            mode="consolidation",
-            tier="monthly",
-            period_label=period_label,
-        )
-        # Mark source run entries as consolidated
-        self._conn.execute(
-            f"UPDATE runs SET consolidated=1 WHERE id IN ({','.join('?' * len(ids))})",
-            ids,
-        )
-        self._conn.commit()
+        # Save monthly snapshot and mark source rows as consolidated — both under lock
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(
+                    """INSERT INTO runs
+                       (repo, run_id, created_at, summary, tags, mode, tier, period_label)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (
+                        repo,
+                        "",
+                        datetime.now(timezone.utc).isoformat(),
+                        consolidated_text,
+                        json.dumps([]),
+                        "consolidation",
+                        "monthly",
+                        period_label,
+                    ),
+                )
+                new_id = cur.lastrowid
+                self._conn.execute(
+                    f"UPDATE runs SET consolidated=1 WHERE id IN ({','.join('?' * len(ids))})",
+                    ids,
+                )
         return new_id
 
     def consolidate_quarterly(
@@ -209,13 +231,20 @@ Output plain text only."""
 
         Returns:
             Row ID of the new quarterly entry, or None if nothing to consolidate.
+
+        Note:
+            The LLM call is performed *outside* the lock so we never hold the write
+            lock for the potentially multi-second network round-trip.  Only the DB
+            reads and writes are protected by ``self._lock``.
         """
-        rows = self._conn.execute(
-            """SELECT id, created_at, period_label, summary
-               FROM runs WHERE repo=? AND tier='monthly' AND consolidated=0
-               ORDER BY id ASC""",
-            (repo,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id, created_at, period_label, summary
+                   FROM runs WHERE repo=? AND tier='monthly' AND consolidated=0
+                   ORDER BY id ASC""",
+                (repo,),
+            ).fetchall()
+
         if not rows:
             return None
 
@@ -243,20 +272,32 @@ Write a quarterly project index (max 400 words) covering:
 Be strategic. This is the highest-level memory that future agents rely on for big-picture context.
 Output plain text only."""
 
+        # LLM call happens OUTSIDE the lock — may take several seconds
         consolidated_text = llm_fn(prompt)
 
-        new_id = self.save(
-            repo=repo,
-            summary=consolidated_text,
-            mode="consolidation",
-            tier="quarterly",
-            period_label=period_label,
-        )
-        self._conn.execute(
-            f"UPDATE runs SET consolidated=1 WHERE id IN ({','.join('?' * len(ids))})",
-            ids,
-        )
-        self._conn.commit()
+        # Save quarterly snapshot and mark source rows as consolidated — both under lock
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(
+                    """INSERT INTO runs
+                       (repo, run_id, created_at, summary, tags, mode, tier, period_label)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (
+                        repo,
+                        "",
+                        datetime.now(timezone.utc).isoformat(),
+                        consolidated_text,
+                        json.dumps([]),
+                        "consolidation",
+                        "quarterly",
+                        period_label,
+                    ),
+                )
+                new_id = cur.lastrowid
+                self._conn.execute(
+                    f"UPDATE runs SET consolidated=1 WHERE id IN ({','.join('?' * len(ids))})",
+                    ids,
+                )
         return new_id
 
     # ── Recall (tiered) ───────────────────────────────────────────────────────
