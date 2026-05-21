@@ -169,3 +169,41 @@ class TestConsolidateLockUsage:
 
         mock_lock.__enter__.assert_called()
         mock_lock.__exit__.assert_called()
+
+
+# ── TOCTOU race in concurrent consolidation ───────────────────────────────────
+
+def test_concurrent_consolidate_monthly_no_duplicates(store):
+    """Two concurrent consolidation calls must not produce duplicate monthly snapshots."""
+    import threading
+
+    # Save enough run rows to trigger consolidation (MONTHLY_THRESHOLD = 10)
+    for i in range(12):
+        store.save(repo="owner/repo", summary=f"run summary {i:04d}", run_id=f"run-{i:04d}")
+
+    start_barrier = threading.Barrier(2)
+    # Force both threads to finish the DB-read phase before either proceeds to
+    # write, making the TOCTOU window deterministic.
+    llm_barrier = threading.Barrier(2)
+    results = []
+
+    def slow_llm(prompt: str) -> str:
+        llm_barrier.wait(timeout=5)  # ensures both threads have read rows before either writes
+        return "consolidated monthly summary"
+
+    def run_consolidate():
+        start_barrier.wait()
+        result = store.consolidate_monthly("owner/repo", llm_fn=slow_llm)
+        results.append(result)
+
+    threads = [threading.Thread(target=run_consolidate) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Verify: exactly 1 monthly snapshot, not 2
+    count = store._conn.execute(
+        "SELECT COUNT(*) FROM runs WHERE repo='owner/repo' AND tier='monthly'"
+    ).fetchone()[0]
+    assert count == 1, f"Expected 1 monthly snapshot, got {count}"

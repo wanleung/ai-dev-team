@@ -98,22 +98,22 @@ class MemoryStore:
     ) -> int:
         """Persist a summary entry. Returns the row ID."""
         with self._lock:
-            cur = self._conn.execute(
-                """INSERT INTO runs
-                   (repo, run_id, created_at, summary, tags, mode, tier, period_label)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (
-                    repo,
-                    run_id or "",
-                    datetime.now(timezone.utc).isoformat(),
-                    summary,
-                    json.dumps(tags or []),
-                    mode,
-                    tier,
-                    period_label or "",
-                ),
-            )
-            self._conn.commit()
+            with self._conn:
+                cur = self._conn.execute(
+                    """INSERT INTO runs
+                       (repo, run_id, created_at, summary, tags, mode, tier, period_label)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (
+                        repo,
+                        run_id or "",
+                        datetime.now(timezone.utc).isoformat(),
+                        summary,
+                        json.dumps(tags or []),
+                        mode,
+                        tier,
+                        period_label or "",
+                    ),
+                )
             return cur.lastrowid
 
     # ── Consolidation ─────────────────────────────────────────────────────────
@@ -197,6 +197,15 @@ Output plain text only."""
 
         # Save monthly snapshot and mark source rows as consolidated — both under lock
         with self._lock:
+            # Re-verify rows haven't been consolidated by a concurrent caller
+            placeholders = ",".join("?" * len(ids))
+            still_raw = self._conn.execute(
+                f"SELECT COUNT(*) FROM runs WHERE id IN ({placeholders}) AND consolidated=0",
+                ids,
+            ).fetchone()[0]
+            if still_raw == 0:
+                return None  # already handled by a concurrent thread
+
             with self._conn:
                 cur = self._conn.execute(
                     """INSERT INTO runs
@@ -215,7 +224,7 @@ Output plain text only."""
                 )
                 new_id = cur.lastrowid
                 self._conn.execute(
-                    f"UPDATE runs SET consolidated=1 WHERE id IN ({','.join('?' * len(ids))})",
+                    f"UPDATE runs SET consolidated=1 WHERE id IN ({placeholders}) AND consolidated=0",
                     ids,
                 )
         return new_id
@@ -277,6 +286,15 @@ Output plain text only."""
 
         # Save quarterly snapshot and mark source rows as consolidated — both under lock
         with self._lock:
+            # Re-verify rows haven't been consolidated by a concurrent caller
+            placeholders = ",".join("?" * len(ids))
+            still_raw = self._conn.execute(
+                f"SELECT COUNT(*) FROM runs WHERE id IN ({placeholders}) AND consolidated=0",
+                ids,
+            ).fetchone()[0]
+            if still_raw == 0:
+                return None  # already handled by a concurrent thread
+
             with self._conn:
                 cur = self._conn.execute(
                     """INSERT INTO runs
@@ -295,7 +313,7 @@ Output plain text only."""
                 )
                 new_id = cur.lastrowid
                 self._conn.execute(
-                    f"UPDATE runs SET consolidated=1 WHERE id IN ({','.join('?' * len(ids))})",
+                    f"UPDATE runs SET consolidated=1 WHERE id IN ({placeholders}) AND consolidated=0",
                     ids,
                 )
         return new_id
