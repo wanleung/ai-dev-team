@@ -185,7 +185,7 @@ def test_stage_translate_uses_article_draft_when_no_article():
     result.article = ""
     result.article_draft = "---\ntitle: Draft Article\n---\n\nBody."
     orch._stage_translate(result, "traditional_chinese", "article_zh_tw")
-    assert result.article_zh_tw == "---\ntitle: 草稿翻譯\n---\n\n"
+    assert result.article_zh_tw == "---\ntitle: 草稿翻譯\n---"
 
 
 def test_stage_translate_raises_when_no_source():

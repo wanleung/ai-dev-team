@@ -4417,6 +4417,24 @@ class Orchestrator(TestFixLoopMixin):
         else:
             console.print(f"  ✅ [green]Editorial triage: PUBLISH[/green] — {parsed['notes']}")
 
+    @staticmethod
+    def _strip_article_code_fence(text: str) -> str:
+        """Strip markdown code fences that LLMs sometimes wrap articles in.
+
+        Handles patterns like:
+            ```yaml\\n---\\n...\\n---\\n```
+            ```markdown\\n---\\n...
+            ```\\n---\\n...
+        Returns the content between the outermost ``` delimiters if present,
+        otherwise returns the text unchanged.
+        """
+        import re as _re
+        stripped = text.strip()
+        m = _re.match(r"^```(?:yaml|markdown|md)?\s*\n(.*?)(?:\n```\s*)?$", stripped, _re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        return stripped
+
     def _stage_news_writer(self, result: PipelineResult) -> None:
         """Write a first-draft news article from the issue brief."""
         from datetime import datetime as _datetime
@@ -4430,7 +4448,7 @@ class Orchestrator(TestFixLoopMixin):
         pub_date = _datetime.utcnow().strftime("%Y-%m-%dT%H:%M:00")
         issue_body = f"[PUBLICATION DATE: {pub_date}]\n\n" + issue_body
         wr = self.news_writer.run(issue_body, discussion_synthesis=synthesis)
-        draft = wr.get("article_draft", "").strip()
+        draft = self._strip_article_code_fence(wr.get("article_draft", "") or "")
         if not draft:
             raise RuntimeError("NewsWriter produced an empty draft — LLM may have returned no content.")
         if not draft.startswith("---"):
@@ -4457,7 +4475,7 @@ class Orchestrator(TestFixLoopMixin):
         )
         if not ed.get("article", "").strip():
             raise RuntimeError("NewsEditor produced an empty article — LLM may have returned no content.")
-        edited = ed["article"].strip()
+        edited = self._strip_article_code_fence(ed["article"] or "")
         if not edited.startswith("---"):
             raise RuntimeError(
                 f"NewsEditor output is not a valid article (missing YAML frontmatter). "
@@ -4487,13 +4505,13 @@ class Orchestrator(TestFixLoopMixin):
                 "run news_writer or news_editor before translation stages"
             )
         out = self.translator.run(source, target_language=target_language, reviewer_notes=reviewer_notes)
-        translated = out.get("translated_article", "")
-        if not translated.strip():
+        translated = self._strip_article_code_fence(out.get("translated_article", "") or "")
+        if not translated:
             raise RuntimeError(f"translate ({target_language}): empty output from translator")
-        if not translated.strip().startswith("---"):
+        if not translated.startswith("---"):
             raise RuntimeError(
                 f"translate ({target_language}): output is not a valid article (missing YAML frontmatter). "
-                f"Got: {translated.strip()[:120]!r}"
+                f"Got: {translated[:120]!r}"
             )
         setattr(result, result_field, translated)
 
