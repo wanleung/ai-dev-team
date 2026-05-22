@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import time
@@ -107,17 +108,40 @@ class OpenCodeBackend(LLMBackend):
                     "--",
                     "Follow the instructions in the attached file exactly.",
                 ]
-                result = subprocess.run(
+                proc = subprocess.Popen(
                     cmd,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     text=True,
-                    timeout=self._timeout,
+                    # Put opencode in its own process group so SIGTERM/SIGKILL
+                    # reaches it even if Python is signalled externally.
+                    start_new_session=True,
                 )
-                if result.returncode != 0:
+                try:
+                    stdout, stderr = proc.communicate(timeout=self._timeout)
+                except subprocess.TimeoutExpired:
+                    # Kill the entire process group (catches any spawned children)
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    proc.wait()
                     raise RuntimeError(
-                        f"opencode exited {result.returncode}: {result.stderr[:300]}"
+                        f"opencode timed out after {self._timeout}s"
                     )
-                output = result.stdout.strip()
+                finally:
+                    # Belt-and-suspenders: ensure the process is dead
+                    if proc.poll() is None:
+                        try:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        proc.wait()
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        f"opencode exited {proc.returncode}: {stderr[:300]}"
+                    )
+                output = stdout.strip()
                 if not output:
                     raise RuntimeError("Empty response from opencode")
                 output = _ANSI_ESCAPE.sub("", output).strip()
