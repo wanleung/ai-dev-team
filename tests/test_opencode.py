@@ -5,6 +5,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def _make_popen_mock(returncode=0, stdout="Here is the design.", stderr=""):
+    """Return a mock Popen instance with communicate() pre-configured."""
+    proc = MagicMock()
+    proc.communicate.return_value = (stdout, stderr)
+    proc.returncode = returncode
+    # poll() returning non-None means process has exited — skips the finally kill
+    proc.poll.return_value = returncode
+    proc.pid = 12345
+    return proc
+
+
 # ── _is_opencode_model ────────────────────────────────────────────────────────
 
 def test_is_opencode_model_with_prefix():
@@ -62,15 +73,12 @@ def _make_agent(model="opencode/anthropic/claude-sonnet-4-5"):
 def test_call_opencode_runs_correct_command():
     """_call_opencode invokes `opencode run --model <provider/model> --file <tmp> --`."""
     agent = _make_agent()
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = "Here is the design."
-    mock_result.stderr = ""
+    proc = _make_popen_mock(stdout="Here is the design.")
 
-    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result) as mock_run:
+    with patch("agents.backends.opencode.subprocess.Popen", return_value=proc) as mock_popen:
         agent._call_opencode("Design the system")
 
-    call_args = mock_run.call_args[0][0]
+    call_args = mock_popen.call_args[0][0]
     assert call_args[0] == "opencode"
     assert call_args[1] == "run"
     assert call_args[2] == "--model"
@@ -80,21 +88,15 @@ def test_call_opencode_runs_correct_command():
 
 def test_call_opencode_embeds_system_prompt():
     """_call_opencode writes system role prompt to the temp file passed via --file."""
-    import os
     from agents.base_agent import BaseAgent
     agent = BaseAgent(model="opencode/openai/gpt-4o")
     agent.system_prompt = "You are a senior architect."
 
-    mock_result = MagicMock(returncode=0, stdout="Design done.", stderr="")
-    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result) as mock_run:
+    proc1 = _make_popen_mock(stdout="Design done.")
+    with patch("agents.backends.opencode.subprocess.Popen", return_value=proc1):
         agent._call_opencode("Build a REST API")
 
-    call_args = mock_run.call_args[0][0]
-    file_idx = call_args.index("--file") + 1
-    tmp_path = call_args[file_idx]
-    # temp file is deleted after call — read content was already written; verify via side-effect
-    # Instead, capture what was written by intercepting NamedTemporaryFile
-    # Re-run with a real capture to inspect file contents
+    # Re-run with a capturing NamedTemporaryFile to inspect written file contents
     written_content = []
 
     import tempfile as _tf
@@ -108,8 +110,8 @@ def test_call_opencode_embeds_system_prompt():
         f.write = tracked_write
         return f
 
-    mock_result2 = MagicMock(returncode=0, stdout="Design done.", stderr="")
-    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result2):
+    proc2 = _make_popen_mock(stdout="Design done.")
+    with patch("agents.backends.opencode.subprocess.Popen", return_value=proc2):
         with patch("agents.backends.opencode.tempfile.NamedTemporaryFile", side_effect=capturing_ntf):
             agent2 = BaseAgent(model="opencode/openai/gpt-4o")
             agent2.system_prompt = "You are a senior architect."
@@ -142,8 +144,8 @@ def test_call_opencode_embeds_history():
         {"role": "assistant", "content": "First answer"},
     ]
 
-    mock_result = MagicMock(returncode=0, stdout="Second answer.", stderr="")
-    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result):
+    proc = _make_popen_mock(stdout="Second answer.")
+    with patch("agents.backends.opencode.subprocess.Popen", return_value=proc):
         with patch("agents.backends.opencode.tempfile.NamedTemporaryFile", side_effect=capturing_ntf):
             agent._call_opencode("Second question")
 
@@ -156,12 +158,8 @@ def test_call_opencode_embeds_history():
 def test_call_opencode_strips_ansi_codes():
     """_call_opencode strips ANSI escape sequences from terminal-formatted output."""
     agent = _make_agent()
-    mock_result = MagicMock(
-        returncode=0,
-        stdout="\x1b[32mHere is the design.\x1b[0m",
-        stderr="",
-    )
-    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result):
+    proc = _make_popen_mock(stdout="\x1b[32mHere is the design.\x1b[0m")
+    with patch("agents.backends.opencode.subprocess.Popen", return_value=proc):
         result = agent._call_opencode("Design the system")
 
     assert "\x1b" not in result
@@ -171,9 +169,9 @@ def test_call_opencode_strips_ansi_codes():
 def test_call_opencode_updates_history():
     """_call_opencode appends user/assistant turns to self._history."""
     agent = _make_agent()
-    mock_result = MagicMock(returncode=0, stdout="Response.", stderr="")
+    proc = _make_popen_mock(stdout="Response.")
 
-    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result):
+    with patch("agents.backends.opencode.subprocess.Popen", return_value=proc):
         agent._call_opencode("Prompt text")
 
     assert len(agent._history) == 2
@@ -186,9 +184,9 @@ def test_call_opencode_updates_history():
 def test_call_opencode_raises_on_nonzero_exit():
     """_call_opencode raises RuntimeError when opencode exits non-zero."""
     agent = _make_agent()
-    mock_result = MagicMock(returncode=1, stdout="", stderr="opencode: auth error")
+    proc = _make_popen_mock(returncode=1, stdout="", stderr="opencode: auth error")
 
-    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result):
+    with patch("agents.backends.opencode.subprocess.Popen", return_value=proc):
         with pytest.raises(RuntimeError, match="opencode exited 1"):
             agent._call_opencode("Design the system", max_retries=0)
 
@@ -196,9 +194,9 @@ def test_call_opencode_raises_on_nonzero_exit():
 def test_call_opencode_raises_on_empty_output():
     """_call_opencode raises RuntimeError when stdout is empty."""
     agent = _make_agent()
-    mock_result = MagicMock(returncode=0, stdout="", stderr="")
+    proc = _make_popen_mock(returncode=0, stdout="", stderr="")
 
-    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result):
+    with patch("agents.backends.opencode.subprocess.Popen", return_value=proc):
         with pytest.raises(RuntimeError, match="Empty response"):
             agent._call_opencode("Design the system", max_retries=0)
 
@@ -206,10 +204,10 @@ def test_call_opencode_raises_on_empty_output():
 def test_call_opencode_retries_on_failure():
     """_call_opencode retries up to max_retries times on failure."""
     agent = _make_agent()
-    fail_result = MagicMock(returncode=1, stdout="", stderr="transient error")
-    ok_result = MagicMock(returncode=0, stdout="Success.", stderr="")
+    fail_proc = _make_popen_mock(returncode=1, stdout="", stderr="transient error")
+    ok_proc = _make_popen_mock(returncode=0, stdout="Success.")
 
-    with patch("agents.backends.opencode.subprocess.run", side_effect=[fail_result, ok_result]):
+    with patch("agents.backends.opencode.subprocess.Popen", side_effect=[fail_proc, ok_proc]):
         with patch("agents.backends.opencode.time.sleep"):
             result = agent._call_opencode("Design the system", max_retries=1)
 
@@ -219,13 +217,13 @@ def test_call_opencode_retries_on_failure():
 def test_call_opencode_uses_opencode_bin_env():
     """OPENCODE_BIN environment variable overrides the opencode binary path."""
     agent = _make_agent()
-    mock_result = MagicMock(returncode=0, stdout="Response.", stderr="")
+    proc = _make_popen_mock(stdout="Response.")
 
-    with patch("agents.backends.opencode.subprocess.run", return_value=mock_result) as mock_run:
+    with patch("agents.backends.opencode.subprocess.Popen", return_value=proc) as mock_popen:
         with patch.dict("os.environ", {"OPENCODE_BIN": "/usr/local/bin/opencode"}):
             agent._call_opencode("Prompt")
 
-    assert mock_run.call_args[0][0][0] == "/usr/local/bin/opencode"
+    assert mock_popen.call_args[0][0][0] == "/usr/local/bin/opencode"
 
 
 # ── call() routing ────────────────────────────────────────────────────────────
