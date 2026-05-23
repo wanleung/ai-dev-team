@@ -34,8 +34,10 @@ from tracker_adapter import TrackerAdapter, TriageItem, GitHubTrackerAdapter
 log = logging.getLogger("intake_triage")
 
 _ITEM_VERDICT_RE = re.compile(
-    r"ITEM\s+(\d+):\s*(PUBLISH|SKIP)[^\n]*\n(?:SCORES:[^\n]*\n)?NOTES:\s*(.+?)(?=\n\nITEM\s+\d+:|\Z)",
-    re.IGNORECASE | re.DOTALL,
+    r"ITEM\s+(\d+):\s*(PUBLISH|SKIP)[^\n]*\n"
+    r"(?:SCORES:[^\n]*\n)?"
+    r"NOTES:\s*([^\n]+)",
+    re.IGNORECASE,
 )
 _ITEM_VERDICT_NO_NOTES_RE = re.compile(
     r"ITEM\s+(\d+):\s*(PUBLISH|SKIP)",
@@ -54,7 +56,7 @@ def _parse_batch_verdicts(text: str, item_count: int) -> list[tuple[str, str]]:
     for m in _ITEM_VERDICT_RE.finditer(text):
         idx = int(m.group(1))
         verdict = m.group(2).upper()
-        notes = m.group(3).strip().splitlines()[0].strip()
+        notes = m.group(3).strip()
         results[idx] = (verdict, notes)
 
     # Fall back to verdict-only lines for items not yet parsed
@@ -342,11 +344,28 @@ def run(
                         "intake_triage: SKIP item %s (score=%.2f) — %s",
                         item.id, scored.score, scored.notes,
                     )
+                    skipped_ok = False
                     try:
                         adapter.skip(item, reason=scored.notes)
                         skipped.append(item.id)
+                        skipped_ok = True
                     except Exception as exc:
                         log.warning("intake_triage: failed to skip item %s: %s", item.id, exc)
+
+                    if skipped_ok:
+                        try:
+                            adapter.add_score_label(item, scored.score)
+                        except Exception as exc:
+                            log.warning("intake_triage: failed to add score label to item %s: %s", item.id, exc)
+                        try:
+                            adapter.post_score_comment(
+                                item,
+                                scored.score,
+                                scored.dimension_scores,
+                                verdict_config.score_scale,
+                            )
+                        except Exception as exc:
+                            log.warning("intake_triage: failed to post score comment on item %s: %s", item.id, exc)
 
             log.info("intake_triage: done. approved=%d skipped=%d", len(approved), len(skipped))
             return {"fired": True, "approved": approved, "skipped": skipped}
