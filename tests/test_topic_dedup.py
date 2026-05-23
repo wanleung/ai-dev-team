@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from topic_dedup import DedupeResult, TopicDeduplicator, _fuzzy_similar, _keyword_similar
 
@@ -15,6 +15,13 @@ def _make_issue(number: int, title: str, body: str = "", created_at: str = "2026
         "created_at": created_at,
         "html_url": f"https://github.com/owner/repo/issues/{number}",
     }
+
+
+def _make_llm_agent(response: str) -> MagicMock:
+    """Return a mock BaseAgent whose .call() returns the given string."""
+    agent = MagicMock()
+    agent.call.return_value = response
+    return agent
 
 
 def test_fuzzy_similar_identical_titles():
@@ -81,34 +88,29 @@ def test_keyword_similar_min_overlap_too_high():
     ) is False
 
 
-def test_llm_similar_yes_response():
-    from topic_dedup import _llm_similar
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"choices": [{"message": {"content": "YES, same story."}}]}
-    mock_resp.raise_for_status = MagicMock()
-    with patch("topic_dedup.requests.post", return_value=mock_resp):
-        result = _llm_similar(
-            "title A", "summary A", "title B", "summary B",
-            model="dashscope/qwen3-plus", token="tok",
-        )
-    assert result is True
+def test_llm_similar_yes_via_agent():
+    """LLM method returns True when injected agent replies YES."""
+    agent = _make_llm_agent("YES, same story.")
+    dedup = TopicDeduplicator(method="llm", llm=agent)
+    issue = _make_issue(1, "title B", body="summary B")
+    entry = {"title": "title A", "summary": "summary A"}
+    result = dedup.check(entry, [issue])
+    assert result.action != "CREATE_NEW"  # match found
+    agent.call.assert_called_once()
 
 
-def test_llm_similar_no_response():
-    from topic_dedup import _llm_similar
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"choices": [{"message": {"content": "NO, different topics."}}]}
-    mock_resp.raise_for_status = MagicMock()
-    with patch("topic_dedup.requests.post", return_value=mock_resp):
-        result = _llm_similar(
-            "title A", "summary A", "title B", "summary B",
-            model="dashscope/qwen3-plus", token="tok",
-        )
-    assert result is False
+def test_llm_similar_no_via_agent():
+    """LLM method returns CREATE_NEW when injected agent replies NO."""
+    agent = _make_llm_agent("NO, different topics.")
+    dedup = TopicDeduplicator(method="llm", llm=agent)
+    issue = _make_issue(1, "title B", body="summary B")
+    entry = {"title": "title A", "summary": "summary A"}
+    result = dedup.check(entry, [issue])
+    assert result.action == "CREATE_NEW"
 
 
 def test_check_creates_new_when_no_issues():
-    dedup = TopicDeduplicator(method="fuzzy", token="tok")
+    dedup = TopicDeduplicator(method="fuzzy")
     entry = {"title": "Article: Linux 6.9 released", "summary": "New kernel."}
     result = dedup.check(entry, open_issues=[])
     assert result.action == "CREATE_NEW"
@@ -116,7 +118,7 @@ def test_check_creates_new_when_no_issues():
 
 
 def test_check_creates_new_when_no_match():
-    dedup = TopicDeduplicator(method="fuzzy", fuzzy_threshold=0.75, token="tok")
+    dedup = TopicDeduplicator(method="fuzzy", fuzzy_threshold=0.75)
     entry = {"title": "Article: Apple M4 chip revealed", "summary": "New chip."}
     issues = [_make_issue(1, "Article: Linux kernel 6.9 released")]
     result = dedup.check(entry, open_issues=issues)
@@ -131,7 +133,6 @@ def test_check_add_source_same_day_match():
         keyword_min_overlap=1,
         followup_mode="time",
         min_age_hours=168,
-        token="tok",
     )
     recent_issue = _make_issue(
         number=1,
@@ -152,7 +153,6 @@ def test_check_create_followup_old_matching_issue():
         keyword_min_overlap=1,
         followup_mode="time",
         min_age_hours=24,
-        token="tok",
     )
     old_issue = _make_issue(
         number=1,
@@ -168,13 +168,13 @@ def test_check_create_followup_old_matching_issue():
 def test_check_content_followup_mocked_llm():
     """When followup_mode='content' and LLM says YES (new facts), check() should return
     CREATE_FOLLOWUP even for a recent matching issue."""
+    agent = _make_llm_agent("YES, contains significant new facts.")
     dedup = TopicDeduplicator(
         method="keyword",
         keyword_min_overlap=1,
         followup_mode="content",
         min_age_hours=168,
-        followup_llm_model="test-model",
-        token="test-token",
+        llm=agent,
     )
     recent_issue = _make_issue(
         number=1,
@@ -186,8 +186,7 @@ def test_check_content_followup_mocked_llm():
         "title": "OpenAI GPT-5 now available for all users",
         "summary": "Rollout begins.",
     }
-    with patch("topic_dedup._llm_yes_no_query", return_value=True) as mock_llm:
-        result = dedup.check(entry, open_issues=[recent_issue])
+    result = dedup.check(entry, open_issues=[recent_issue])
     assert result.action == "CREATE_FOLLOWUP"
     assert result.matched_issue == recent_issue
-    mock_llm.assert_called_once()
+    agent.call.assert_called_once()

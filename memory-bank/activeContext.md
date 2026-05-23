@@ -1,9 +1,10 @@
 # Active Context
 
 ## Current Focus
-Linux 7.1-rc4 News Summarizer — pipeline run completed, no implementation produced. Feature targets Phoronix article about Linux 7.1-rc4 kernel release for extraction and summarization.
+RSS topic deduplication — merged to master (PR #86). Prevents duplicate GitHub Issues when multiple RSS sources cover the same news story.
 
 ## Recent Changes
+- **RSS topic deduplication merged (PR #86):** `topic_dedup.py` + `rss_watcher.py` integration; supports fuzzy/keyword/LLM/all similarity methods; ADD_SOURCE, CREATE_FOLLOWUP, CREATE_NEW routing; per-target config; LLM token separated from GitHub token; configurable base URL via `LLM_BASE_URL` env var
 - Pipeline run processed Linux 7.1-rc4 news summarizer feature from Phoronix (no implementation artifacts produced)
 - Pipeline run processed Google Chromium vulnerability exposure article from BleepingComputer (no implementation artifacts produced)
 - Pipeline run processed Microsoft Defender zero-day vulnerabilities news feature (no implementation artifacts produced)

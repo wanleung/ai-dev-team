@@ -1,6 +1,7 @@
 # Progress
 
 ## Done
+- **RSS topic deduplication** — `topic_dedup.py` module + `rss_watcher.py` integration merged (PR #86); fuzzy/keyword/LLM/all similarity; ADD_SOURCE/CREATE_FOLLOWUP/CREATE_NEW routing; per-target config; LLM token + base URL configurable; 26 tests passing; design spec + implementation plan in `docs/superpowers/`
 - Cloud storage security feature for document handling — Implementation focused on preventing misconfigured S3 bucket exposures for sensitive documents (passports, IDs, selfies); security-first architecture based on Tabiq breach case study
 - 7-Eleven/ShinyHunters data breach article processed through news-article pipeline; article output to `articles/` with YAML frontmatter; dual translation outputs (zh-hk, zh-tw); GitHub PR automation triggered
 - Infrastructure modules: `shipping_config`, `email_service`, `image_pipeline`, `observability`

@@ -5,21 +5,23 @@ Compares incoming RSS entries against recent open GitHub issues and decides:
   CREATE_NEW    — no match; proceed to create a new issue
   ADD_SOURCE    — match found; post source URL as comment on existing issue
   CREATE_FOLLOWUP — follow-up story; create new issue with follow-up label
+
+LLM calls (when method includes "llm" or followup_mode includes "content") are
+delegated to an injected ``BaseAgent`` instance.  If no agent is provided, LLM
+paths return False with a warning.
 """
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-import requests
+if TYPE_CHECKING:
+    from agents.base_agent import BaseAgent
 
 _log = logging.getLogger(__name__)
-
-_LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 
 _VALID_METHODS = frozenset({"fuzzy", "keyword", "llm", "all"})
 _VALID_FOLLOWUP_MODES = frozenset({"time", "content", "both"})
@@ -149,72 +151,13 @@ def _keyword_similar(title_a: str, title_b: str, min_overlap: int = 2) -> bool:
     return len(overlap) >= min_overlap
 
 
-def _llm_yes_no_query(
-    prompt: str,
-    model: str,
-    token: str,
-    error_context: str,
-) -> bool:
-    """Ask an LLM a yes/no question via OpenAI-compatible API.
-
-    Args:
-        prompt: The question to ask
-        model: Model identifier (e.g., "dashscope/qwen3-plus")
-        token: API token for authentication
-        error_context: Description for logging if request fails
-
-    Returns:
-        True if LLM response starts with "YES", False otherwise.
-        On any error, logs a warning and returns False.
-        Returns False immediately (without a network call) if token or model is empty.
-    """
-    if not token or not model:
-        _log.warning("%s skipped: LLM token or model not configured", error_context)
-        return False
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "User-Agent": "ai-software-house/topic-dedup-1.0",
-    }
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    try:
-        resp = requests.post(
-            f"{_LLM_BASE_URL}/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"].strip().upper()
-        return content.startswith("YES")
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("%s failed (%s); defaulting to False", error_context, exc)
-        return False
-
-
-def _llm_similar(
-    title_a: str,
-    summary_a: str,
-    title_b: str,
-    summary_b: str,
-    model: str,
-    token: str,
-) -> bool:
-    """Ask an LLM whether two news items cover the same event."""
-    prompt = (
-        f"Story A title: {title_a}\nStory A summary: {summary_a}\n\n"
-        f"Story B title: {title_b}\nStory B summary: {summary_b}\n\n"
-        "Are these two news stories about the same event? "
-        "Answer YES or NO with one sentence of reasoning."
-    )
-    return _llm_yes_no_query(prompt, model, token, "LLM similarity check")
-
-
 class TopicDeduplicator:
-    """Check incoming RSS entries against recent open issues for topic overlap."""
+    """Check incoming RSS entries against recent open issues for topic overlap.
+
+    LLM calls are delegated to the injected ``llm`` agent.  Pass a
+    ``BaseAgent`` instance configured with the desired model/backend.
+    If ``llm`` is None, any LLM-dependent path returns False with a warning.
+    """
 
     def __init__(
         self,
@@ -224,10 +167,7 @@ class TopicDeduplicator:
         add_source_max_age_hours: int = 48,
         followup_mode: str = "time",
         min_age_hours: int = 168,
-        followup_llm_model: str = "",
-        llm_model: str = "",
-        token: str | None = None,
-        llm_token: str | None = None,
+        llm: "BaseAgent | None" = None,
     ) -> None:
         if method not in _VALID_METHODS:
             _log.warning(
@@ -238,7 +178,7 @@ class TopicDeduplicator:
             )
             method = "all"
         self._method = method
-        
+
         if followup_mode not in _VALID_FOLLOWUP_MODES:
             _log.warning(
                 "TopicDeduplicator: unknown followup_mode %r — defaulting to 'time'. "
@@ -248,16 +188,12 @@ class TopicDeduplicator:
             )
             followup_mode = "time"
         self._followup_mode = followup_mode
-        
+
         self._fuzzy_threshold = fuzzy_threshold
         self._keyword_min_overlap = keyword_min_overlap
         self._add_source_max_age_hours = add_source_max_age_hours
         self._min_age_hours = min_age_hours
-        default_model = followup_llm_model or llm_model or "dashscope/qwen3-plus"
-        self._followup_llm_model = followup_llm_model or default_model
-        self._llm_model = llm_model or followup_llm_model or "dashscope/qwen3-plus"
-        self._token = token or ""  # kept for any future use
-        self._llm_token = llm_token or os.environ.get("LLM_API_KEY", "")
+        self._llm = llm
 
     def _is_similar(self, entry: dict, issue: dict) -> bool:
         """Return True if entry and issue cover the same topic."""
@@ -275,11 +211,22 @@ class TopicDeduplicator:
                 return True
             if m == "keyword" and _keyword_similar(entry_title, issue_title, self._keyword_min_overlap):
                 return True
-            if m == "llm" and _llm_similar(
-                entry_title, entry_summary, issue_title, issue_body,
-                model=self._llm_model, token=self._llm_token,
-            ):
-                return True
+            if m == "llm":
+                if self._llm is None:
+                    _log.warning("TopicDeduplicator: LLM similarity requested but no agent injected — skipping")
+                    continue
+                prompt = (
+                    f"Story A title: {entry_title}\nStory A summary: {entry_summary}\n\n"
+                    f"Story B title: {issue_title}\nStory B summary: {issue_body}\n\n"
+                    "Are these two news stories about the same event? "
+                    "Answer YES or NO with one sentence of reasoning."
+                )
+                try:
+                    reply = self._llm.call(prompt)
+                    if reply.strip().upper().startswith("YES"):
+                        return True
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("LLM similarity check failed (%s); skipping", exc)
         return False
 
     def check(self, entry: dict, open_issues: list[dict]) -> DedupeResult:
@@ -344,6 +291,9 @@ class TopicDeduplicator:
 
     def _content_check(self, entry: dict, issue: dict) -> bool:
         """Use an LLM to check whether the new story contains significant new facts."""
+        if self._llm is None:
+            _log.warning("TopicDeduplicator: content follow-up check requested but no agent injected — defaulting to False")
+            return False
         prompt = (
             f"Original story title: {issue.get('title', '')}\n"
             f"Original story body: {issue.get('body', '')[:400]}\n\n"
@@ -352,9 +302,9 @@ class TopicDeduplicator:
             "Does the new story contain significant new facts not present in the original? "
             "Answer YES or NO with one sentence of reasoning."
         )
-        return _llm_yes_no_query(
-            prompt,
-            self._followup_llm_model,
-            self._llm_token,
-            "Follow-up content check",
-        )
+        try:
+            reply = self._llm.call(prompt)
+            return reply.strip().upper().startswith("YES")
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("Follow-up content check failed (%s); defaulting to False", exc)
+            return False

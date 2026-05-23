@@ -54,6 +54,7 @@ import requests
 import yaml
 
 from topic_dedup import TopicDeduplicator
+from agents.base_agent import BaseAgent
 
 _log = logging.getLogger(__name__)
 
@@ -221,18 +222,26 @@ def _process_target(
     # Build deduplicator if configured
     dedup: TopicDeduplicator | None = None
     if dedup_cfg.get("enabled", False):
-        llm_token = dedup_cfg.get("llm_token") or os.environ.get("LLM_API_KEY", "")
+        # Only create an LLM agent when the configured method actually needs one
+        llm_agent: BaseAgent | None = None
+        method = dedup_cfg.get("method", "all")
+        followup_mode = dedup_cfg.get("followup_mode", "time")
+        needs_llm = method in ("llm", "all") or followup_mode in ("content", "both")
+        if needs_llm:
+            model = dedup_cfg.get("llm_model") or dedup_cfg.get("followup_llm_model") or "dashscope/qwen3-plus"
+            llm_agent = BaseAgent(
+                model=model,
+                dashscope_api_key=os.environ.get("DASHSCOPE_API_KEY", ""),
+                github_token=token,
+            )
         dedup = TopicDeduplicator(
-            method=dedup_cfg.get("method", "all"),
+            method=method,
             fuzzy_threshold=float(dedup_cfg.get("fuzzy_threshold", 0.85)),
             keyword_min_overlap=int(dedup_cfg.get("keyword_min_overlap", 2)),
             add_source_max_age_hours=int(dedup_cfg.get("add_source_max_age_hours", 48)),
-            followup_mode=dedup_cfg.get("followup_mode", "time"),
+            followup_mode=followup_mode,
             min_age_hours=int(dedup_cfg.get("min_age_hours", 168)),
-            followup_llm_model=dedup_cfg.get("followup_llm_model", ""),
-            llm_model=dedup_cfg.get("llm_model", ""),
-            token=token,
-            llm_token=llm_token,
+            llm=llm_agent,
         )
         open_issues = _fetch_open_issues(press_repo, label, token)
     else:
