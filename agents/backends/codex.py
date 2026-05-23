@@ -131,6 +131,7 @@ class CodexBackend(LLMBackend):
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                     except ProcessLookupError:
                         pass
+                    proc.wait()
                 if attempt < self._max_retries:
                     time.sleep(2 ** attempt)
                     continue
@@ -142,6 +143,7 @@ class CodexBackend(LLMBackend):
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                     except ProcessLookupError:
                         pass
+                    proc.wait()
 
         raise RuntimeError("codex: all retries exhausted")  # pragma: no cover
 

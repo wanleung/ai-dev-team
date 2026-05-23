@@ -92,6 +92,23 @@ def test_call_timeout_retries():
     assert proc.communicate.call_count == 2
 
 
+def test_call_timeout_reaps_process():
+    """CodexBackend.call() calls proc.wait() after killpg() to reap zombie process on timeout."""
+    from agents.backends.codex import CodexBackend
+    backend = CodexBackend(model="codex/codex-mini-latest", max_retries=0)
+    proc = _make_popen_mock()
+    proc.communicate.side_effect = subprocess.TimeoutExpired(cmd="codex", timeout=600)
+    proc.poll.return_value = None  # process still running
+
+    with patch("agents.backends.codex.subprocess.Popen", return_value=proc):
+        with patch("agents.backends.codex.os.killpg"):
+            with pytest.raises(subprocess.TimeoutExpired):
+                backend.call([{"role": "user", "content": "Hello"}])
+
+    # Verify proc.wait() was called to reap the zombie process
+    assert proc.wait.called
+
+
 def test_factory_routes_codex_prefix():
     """create_backend routes 'codex/...' models to CodexBackend."""
     from agents.backends.factory import create_backend
