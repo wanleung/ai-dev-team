@@ -30,7 +30,7 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **Fully customisable** — add agents, skills, and tools by editing markdown role files and Python tool functions
 - 🧠 **Agent memory** — tiered SQLite memory (run → monthly → quarterly), conversation history within each run, auto-summariser after every pipeline
 - 🌙 **Refactor / dream mode** — `--refactor` flag analyses and cleans up workspace code, opens a cleanup PR
-- 🤖 **6 LLM backends** — GitHub Models (default), Anthropic Claude, Ollama (local), OpenCode CLI, OpenCode Zen API, and OpenCode Go API; switch per-agent with a model prefix
+- 🤖 **13 LLM backends** — GitHub Models (default), Anthropic Claude, Ollama (local), OpenCode CLI, OpenCode Zen API, OpenCode Go API, Grok CLI, Grok OAuth, NVIDIA NIM, Alibaba DashScope, GitHub Copilot, OpenAI API, and Codex CLI; switch per-agent with a model prefix
 - ⚡ **Two-level concurrency** — per-repo `parallel_issues` cap + global `settings.max_parallel`; per-LLM-backend semaphore pools keep local Ollama at 1 concurrent call
 - **Resilient checkpoints** — atomic writes prevent corruption on Ctrl+C; best-checkpoint-wins logic survives bad config runs
 - 🗺️ **Repo context awareness** — before engineering, the pipeline injects the full repo file tree into PM/Architect prompts (small repos) or auto-indexes the codebase into RAG (large repos), so agents understand what already exists before writing code
@@ -173,6 +173,24 @@ export GITHUB_TOKEN=ghp_your_classic_pat
 > Both `opencode-zen/` and `opencode-go/` model prefixes share this key.
 > Get one at <https://opencode.ai/auth>.
 
+> **Using OpenAI API (BusinessChatGPT)?** Export your OpenAI API key:
+> ```bash
+> export OPENAI_API_KEY=sk-your-key-here
+> ```
+> Use the `openai/` prefix: `openai/gpt-4o`, `openai/gpt-4.1-mini`, etc.
+
+> **Using NVIDIA NIM?** Export your NVIDIA API key:
+> ```bash
+> export NVIDIA_API_KEY=nvapi-your-key-here
+> ```
+> Use the `nvidia-nim/` prefix: `nvidia-nim/meta/llama-3.1-70b-instruct`, etc.
+
+> **Using Alibaba DashScope / Qwen?** Export your DashScope API key:
+> ```bash
+> export DASHSCOPE_API_KEY=sk-your-key-here
+> ```
+> Use the `dashscope/` prefix: `dashscope/qwen3-plus`, `dashscope/qwen3-turbo`, etc.
+
 Edit `config.yaml`:
 ```yaml
 github:
@@ -265,6 +283,143 @@ Access the OpenCode Go plan models (Kimi, Qwen, GLM, MiMo, MiniMax):
    | `minimax-m2.7`, `minimax-m2.5` | Anthropic `/messages` | ❌ |
 
    Override the base URL with `OPENCODE_GO_BASE_URL` if needed.
+
+#### Using Grok CLI
+
+Run xAI Grok models via the [Grok](https://x.ai) CLI subprocess:
+
+1. Install the Grok CLI and ensure it is authenticated.
+
+2. Set model names with the `grok/<model>` prefix:
+   ```yaml
+   llm:
+     model: "grok/grok-3"
+     overrides:
+       engineer: "grok/grok-3-mini"
+   ```
+
+   Override the binary path with `GROK_BIN` if needed.
+
+> ⚠️ Grok CLI does **not** support tool-calling. The Code Reviewer agent will fail if assigned a `grok/` model.
+
+#### Using Grok OAuth (xAI API)
+
+Direct HTTP access to the xAI API using the OAuth browser flow:
+
+1. Use the `grok-oauth/<model>` prefix — the first call opens a browser for xAI OAuth login:
+   ```yaml
+   llm:
+     model: "grok-oauth/grok-3"
+     overrides:
+       engineer: "grok-oauth/grok-3-mini"
+   ```
+
+   Token is refreshed automatically. Override client ID with `XAI_OAUTH_CLIENT_ID` if needed.
+
+   Supports tool-calling (OpenAI-compatible endpoint).
+
+#### Using NVIDIA NIM
+
+Access NVIDIA-hosted models (Llama, Mistral, Nemotron, etc.) via the NIM inference API:
+
+1. Get an API key from [build.nvidia.com](https://build.nvidia.com) and export it:
+   ```bash
+   export NVIDIA_API_KEY=nvapi-your-key-here
+   ```
+
+2. Use the `nvidia-nim/<model>` prefix:
+   ```yaml
+   llm:
+     model: "nvidia-nim/meta/llama-3.1-70b-instruct"
+     overrides:
+       engineer: "nvidia-nim/mistralai/mistral-7b-instruct-v0.3"
+   ```
+
+   Override the endpoint with `NVIDIA_NIM_BASE_URL` (default: `https://integrate.api.nvidia.com/v1`).
+
+   Supports tool-calling.
+
+#### Using Alibaba DashScope (Qwen models)
+
+Access Alibaba Cloud Qwen and other DashScope models:
+
+1. Get an API key from [dashscope.aliyuncs.com](https://dashscope.aliyuncs.com) and export it:
+   ```bash
+   export DASHSCOPE_API_KEY=sk-your-key-here
+   ```
+
+2. Use the `dashscope/<model>` prefix:
+   ```yaml
+   llm:
+     model: "dashscope/qwen3-plus"
+     overrides:
+       engineer: "dashscope/qwen3-turbo"
+   ```
+
+   Default endpoint: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`. Override with `dashscope_url` in config.
+
+   Supports tool-calling.
+
+#### Using GitHub Copilot
+
+Use GitHub Copilot's internal inference API — requires an active Copilot subscription:
+
+1. Auth is auto-discovered from `~/.copilot/config.json` (set by the Copilot CLI). Or export the token directly:
+   ```bash
+   export COPILOT_OAUTH_TOKEN=gho_your-copilot-token
+   ```
+
+2. Use the `copilot/<model>` prefix:
+   ```yaml
+   llm:
+     model: "copilot/gpt-4o"
+     overrides:
+       engineer: "copilot/gpt-4.1-mini"
+   ```
+
+   Supports tool-calling.
+
+#### Using OpenAI API (BusinessChatGPT)
+
+Direct access to the OpenAI API (`api.openai.com`) — for ChatGPT Plus/Team/Enterprise subscribers using a standard API key:
+
+1. Export your OpenAI API key:
+   ```bash
+   export OPENAI_API_KEY=sk-your-key-here
+   ```
+
+2. Use the `openai/<model>` prefix:
+   ```yaml
+   llm:
+     model: "openai/gpt-4o"
+     overrides:
+       engineer: "openai/gpt-4.1-mini"
+   ```
+
+   Supports tool-calling. Fallbacks work as normal across all agents.
+
+#### Using OpenAI Codex CLI
+
+Run the [OpenAI Codex CLI agent](https://github.com/openai/codex) (`codex exec`) as a subprocess — requires a ChatGPT Plus/Pro account:
+
+1. Install and sign in:
+   ```bash
+   curl -fsSL https://chatgpt.com/codex/install.sh | sh
+   # or: npm install -g @openai/codex
+   codex   # sign in with your ChatGPT account on first run
+   ```
+
+2. Use the `codex/<model>` prefix:
+   ```yaml
+   llm:
+     model: "codex/codex-mini-latest"
+     overrides:
+       engineer: "codex/o4-mini"
+   ```
+
+   Override the binary path with `CODEX_BIN` if needed.
+
+> ⚠️ Codex CLI does **not** support tool-calling. The Code Reviewer agent will fail if assigned a `codex/` model.
 
 ### 4. Run
 
@@ -630,9 +785,11 @@ llm:
   # ── Anthropic Claude API (ANTHROPIC_API_KEY required) ──────────────────
   #   claude-sonnet-4-6, claude-opus-4-5, claude-3-5-sonnet-20241022, ...
   #   Any model starting with "claude-" is auto-routed to Anthropic.
+  #   ⚠️  Does NOT support tool-calling (Code Reviewer will fail).
   #
   # ── Ollama (local, ollama_url below) ───────────────────────────────────
   #   ollama/llama3.2, ollama/qwen2.5-coder, ollama/mistral, ...
+  #   Tool-calling ✅
   #
   # ── OpenCode CLI (opencode must be installed + authenticated) ───────────
   #   opencode/<provider>/<model>
@@ -649,6 +806,45 @@ llm:
   #   opencode-go/<model-id>
   #     e.g. opencode-go/kimi-k2.5, opencode-go/qwen3.6-plus (tool-calling ✅)
   #          opencode-go/minimax-m2.7           → Anthropic endpoint (no tool-calling)
+  #
+  # ── Grok CLI (grok must be installed + authenticated) ──────────────────
+  #   grok/<model-id>
+  #     e.g. grok/grok-3, grok/grok-3-mini
+  #   ⚠️  Does NOT support tool-calling (Code Reviewer will fail).
+  #   Override binary path: GROK_BIN env var.
+  #
+  # ── Grok OAuth / xAI API (browser OAuth on first use) ──────────────────
+  #   grok-oauth/<model-id>
+  #     e.g. grok-oauth/grok-3, grok-oauth/grok-3-mini
+  #   Tool-calling ✅  Override client ID: XAI_OAUTH_CLIENT_ID env var.
+  #
+  # ── NVIDIA NIM (NVIDIA_API_KEY required) ────────────────────────────────
+  #   nvidia-nim/<model-id>
+  #     e.g. nvidia-nim/meta/llama-3.1-70b-instruct
+  #          nvidia-nim/mistralai/mistral-7b-instruct-v0.3
+  #   Tool-calling ✅  Override endpoint: NVIDIA_NIM_BASE_URL env var.
+  #
+  # ── Alibaba DashScope / Qwen (DASHSCOPE_API_KEY required) ───────────────
+  #   dashscope/<model-id>
+  #     e.g. dashscope/qwen3-plus, dashscope/qwen3-turbo
+  #   Tool-calling ✅  Override endpoint: dashscope_url in config.
+  #
+  # ── GitHub Copilot (COPILOT_OAUTH_TOKEN or ~/.copilot/config.json) ──────
+  #   copilot/<model-id>
+  #     e.g. copilot/gpt-4o, copilot/gpt-4.1-mini
+  #   Tool-calling ✅  Requires active GitHub Copilot subscription.
+  #
+  # ── OpenAI API / BusinessChatGPT (OPENAI_API_KEY required) ─────────────
+  #   openai/<model-id>
+  #     e.g. openai/gpt-4o, openai/gpt-4.1-mini
+  #   Tool-calling ✅
+  #
+  # ── OpenAI Codex CLI (ChatGPT Plus/Pro account required) ────────────────
+  #   codex/<model-id>
+  #     e.g. codex/codex-mini-latest, codex/o4-mini
+  #   Install: curl -fsSL https://chatgpt.com/codex/install.sh | sh
+  #   ⚠️  Does NOT support tool-calling (Code Reviewer will fail).
+  #   Override binary path: CODEX_BIN env var.
   model: "gpt-4.1"
 
   # Per-agent model overrides
