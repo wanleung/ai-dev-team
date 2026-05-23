@@ -73,6 +73,11 @@ def _make_single_backend(cfg: dict, github_token: str | None = None) -> "LLMBack
         ck = {k: v for k, v in kwargs.items() if k not in _ALL_PROVIDER_SPECIFIC}
         return OpenAIApiBackend(model=model, **ck)
 
+    if model.startswith("codex/"):
+        from agents.backends.codex import CodexBackend
+        ck = {k: v for k, v in kwargs.items() if k not in _ALL_PROVIDER_SPECIFIC}
+        return CodexBackend(model=model, **ck)
+
     # Default: bare model names (no prefix slash) go to GitHub Models
     if "/" not in model:
         from agents.backends.github_models import GitHubModelsBackend
