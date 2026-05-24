@@ -218,3 +218,53 @@ def test_print_terminal_report_no_violations(capsys):
     print_terminal_report(funcs, limit=30)
     captured = capsys.readouterr().out
     assert "0 violation" in captured or "violations" in captured
+
+# ── Task 6: HTML generation ──────────────────────────────────────────────────
+from tools.fn_map import generate_html, _render_function_card, _fn_css_class
+
+def test_fn_css_class_ok():
+    fn = _make_fn("ok", 20)
+    assert _fn_css_class(fn, 30) == "fn-ok"
+
+def test_fn_css_class_warn():
+    fn = _make_fn("warn", 40)
+    assert _fn_css_class(fn, 30) == "fn-warn"
+
+def test_fn_css_class_bad():
+    fn = _make_fn("bad", 80)
+    assert _fn_css_class(fn, 30) == "fn-bad"
+
+def test_render_function_card_contains_name():
+    fn = _make_fn("my_function", 25, calls={"other"})
+    html = _render_function_card(fn, 30)
+    assert "my_function" in html
+    assert "25" in html
+
+def test_generate_html_creates_file(tmp_path):
+    funcs = [
+        _make_fn("alpha", 10, "mod.py", calls={"beta"}),
+        _make_fn("beta", 45, "mod.py"),
+    ]
+    out = str(tmp_path / "map.html")
+    generate_html(funcs, limit=30, output_path=out)
+    content = Path(out).read_text()
+    assert "alpha" in content
+    assert "beta" in content
+    assert "<!DOCTYPE html>" in content
+
+def test_generate_html_embeds_call_data(tmp_path):
+    funcs = [_make_fn("caller_fn", 10, "a.py", calls={"callee_fn"}),
+             _make_fn("callee_fn", 5, "a.py")]
+    out = str(tmp_path / "map.html")
+    generate_html(funcs, limit=30, output_path=out)
+    content = Path(out).read_text()
+    assert "caller_fn" in content
+    assert "callee_fn" in content
+
+def test_generate_html_has_filter_buttons(tmp_path):
+    funcs = [_make_fn("f", 10, "x.py")]
+    out = str(tmp_path / "map.html")
+    generate_html(funcs, limit=30, output_path=out)
+    content = Path(out).read_text()
+    assert "Violations only" in content
+    assert "All" in content

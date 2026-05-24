@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import ast
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -234,3 +235,166 @@ def print_terminal_report(funcs: list[FunctionInfo], limit: int) -> None:
     _print_violations_table(violations, limit)
     _print_summary(funcs, violations)
     _print_distribution(funcs)
+
+
+def _fn_css_class(fn: FunctionInfo, limit: int) -> str:
+    if fn.line_count <= limit:
+        return "fn-ok"
+    if fn.line_count <= 50:
+        return "fn-warn"
+    return "fn-bad"
+
+
+def _render_function_card(fn: FunctionInfo, limit: int) -> str:
+    css = _fn_css_class(fn, limit)
+    key = f"{fn.file}::{fn.name}::{fn.lineno}"
+    key_safe = key.replace("'", "\\'")
+    calls_n = len(fn.calls)
+    return (
+        f'<div class="fn-card {css}" '
+        f'onclick="showDetail(\'{key_safe}\')" '
+        f'data-violation="{1 if fn.line_count > limit else 0}" '
+        f'data-big="{1 if fn.line_count > 50 else 0}">'
+        f'<div class="fn-name">{fn.name}</div>'
+        f'<div class="fn-meta">{fn.line_count} lines · :{fn.lineno}</div>'
+        f'<div class="fn-calls">{calls_n} call{"s" if calls_n != 1 else ""}</div>'
+        f'</div>'
+    )
+
+
+def _render_module_group(file: str, funcs: list[FunctionInfo], limit: int) -> str:
+    violations = sum(1 for f in funcs if f.line_count > limit)
+    cards = "\n".join(_render_function_card(f, limit) for f in funcs)
+    badge_class = "badge-bad" if violations > 0 else "badge-ok"
+    return (
+        f'<div class="module-box" data-file="{file}">'
+        f'<div class="module-header">'
+        f'<span class="module-name">{file}</span>'
+        f'<span class="{badge_class}">{violations} violation{"s" if violations != 1 else ""}'
+        f' / {len(funcs)} fn</span>'
+        f'</div>'
+        f'<div class="fn-cards">{cards}</div>'
+        f'</div>'
+    )
+
+
+def _build_fn_data_json(funcs: list[FunctionInfo], calledby: dict[str, list[str]]) -> str:
+    """Build a JSON object mapping key → {name, file, lineno, lines, calls, calledBy}."""
+    data: dict[str, dict] = {}
+    for fn in funcs:
+        key = f"{fn.file}::{fn.name}::{fn.lineno}"
+        data[key] = {
+            "name": fn.name, "file": fn.file, "lineno": fn.lineno,
+            "lines": fn.line_count, "calls": sorted(fn.calls),
+            "calledBy": sorted(calledby.get(fn.name, [])),
+        }
+    return json.dumps(data)
+
+
+def _html_head() -> str:
+    return """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<title>Function Map</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;margin:0}
+#toolbar{background:#161b22;padding:.5em 1em;display:flex;gap:.6em;align-items:center;border-bottom:1px solid #30363d}
+#toolbar h1{font-size:1em;margin:0;color:#79c0ff}
+.filter-btn{background:#30363d;border:none;color:#e6edf3;padding:.25em .7em;border-radius:4px;cursor:pointer}
+.filter-btn.active{background:#238636}
+#layout{display:flex;height:calc(100vh - 41px)}
+#sidebar{width:220px;border-right:1px solid #30363d;overflow-y:auto;padding:.5em}
+#sidebar .s-file{padding:.3em .5em;border-radius:4px;cursor:pointer;display:flex;justify-content:space-between;font-size:.85em;margin-bottom:.2em}
+.badge-bad{background:#da3633;color:#fff;padding:0 .4em;border-radius:3px;font-size:.8em}
+.badge-ok{background:#1a7f37;color:#fff;padding:0 .4em;border-radius:3px;font-size:.8em}
+#main{flex:1;overflow-y:auto;padding:1em}
+.module-box{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:1em}
+.module-header{padding:.5em 1em;border-bottom:1px solid #30363d;display:flex;gap:.6em;align-items:center}
+.module-name{font-weight:bold}
+.fn-cards{padding:.7em 1em;display:flex;flex-wrap:wrap;gap:.5em}
+.fn-card{border-radius:6px;padding:.4em .7em;cursor:pointer;min-width:140px;border:1px solid}
+.fn-ok{background:#0a1a0a;border-color:#238636}
+.fn-warn{background:#1a1200;border-color:#d29922}
+.fn-bad{background:#1a0a0a;border-color:#da3633}
+.fn-name{font-weight:bold;font-size:.9em}
+.fn-meta,.fn-calls{color:#8b949e;font-size:.75em}
+#detail{border-top:1px solid #30363d;padding:1em;background:#161b22;min-height:80px;display:none}
+#detail h3{margin:0 0 .5em;color:#79c0ff}
+.detail-cols{display:flex;gap:2em}
+.detail-col h4{color:#8b949e;font-size:.75em;text-transform:uppercase;margin:0 0 .3em}
+.detail-col a{color:#3fb950;text-decoration:none;display:block;font-size:.85em}
+.detail-col a:hover{text-decoration:underline}
+.detail-col span{color:#8b949e;font-size:.85em;display:block}
+</style></head><body>"""
+
+
+def _html_sidebar(by_file: dict[str, list[FunctionInfo]], limit: int) -> str:
+    items = []
+    for file, funcs in sorted(by_file.items()):
+        v = sum(1 for f in funcs if f.line_count > limit)
+        badge = f'<span class="badge-{"bad" if v else "ok"}">{v}</span>'
+        items.append(
+            f'<div class="s-file" onclick="scrollToFile(\'{file}\')">'
+            f'{file}{badge}</div>'
+        )
+    return f'<div id="sidebar">{"".join(items)}</div>'
+
+
+def _html_script(fn_data_json: str) -> str:
+    return f"""<script>
+const FN_DATA = {fn_data_json};
+function showDetail(key) {{
+  const d = FN_DATA[key]; if (!d) return;
+  document.getElementById('detail').style.display = 'block';
+  const calls = d.calls.map(n => `<a href="#" onclick="findAndShow('${{n}}');return false">${{n}}</a>`).join('') || '<span>none</span>';
+  const calledBy = d.calledBy.map(n => `<a href="#" onclick="findAndShow('${{n}}');return false">${{n}}</a>`).join('') || '<span>none</span>';
+  document.getElementById('detail').innerHTML = `<h3>${{d.name}} <small style="color:#8b949e">${{d.file}}:${{d.lineno}} · ${{d.lines}} lines</small></h3><div class="detail-cols"><div class="detail-col"><h4>Calls</h4>${{calls}}</div><div class="detail-col"><h4>Called by</h4>${{calledBy}}</div></div>`;
+}}
+function findAndShow(name) {{
+  const key = Object.keys(FN_DATA).find(k => FN_DATA[k].name === name);
+  if (key) showDetail(key);
+}}
+function scrollToFile(file) {{
+  const el = document.querySelector(`[data-file="${{file}}"]`);
+  if (el) el.scrollIntoView({{behavior:'smooth'}});
+}}
+function applyFilter(mode, btn) {{
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.fn-card').forEach(c => {{
+    const v = c.dataset.violation === '1', big = c.dataset.big === '1';
+    c.style.display = (mode==='all' || (mode==='violations' && v) || (mode==='big' && big)) ? '' : 'none';
+  }});
+}}
+document.addEventListener('DOMContentLoaded', () => {{
+  document.querySelector('.filter-btn').classList.add('active');
+}});
+</script>"""
+
+
+def generate_html(funcs: list[FunctionInfo], limit: int, output_path: str) -> None:
+    """Write a self-contained interactive HTML function map to output_path."""
+    calledby = build_calledby_index(funcs)
+    by_file: dict[str, list[FunctionInfo]] = {}
+    for fn in funcs:
+        by_file.setdefault(fn.file, []).append(fn)
+    groups = "\n".join(
+        _render_module_group(file, fns, limit)
+        for file, fns in sorted(by_file.items())
+    )
+    toolbar = (
+        '<div id="toolbar"><h1>fn_map</h1>'
+        '<button class="filter-btn" onclick="applyFilter(\'all\',this)">All</button>'
+        '<button class="filter-btn" onclick="applyFilter(\'violations\',this)">Violations only</button>'
+        '<button class="filter-btn" onclick="applyFilter(\'big\',this)">&gt;50 lines</button>'
+        '</div>'
+    )
+    sidebar = _html_sidebar(by_file, limit)
+    main = f'<div id="main">{groups}</div>'
+    detail = '<div id="detail"></div>'
+    script = _html_script(_build_fn_data_json(funcs, calledby))
+    html = (
+        _html_head() + toolbar
+        + f'<div id="layout">{sidebar}{main}</div>'
+        + detail + script + "</body></html>"
+    )
+    Path(output_path).write_text(html, encoding="utf-8")
