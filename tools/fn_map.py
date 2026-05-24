@@ -148,14 +148,15 @@ def build_distribution(
     funcs: list[FunctionInfo], buckets: list[int]
 ) -> list[tuple[str, int]]:
     """Return (label, count) pairs for each size bucket (exclusive per-range counts)."""
+    sorted_buckets = sorted(buckets)
     result: list[tuple[str, int]] = []
     prev = 0
-    for b in sorted(buckets):
+    for b in sorted_buckets:
         count = sum(1 for f in funcs if prev < f.line_count <= b)
         result.append((f"≤{b} lines", count))
         prev = b
-    over = sum(1 for f in funcs if f.line_count > sorted(buckets)[-1])
-    result.append((f">{sorted(buckets)[-1]} lines", over))
+    over = sum(1 for f in funcs if f.line_count > sorted_buckets[-1])
+    result.append((f">{sorted_buckets[-1]} lines", over))
     return result
 
 
