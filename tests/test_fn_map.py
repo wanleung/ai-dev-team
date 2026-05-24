@@ -4,7 +4,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 import pytest
-from tools.fn_map import FunctionInfo, FnMapConfig, load_config
+from tools.fn_map import FunctionInfo, FnMapConfig, load_config, resolve_paths
 
 # ── Task 1: Data model + config loader ──────────────────────────────────────
 
@@ -53,3 +53,33 @@ def test_load_config_overrides_exclude(tmp_path):
     yaml_file.write_text("exclude:\n  - custom_exclude/\n")
     cfg = load_config(str(yaml_file))
     assert cfg.exclude == ["custom_exclude/"]
+
+# ── Task 2: Path resolution ──────────────────────────────────────────────────
+
+def test_resolve_paths_includes_py_file(tmp_path):
+    f = tmp_path / "foo.py"
+    f.write_text("x = 1")
+    result = resolve_paths(["foo.py"], [], root=tmp_path)
+    assert f in result
+
+def test_resolve_paths_excludes_match(tmp_path):
+    (tmp_path / "workspace").mkdir()
+    f = tmp_path / "workspace" / "bar.py"
+    f.write_text("x = 1")
+    result = resolve_paths(["workspace/"], ["workspace/"], root=tmp_path)
+    assert f not in result
+
+def test_resolve_paths_recurses_directory(tmp_path):
+    sub = tmp_path / "agents"
+    sub.mkdir()
+    f1 = sub / "one.py"
+    f2 = sub / "two.py"
+    f1.write_text("x = 1")
+    f2.write_text("x = 2")
+    result = resolve_paths(["agents/"], [], root=tmp_path)
+    assert f1 in result
+    assert f2 in result
+
+def test_resolve_paths_ignores_missing_include(tmp_path):
+    result = resolve_paths(["nonexistent.py"], [], root=tmp_path)
+    assert result == []

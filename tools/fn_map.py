@@ -61,3 +61,25 @@ def load_config(path: str) -> FnMapConfig:
     if isinstance(data.get("output"), dict):
         cfg.html_output = data["output"].get("html", cfg.html_output)
     return cfg
+
+
+def resolve_paths(
+    include: list[str],
+    exclude: list[str],
+    root: Path,
+) -> list[Path]:
+    """Expand include globs/dirs and filter out excluded prefixes."""
+    collected: list[Path] = []
+    for inc in include:
+        p = root / inc
+        if p.is_dir():
+            collected.extend(p.rglob("*.py"))
+        elif p.is_file():
+            collected.append(p)
+    result = []
+    for p in collected:
+        rel = str(p.relative_to(root))
+        excluded = any(rel.startswith(ex.rstrip("/")) for ex in exclude)
+        if not excluded:
+            result.append(p)
+    return sorted(set(result))
