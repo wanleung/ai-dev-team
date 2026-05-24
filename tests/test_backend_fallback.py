@@ -46,26 +46,29 @@ def test_fallback_uses_first_backend_when_healthy():
     assert secondary.call_count == 0
 
 
-def test_fallback_switches_on_connection_error(capsys):
+def test_fallback_switches_on_connection_error(caplog):
+    import logging
     from agents.backends.fallback import FallbackLLMBackend
     primary = _make_backend(raises=ConnectionError("refused"))
     secondary = _make_backend("secondary_reply")
     fb = FallbackLLMBackend([primary, secondary])
-    result = fb.call([{"role": "user", "content": "hi"}])
+    with caplog.at_level(logging.WARNING, logger="agents.backends.fallback"):
+        result = fb.call([{"role": "user", "content": "hi"}])
     assert result == "secondary_reply"
-    captured = capsys.readouterr()
-    assert "⚠️" in captured.out
+    assert "⚠️" in caplog.text
 
 
-def test_fallback_switches_on_httpx_connect_error(capsys):
+def test_fallback_switches_on_httpx_connect_error(caplog):
     import httpx
+    import logging
     from agents.backends.fallback import FallbackLLMBackend
     primary = _make_backend(raises=httpx.ConnectError("connect failed"))
     secondary = _make_backend("from_secondary")
     fb = FallbackLLMBackend([primary, secondary])
-    result = fb.call([{"role": "user", "content": "hi"}])
+    with caplog.at_level(logging.WARNING, logger="agents.backends.fallback"):
+        result = fb.call([{"role": "user", "content": "hi"}])
     assert result == "from_secondary"
-    assert "⚠️" in capsys.readouterr().out
+    assert "⚠️" in caplog.text
 
 
 def test_fallback_does_not_switch_on_auth_error():
@@ -160,3 +163,42 @@ def test_fallback_mixed_tool_support_warns_and_skips_in_call_with_tools():
     assert result == "tool result"
     tool_backend.call_with_tools.assert_called_once()
     non_tool_backend.call_with_tools.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# QuotaExhaustedError: permanent dead-backend tracking
+# ---------------------------------------------------------------------------
+
+def test_quota_exhausted_marks_backend_dead_and_falls_back():
+    """QuotaExhaustedError should fall back AND permanently skip that backend."""
+    from agents.backends.base import QuotaExhaustedError
+    from agents.backends.fallback import FallbackLLMBackend
+    primary = _make_backend(raises=QuotaExhaustedError("free tier exhausted"))
+    secondary = _make_backend("secondary_reply")
+    fb = FallbackLLMBackend([primary, secondary])
+    result = fb.call([{"role": "user", "content": "hi"}])
+    assert result == "secondary_reply"
+    assert id(primary) in fb._dead
+
+
+def test_quota_exhausted_backend_skipped_on_subsequent_calls():
+    """Dead (quota-exhausted) backend is skipped without being called again."""
+    from agents.backends.base import QuotaExhaustedError
+    from agents.backends.fallback import FallbackLLMBackend
+    primary = _make_backend(raises=QuotaExhaustedError("exhausted"))
+    secondary = _make_backend("reply")
+    fb = FallbackLLMBackend([primary, secondary])
+    fb.call([{"role": "user", "content": "first"}])
+    primary.call_count = 0  # reset counter after first call
+    fb.call([{"role": "user", "content": "second"}])
+    assert primary.call_count == 0  # must NOT have been called again
+
+
+def test_connection_error_does_not_mark_backend_dead():
+    """Plain ConnectionError should fall back but not mark backend permanently dead."""
+    from agents.backends.fallback import FallbackLLMBackend
+    primary = _make_backend(raises=ConnectionError("temporary failure"))
+    secondary = _make_backend("reply")
+    fb = FallbackLLMBackend([primary, secondary])
+    fb.call([{"role": "user", "content": "hi"}])
+    assert id(primary) not in fb._dead

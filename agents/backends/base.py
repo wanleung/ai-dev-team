@@ -49,6 +49,21 @@ _TRANSIENT_400_CODES: frozenset[str] = frozenset({
     "AllocationQuota",                      # DashScope 403: any allocation quota exceeded
 })
 
+# Quota-exhaustion codes that mean this backend is permanently dead for the run.
+# FallbackLLMBackend marks these backends dead so subsequent calls skip them.
+_PERMANENT_QUOTA_CODES: frozenset[str] = frozenset({
+    "AllocationQuota.FreeTierOnly",
+    "AllocationQuota",
+})
+
+
+class QuotaExhaustedError(ConnectionError):
+    """Raised when a backend's quota is permanently exhausted.
+
+    Subclasses ConnectionError so it triggers FallbackLLMBackend switching,
+    but is distinct enough for the fallback to also mark the backend as dead.
+    """
+
 # Errors that FallbackLLMBackend uses to trigger a switch to the next backend.
 # These are infrastructure/transient failures — not caller errors.
 FALLBACK_ERRORS = (
@@ -121,6 +136,8 @@ def _retry_with_backoff(
             ).get("error", {}).get("code", "")
             if _err_code in _TRANSIENT_400_CODES:
                 _log.warning("Transient 400 (%s) — treating as connection error: %s", _err_code, str(exc)[:120])
+                if _err_code in _PERMANENT_QUOTA_CODES:
+                    raise QuotaExhaustedError(str(exc)) from exc
                 raise ConnectionError(str(exc)) from exc
             raise
         except _retryable_tuple as exc:  # type: ignore[misc]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from agents.backends.base import LLMBackend, FALLBACK_ERRORS
+from agents.backends.base import LLMBackend, FALLBACK_ERRORS, QuotaExhaustedError
 
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
@@ -18,6 +18,9 @@ class FallbackLLMBackend(LLMBackend):
       - Prints a visible ⚠️ warning to stdout
       - Passes the full messages list (with history) to backend N+1
       - If all backends fail, re-raises the last exception
+
+    On a QuotaExhaustedError, the backend is also permanently marked dead
+    for the lifetime of this object — subsequent calls skip it entirely.
 
     Does NOT fall back on auth errors or bad-request errors — those indicate
     a configuration problem that switching backends won't fix.
@@ -38,6 +41,18 @@ class FallbackLLMBackend(LLMBackend):
                 non_tool,
             )
         self._backends = backends
+        self._dead: set[int] = set()  # id(backend) for permanently exhausted backends
+
+    def _active_backends(self) -> list[LLMBackend]:
+        """Return backends that have not been permanently marked dead."""
+        return [b for b in self._backends if id(b) not in self._dead]
+
+    def _log_fallback(self, backend: LLMBackend, exc: BaseException, active: list, idx: int) -> None:
+        if idx < len(active) - 1:
+            logger.warning(
+                "⚠️  %s unreachable (%s: %s), falling back to %s",
+                backend.model, type(exc).__name__, str(exc)[:120], active[idx + 1].model,
+            )
 
     @property
     def model(self) -> str:
@@ -48,17 +63,20 @@ class FallbackLLMBackend(LLMBackend):
 
     def call(self, messages: list[dict], run_id: str | None = None,
              on_token: "Callable[[str], None] | None" = None) -> str:
-        for i, backend in enumerate(self._backends):
+        active = self._active_backends()
+        if not active:
+            raise RuntimeError("All backends permanently exhausted (quota exceeded on all)")
+        for i, backend in enumerate(active):
             try:
                 return backend.call(messages, on_token=on_token)
+            except QuotaExhaustedError as exc:
+                self._dead.add(id(backend))
+                self._log_fallback(backend, exc, active, i)
+                if i >= len(active) - 1:
+                    raise
             except FALLBACK_ERRORS as exc:
-                if i < len(self._backends) - 1:
-                    next_model = self._backends[i + 1].model
-                    logger.warning(
-                        "⚠️  %s unreachable (%s: %s), falling back to %s",
-                        backend.model, type(exc).__name__, str(exc)[:120], next_model,
-                    )
-                else:
+                self._log_fallback(backend, exc, active, i)
+                if i >= len(active) - 1:
                     raise
 
     def call_with_tools(
@@ -68,7 +86,7 @@ class FallbackLLMBackend(LLMBackend):
         max_turns: int = 8,
         run_id: str | None = None,
     ) -> str:
-        tool_backends = [b for b in self._backends if b.supports_tools()]
+        tool_backends = [b for b in self._active_backends() if b.supports_tools()]
         if not tool_backends:
             raise RuntimeError(
                 f"No tool-capable backend available in FallbackLLMBackend "
@@ -77,12 +95,12 @@ class FallbackLLMBackend(LLMBackend):
         for i, backend in enumerate(tool_backends):
             try:
                 return backend.call_with_tools(messages, tools, max_turns)
+            except QuotaExhaustedError as exc:
+                self._dead.add(id(backend))
+                self._log_fallback(backend, exc, tool_backends, i)
+                if i >= len(tool_backends) - 1:
+                    raise
             except FALLBACK_ERRORS as exc:
-                if i < len(tool_backends) - 1:
-                    next_model = tool_backends[i + 1].model
-                    logger.warning(
-                        "⚠️  %s unreachable (%s: %s), falling back to %s",
-                        backend.model, type(exc).__name__, str(exc)[:120], next_model,
-                    )
-                else:
+                self._log_fallback(backend, exc, tool_backends, i)
+                if i >= len(tool_backends) - 1:
                     raise

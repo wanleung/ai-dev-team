@@ -4939,20 +4939,24 @@ class Orchestrator(TestFixLoopMixin):
 
     @staticmethod
     def _strip_article_code_fence(text: str) -> str:
-        """Strip markdown code fences that LLMs sometimes wrap articles in.
+        """Strip code fences and thinking preamble from LLM article output.
 
-        Handles patterns like:
-            ```yaml\\n---\\n...\\n---\\n```
-            ```markdown\\n---\\n...
-            ```\\n---\\n...
-        Returns the content between the outermost ``` delimiters if present,
-        otherwise returns the text unchanged.
+        Handles:
+          - Code fences: ```yaml\\n---\\n...\\n```
+          - Thinking preamble: reasoning text before the first ``---`` line
+            (produced by reasoning models like qwen3 that output chain-of-thought
+            before the article when thinking is not suppressed via a separate channel)
+        Returns the article starting from its YAML frontmatter ``---``.
         """
         import re as _re
         stripped = text.strip()
         m = _re.match(r"^```(?:yaml|markdown|md)?\s*\n(.*?)(?:\n```\s*)?$", stripped, _re.DOTALL)
         if m:
-            return m.group(1).strip()
+            stripped = m.group(1).strip()
+        if not stripped.startswith("---"):
+            fm = _re.search(r"(?:^|\n)(---\n)", stripped)
+            if fm:
+                stripped = stripped[fm.start(1):]
         return stripped
 
     def _stage_news_writer(self, result: PipelineResult) -> None:

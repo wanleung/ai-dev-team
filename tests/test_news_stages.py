@@ -641,3 +641,35 @@ def test_news_triage_fast_pass_disabled_when_no_adapter():
             orch._stage_news_triage(result)
 
     mock_discuss.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _strip_article_code_fence: thinking preamble stripping
+# ---------------------------------------------------------------------------
+
+class TestStripArticleCodeFencePreamble:
+    """Tests for thinking-model preamble removal in _strip_article_code_fence."""
+
+    def _call(self, text):
+        from orchestrator import Orchestrator as _Orch
+        return _Orch._strip_article_code_fence(text)
+
+    def test_clean_article_unchanged(self):
+        article = "---\ntitle: Test\n---\n# Body"
+        assert self._call(article) == article
+
+    def test_strips_thinking_preamble_before_frontmatter(self):
+        raw = "Now I have the source material.\nKey facts:\n- foo\n---\ntitle: T\n---\n# Body"
+        result = self._call(raw)
+        assert result.startswith("---")
+        assert "Now I have" not in result
+
+    def test_no_frontmatter_returned_unchanged(self):
+        raw = "Just some thinking, no article here"
+        assert self._call(raw) == raw
+
+    def test_code_fence_then_preamble_both_stripped(self):
+        raw = "```yaml\nthinking text\n---\ntitle: T\n---\n# Body\n```"
+        result = self._call(raw)
+        assert result.startswith("---")
+        assert "thinking" not in result
