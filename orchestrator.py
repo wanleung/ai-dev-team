@@ -724,6 +724,133 @@ class Orchestrator(TestFixLoopMixin):
         press_cfg: dict | None = None,
         raw_cfg: dict | None = None,
     ) -> None:
+        self._init_core_attrs(
+            model=model, num_engineers=num_engineers,
+            num_junior_engineers=num_junior_engineers,
+            num_senior_engineers=num_senior_engineers,
+            junior_model=junior_model, senior_model=senior_model,
+            tier_reviewer_model=tier_reviewer_model,
+            junior_quality_gate=junior_quality_gate,
+            junior_test_retries=junior_test_retries,
+            tier_override_rules=tier_override_rules,
+            senior_engineer_use_mcp=senior_engineer_use_mcp,
+            junior_engineer_use_mcp=junior_engineer_use_mcp,
+            branch_prefix=branch_prefix, workspace_dir=workspace_dir,
+            stop_on_review_issues=stop_on_review_issues,
+            model_overrides=model_overrides, use_github=use_github,
+            github_repo=github_repo, github_token=github_token,
+            ollama_url=ollama_url, ollama_api_key=ollama_api_key,
+            ollama_think=ollama_think,
+            ollama_preserve_thinking=ollama_preserve_thinking,
+            ollama_stream=ollama_stream, opencode_stream=opencode_stream,
+            github_models_stream=github_models_stream,
+            max_revisions=max_revisions, max_prd_revisions=max_prd_revisions,
+            max_design_revisions=max_design_revisions,
+            stop_on_prd_issues=stop_on_prd_issues,
+            stop_on_design_issues=stop_on_design_issues,
+            max_test_retries=max_test_retries,
+            max_deploy_retries=max_deploy_retries,
+            reviewer_max_retries=reviewer_max_retries,
+            skill_loader=skill_loader,
+            framework_docs_loader=framework_docs_loader,
+            repo_context_loader=repo_context_loader,
+            press_cfg=press_cfg, raw_cfg=raw_cfg,
+        )
+        self._checkpoint_lock: threading.Lock = threading.Lock()
+
+        self._init_tool_registries(mcp_servers)
+
+        # Shared kwargs for all agents (kept for backward compat; tests check agent_kwargs)
+        agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
+                              "ollama_api_key": ollama_api_key,
+                              "ollama_think": ollama_think, "ollama_preserve_thinking": ollama_preserve_thinking,
+                              "ollama_stream": ollama_stream,
+                              "opencode_stream": opencode_stream,
+                              "github_models_stream": github_models_stream,
+                              "nvidia_nim_api_key": nvidia_nim_api_key,
+                              "nvidia_nim_base_url": nvidia_nim_base_url,
+                              "retry_delay": retry_delay, "max_api_retries": max_api_retries,
+                              "inter_call_delay": inter_call_delay}
+        self.agent_kwargs = agent_kwargs
+
+        # ── Global LLM config dict (used by _make_backend) ────────────────────
+        self._init_llm_cfg(
+            model=model, ollama_url=ollama_url,
+            ollama_api_key=ollama_api_key, ollama_think=ollama_think,
+            ollama_preserve_thinking=ollama_preserve_thinking,
+            ollama_stream=ollama_stream, opencode_stream=opencode_stream,
+            github_models_stream=github_models_stream,
+            nvidia_nim_api_key=nvidia_nim_api_key,
+            nvidia_nim_base_url=nvidia_nim_base_url,
+            llm_fallbacks=llm_fallbacks, llm_cfg=llm_cfg,
+        )
+
+        self._init_standard_agents(agent_kwargs, deploy_cfg)
+        self._init_tier_agents(agent_kwargs)
+        self._init_support_agents(agent_kwargs)
+
+        self._init_github(
+            github_repo=github_repo,
+            github_token=github_token,
+            target_repo=target_repo,
+        )
+        self._init_pipeline_config(
+            pipeline_mode=pipeline_mode,
+            stage_skips=stage_skips,
+            pipeline_yaml_stages=pipeline_yaml_stages,
+            progress_tracker_mode=progress_tracker_mode,
+            tdd_commit_tests=tdd_commit_tests,
+            cost_tracking=cost_tracking,
+            update_branch_enabled=update_branch_enabled,
+            conflict_resolver_model=conflict_resolver_model,
+        )
+        self._init_health_and_signals()
+
+    # ── Core attribute initialiser ────────────────────────────────────────────
+
+    def _init_core_attrs(
+        self,
+        model: str,
+        num_engineers: int,
+        num_junior_engineers: int,
+        num_senior_engineers: int,
+        junior_model: Optional[str],
+        senior_model: Optional[str],
+        tier_reviewer_model: Optional[str],
+        junior_quality_gate: bool,
+        junior_test_retries: int,
+        tier_override_rules: "list[dict] | None",
+        senior_engineer_use_mcp: bool,
+        junior_engineer_use_mcp: bool,
+        branch_prefix: str,
+        workspace_dir: str,
+        stop_on_review_issues: bool,
+        model_overrides: Optional[dict],
+        use_github: bool,
+        github_repo: Optional[str],
+        github_token: Optional[str],
+        ollama_url: str,
+        ollama_api_key: Optional[str],
+        ollama_think: bool,
+        ollama_preserve_thinking: bool,
+        ollama_stream: bool,
+        opencode_stream: bool,
+        github_models_stream: bool,
+        max_revisions: int,
+        max_prd_revisions: int,
+        max_design_revisions: int,
+        stop_on_prd_issues: bool,
+        stop_on_design_issues: bool,
+        max_test_retries: int,
+        max_deploy_retries: int,
+        reviewer_max_retries: int,
+        skill_loader: Optional["SkillLoader"],
+        framework_docs_loader: Optional["FrameworkDocsLoader"],
+        repo_context_loader: Optional["RepoContextLoader"],
+        press_cfg: Optional[dict],
+        raw_cfg: Optional[dict],
+    ) -> None:
+        """Assign primary configuration attributes; normalise types and apply defaults."""
         self._press_cfg: dict = press_cfg or {}
         self._raw_cfg: dict = raw_cfg or {}
         self.model = model
@@ -762,14 +889,10 @@ class Orchestrator(TestFixLoopMixin):
         self.skill_loader: Optional[SkillLoader] = skill_loader
         self.framework_docs_loader: FrameworkDocsLoader = framework_docs_loader or FrameworkDocsLoader(config={})
         self.repo_context_loader: Optional[RepoContextLoader] = repo_context_loader
-        self._checkpoint_lock: threading.Lock = threading.Lock()
 
-        # RAG registry and auto-indexer: only active when RAG MCP is configured
-        # (rag_registry is built below from mcp_servers; store a forward ref here)
-        self._rag_registry = None  # will be set after rag_registry is built below
-        self.repo_auto_indexer: Optional[RepoAutoIndexer] = None  # set after rag check
-
-        # Build combined tool registry (builtin + optional MCP servers)
+    def _init_tool_registries(self, mcp_servers: "list[dict] | None") -> None:
+        """Build MCP, RAG and Google Search tool registries; also initialises repo_auto_indexer."""
+        # Combined tool registry (builtin + optional MCP)
         if mcp_servers:
             try:
                 mcp_registry = MCPToolRegistry(mcp_servers)
@@ -780,8 +903,7 @@ class Orchestrator(TestFixLoopMixin):
         else:
             tool_registry = builtin_tools
         self._tool_registry = tool_registry
-
-        # Extract RAG server for retrieval-augmented agents (isolated from builtin tools)
+        # RAG server (isolated from builtin tools for RAG-capable agents)
         rag_servers = [s for s in (mcp_servers or []) if s.get("name") == "rag"]
         try:
             rag_registry = MCPToolRegistry(rag_servers) if rag_servers else None
@@ -791,7 +913,7 @@ class Orchestrator(TestFixLoopMixin):
         self._rag_registry = rag_registry
         self.repo_auto_indexer = RepoAutoIndexer() if rag_registry else None
 
-        # Extract Google Search MCP for web-search-capable agents (news_reviewer etc.)
+        # Google Search MCP (for news_reviewer etc.)
         search_servers = [s for s in (mcp_servers or []) if s.get("name") == "google_search"]
         try:
             search_registry = MCPToolRegistry(search_servers) if search_servers else None
@@ -800,20 +922,24 @@ class Orchestrator(TestFixLoopMixin):
             search_registry = None
         self._search_registry = search_registry
 
-        # Shared kwargs for all agents (kept for backward compat; tests check agent_kwargs)
-        agent_kwargs: dict = {"github_token": github_token, "ollama_url": ollama_url,
-                              "ollama_api_key": ollama_api_key,
-                              "ollama_think": ollama_think, "ollama_preserve_thinking": ollama_preserve_thinking,
-                              "ollama_stream": ollama_stream,
-                              "opencode_stream": opencode_stream,
-                              "github_models_stream": github_models_stream,
-                              "nvidia_nim_api_key": nvidia_nim_api_key,
-                              "nvidia_nim_base_url": nvidia_nim_base_url,
-                              "retry_delay": retry_delay, "max_api_retries": max_api_retries,
-                              "inter_call_delay": inter_call_delay}
-        self.agent_kwargs = agent_kwargs
+    # ── LLM config + agent kwargs helpers ────────────────────────────────────
 
-        # ── Global LLM config dict (used by _make_backend) ────────────────────
+    def _init_llm_cfg(
+        self,
+        model: str,
+        ollama_url: str,
+        ollama_api_key: Optional[str],
+        ollama_think: bool,
+        ollama_preserve_thinking: bool,
+        ollama_stream: bool,
+        opencode_stream: bool,
+        github_models_stream: bool,
+        nvidia_nim_api_key: Optional[str],
+        nvidia_nim_base_url: Optional[str],
+        llm_fallbacks: Optional[list],
+        llm_cfg: Optional[dict],
+    ) -> None:
+        """Build self._llm_cfg from params; deep-merge caller-supplied cfg."""
         self._llm_cfg: dict = {
             "model": model,
             "ollama_url": ollama_url,
@@ -831,57 +957,56 @@ class Orchestrator(TestFixLoopMixin):
         if llm_fallbacks:
             self._llm_cfg["fallbacks"] = llm_fallbacks
         if llm_cfg:
-            # Caller supplied a full llm config dict — deep-merge over constructed defaults
             self._llm_cfg = _deep_merge(self._llm_cfg, llm_cfg)
 
-        def _model(agent_name: str) -> str:
-            """Return the model string for a given agent, falling back to the global default."""
-            override = self.model_overrides.get(agent_name, model)
-            if isinstance(override, dict):
-                return override.get("model", model)
-            return override
+    def _make_agent_kwargs(
+        self, agent_name: str, model_fallback: Optional[str] = None
+    ) -> dict:
+        """Return ``{"llm": backend}`` for a named agent.
 
-        def _mk(agent_name: str, model_fallback: Optional[str] = None) -> dict:
-            """Build per-agent constructor kwargs: llm backend only.
+        Routes to :meth:`_make_backend_from_model` when *model_fallback* is given
+        (tier agents whose model is resolved via team config), or to
+        :meth:`_make_backend` for all other agents.
+        """
+        if model_fallback:
+            backend = self._make_backend_from_model(model_fallback)
+        else:
+            backend = self._make_backend(agent_name)
+        return {"llm": backend}
 
-            Delegates to :meth:`_make_backend_from_model` when *model_fallback* is
-            given (tier agents whose model is resolved via team config), or to
-            :meth:`_make_backend` for all other agents.  The ollama compat attrs
-            (``ollama_think`` etc.) are already present in ``agent_kwargs`` and do
-            not need to be duplicated here.
-            """
-            if model_fallback:
-                backend = self._make_backend_from_model(model_fallback)
-            else:
-                backend = self._make_backend(agent_name)
-            return {"llm": backend}
-
-        self.pm = ProductManagerAgent(**{**agent_kwargs, **_mk("product_manager")})
-        self.news_writer = NewsWriterAgent(tool_registry=search_registry, **{**agent_kwargs, **_mk("news_writer")})
-        self.news_editor = NewsEditorAgent(**{**agent_kwargs, **_mk("news_editor")})
-        self.news_reviewer = NewsReviewerAgent(tool_registry=search_registry, **{**agent_kwargs, **_mk("news_reviewer")})
-        self.translator = TranslatorAgent(**{**agent_kwargs, **_mk("translator")})
-        self.pm_reviewer = PMReviewerAgent(**{**agent_kwargs, **_mk("pm_reviewer")})
-        self.architect = ArchitectAgent(tool_registry=rag_registry, **{**agent_kwargs, **_mk("architect")})
-        self.architect_reviewer = ArchitectReviewerAgent(**{**agent_kwargs, **_mk("architect_reviewer")})
-        self.engineer = EngineerAgent(tool_registry=rag_registry, **{**agent_kwargs, **_mk("engineer")})
-        self.reviewer = CodeReviewerAgent(tool_registry=tool_registry, **{**agent_kwargs, **_mk("code_reviewer")})
-        self.qa_planner = QAPlannerAgent(tool_registry=tool_registry, **{**agent_kwargs, **_mk("qa_planner")})
-        self.qa = QAEngineerAgent(tool_registry=rag_registry, **{**agent_kwargs, **_mk("qa_engineer")})
+    def _init_standard_agents(
+        self, agent_kwargs: dict, deploy_cfg: "dict | None"
+    ) -> None:
+        """Instantiate PM, news, architect, engineer, QA and deployment agents."""
+        mk = self._make_agent_kwargs
+        rag = self._rag_registry
+        search = self._search_registry
+        tools = self._tool_registry
+        self.pm = ProductManagerAgent(**{**agent_kwargs, **mk("product_manager")})
+        self.news_writer = NewsWriterAgent(tool_registry=search, **{**agent_kwargs, **mk("news_writer")})
+        self.news_editor = NewsEditorAgent(**{**agent_kwargs, **mk("news_editor")})
+        self.news_reviewer = NewsReviewerAgent(tool_registry=search, **{**agent_kwargs, **mk("news_reviewer")})
+        self.translator = TranslatorAgent(**{**agent_kwargs, **mk("translator")})
+        self.pm_reviewer = PMReviewerAgent(**{**agent_kwargs, **mk("pm_reviewer")})
+        self.architect = ArchitectAgent(tool_registry=rag, **{**agent_kwargs, **mk("architect")})
+        self.architect_reviewer = ArchitectReviewerAgent(**{**agent_kwargs, **mk("architect_reviewer")})
+        self.engineer = EngineerAgent(tool_registry=rag, **{**agent_kwargs, **mk("engineer")})
+        self.reviewer = CodeReviewerAgent(tool_registry=tools, **{**agent_kwargs, **mk("code_reviewer")})
+        self.qa_planner = QAPlannerAgent(tool_registry=tools, **{**agent_kwargs, **mk("qa_planner")})
+        self.qa = QAEngineerAgent(tool_registry=rag, **{**agent_kwargs, **mk("qa_engineer")})
         _deploy_cfg = deploy_cfg or {"mode": "docker"}
         self._deploy_cfg = _deploy_cfg
         _deploy_backend = build_deploy_backend(_deploy_cfg)
         self.deployment_tester = DeploymentTesterAgent(
             deploy_backend=_deploy_backend,
             deploy_config=_deploy_cfg,
-            **{**agent_kwargs, **_mk("deployment_tester")},
+            **{**agent_kwargs, **mk("deployment_tester")},
         )
 
-        # Junior/Senior tier agents — model priority: llm.overrides > team.junior/senior_model > global
-        # When an agent has a dict override entry, pass model_fallback=None so _mk routes to
-        # _make_backend() which deep-merges the full dict (preserving extra keys like ollama_think).
-        # When there is no dict override, pass the resolved model string as model_fallback so
-        # _mk routes to _make_backend_from_model() with the correct team/global model.
+    def _init_tier_agents(self, agent_kwargs: dict) -> None:
+        """Instantiate junior/senior/tier-reviewer agents."""
+        mk = self._make_agent_kwargs
+        rag = self._rag_registry
         _junior_fallback = (
             None if "junior_engineer" in self.model_overrides
             else (self.junior_model or self.model)
@@ -890,62 +1015,72 @@ class Orchestrator(TestFixLoopMixin):
             None if "senior_engineer" in self.model_overrides
             else (self.senior_model or self.model)
         )
-        # tier_reviewer fallback must not reference _junior_model (removed); replicate logic inline.
         _tier_rev_fallback = (
             None if "tier_reviewer" in self.model_overrides
             else (self.tier_reviewer_model or self.junior_model or self.model)
         )
-
         self.junior_engineer = JuniorEngineerAgent(
-            tool_registry=rag_registry if self.junior_engineer_use_mcp else None,
-            **{**agent_kwargs, **_mk("junior_engineer", model_fallback=_junior_fallback)},
+            tool_registry=rag if self.junior_engineer_use_mcp else None,
+            **{**agent_kwargs, **mk("junior_engineer", model_fallback=_junior_fallback)},
         )
         self.senior_engineer = SeniorEngineerAgent(
-            tool_registry=rag_registry if self.senior_engineer_use_mcp else None,
-            **{**agent_kwargs, **_mk("senior_engineer", model_fallback=_senior_fallback)},
+            tool_registry=rag if self.senior_engineer_use_mcp else None,
+            **{**agent_kwargs, **mk("senior_engineer", model_fallback=_senior_fallback)},
         )
         self.tier_reviewer = TierReviewerAgent(
-            **{**agent_kwargs, **_mk("tier_reviewer", model_fallback=_tier_rev_fallback)},
+            **{**agent_kwargs, **mk("tier_reviewer", model_fallback=_tier_rev_fallback)},
         )
 
-
-        # Snapshot original system prompts to prevent stacking on repeated run() calls
+    def _init_support_agents(self, agent_kwargs: dict) -> None:
+        """Instantiate summariser, refactor agent, memory store; snapshot original system prompts."""
+        mk = self._make_agent_kwargs
+        self.summariser = SummaryAgent(**{**agent_kwargs, **mk("summariser")})
+        self.refactor_agent = RefactorAgent(**{**agent_kwargs, **mk("refactor_agent")})
+        self.memory = MemoryStore(self.workspace_dir / "memory.db")
         self._original_system_prompts: dict = {
             agent: agent.system_prompt
             for agent in (
-                self.pm, self.news_writer, self.news_editor, self.news_reviewer, self.pm_reviewer, self.architect, self.architect_reviewer,
+                self.pm, self.news_writer, self.news_editor, self.news_reviewer,
+                self.pm_reviewer, self.architect, self.architect_reviewer,
                 self.engineer, self.junior_engineer, self.senior_engineer,
-                self.reviewer, self.qa_planner, self.qa,
-                self.deployment_tester,
+                self.tier_reviewer,
+                self.reviewer, self.qa_planner, self.qa, self.deployment_tester,
             )
             if agent is not None
         }
 
-        self.summariser = SummaryAgent(**{**agent_kwargs, **_mk("summariser")})
-        self.refactor_agent = RefactorAgent(**{**agent_kwargs, **_mk("refactor_agent")})
-
-        # Long-term SQLite memory store
-        self.memory = MemoryStore(self.workspace_dir / "memory.db")
-
-        # Tracker GitHub (ai-software-house): PM issues, progress comments
+    def _init_github(
+        self,
+        github_repo: Optional[str],
+        github_token: Optional[str],
+        target_repo: Optional[str],
+    ) -> None:
+        """Create tracker and target GitHubClient instances."""
         self.github: Optional[GitHubClient] = None
         if self.use_github and github_repo:
             self.github = GitHubClient(repo=github_repo, github_token=github_token)
             self._ensure_github_labels()
-
-        # Target GitHub: where code branches / commits / PRs go.
-        # Defaults to tracker github; overridden at run-time when issue body has "Target repo:".
         self.target_github: Optional[GitHubClient] = None
         if target_repo and target_repo != github_repo:
             self.target_github = GitHubClient(repo=target_repo, github_token=github_token)
         else:
             self.target_github = self.github
 
-        # ── Pipeline mode + per-stage skip config ─────────────────────────────
+    def _init_pipeline_config(
+        self,
+        pipeline_mode: str,
+        stage_skips: "dict[str, bool] | None",
+        pipeline_yaml_stages: "list | None",
+        progress_tracker_mode: str,
+        tdd_commit_tests: bool,
+        cost_tracking: "dict | None",
+        update_branch_enabled: bool,
+        conflict_resolver_model: Optional[str],
+    ) -> None:
+        """Assign pipeline-mode flags, cost tracking and stage-timeout config."""
         self._mode: str = pipeline_mode
         self._stage_skips: dict[str, bool] = stage_skips or {}
         self._pipeline_yaml_stages: "list | None" = pipeline_yaml_stages
-        # Directory scanned for discussion preset YAMLs (discussions/*.yaml)
         self._discussions_dir: Path = Path(__file__).parent / "discussions"
         self.progress_tracker_mode: str = progress_tracker_mode
         self.tdd_commit_tests: bool = tdd_commit_tests
@@ -962,10 +1097,8 @@ class Orchestrator(TestFixLoopMixin):
                     pass
             ledger = TokenLedger(pricing=ct.get("pricing", {}), max_cost_usd=max_cost)
             set_ledger(ledger)
-
-        # Per-stage timeouts from config
         self._stage_timeouts: dict[str, float] = {}
-        _pipeline_cfg = {}
+        _pipeline_cfg: dict = {}
         if hasattr(self, "_cfg"):
             _pipeline_cfg = self._cfg.get("pipeline", {}) or {}
         for _stage_name, _secs in (_pipeline_cfg.get("stage_timeouts") or {}).items():
@@ -974,21 +1107,31 @@ class Orchestrator(TestFixLoopMixin):
             except (TypeError, ValueError):
                 pass
 
-        # Agent health monitor
+    def _init_health_and_signals(self) -> None:
+        """Set up AgentHealthMonitor and graceful shutdown signal handlers."""
         from core.agent_health import AgentHealthMonitor
-        _health_threshold = int(3)  # default; overridable via config if needed
-        self._agent_health = AgentHealthMonitor(failure_threshold=_health_threshold)
-
-        # Graceful shutdown: set by SIGTERM/SIGINT handlers; checked at every stage entry.
+        self._agent_health = AgentHealthMonitor(failure_threshold=3)
         self._shutdown_event = threading.Event()
 
-        def _handle_shutdown(signum, frame):
+        def _handle_shutdown(signum, frame) -> None:
             self._shutdown_event.set()
 
         if threading.current_thread() is threading.main_thread():
             import signal as _signal
             _signal.signal(_signal.SIGTERM, _handle_shutdown)
             _signal.signal(_signal.SIGINT, _handle_shutdown)
+
+    def _resolve_agent_model(self, agent_name: str) -> str:
+        """Return the model string for *agent_name*, falling back to ``self.model``.
+
+        Handles both string overrides (model name) and dict overrides
+        (full per-agent settings with a ``"model"`` key).
+        """
+        _default_model = getattr(self, "model", "gpt-4.1")
+        override = getattr(self, "model_overrides", {}).get(agent_name, _default_model)
+        if isinstance(override, dict):
+            return override.get("model", _default_model)
+        return override
 
     # ── Backend factory helpers ───────────────────────────────────────────────
 
@@ -1340,7 +1483,7 @@ class Orchestrator(TestFixLoopMixin):
         from agents.pr_analyst import PRAnalystAgent
 
         agent = PRAnalystAgent(
-            model=_model("pr_analyst"),
+            model=self._resolve_agent_model("pr_analyst"),
             github_token=self._github_token,
             ollama_url=self.ollama_url,
             tool_registry=getattr(self, "_search_registry", None) or self._rag_registry,
@@ -1362,7 +1505,7 @@ class Orchestrator(TestFixLoopMixin):
             return
 
         agent = PRCreativeAgent(
-            model=_model("pr_creative"),
+            model=self._resolve_agent_model("pr_creative"),
             github_token=self._github_token,
             ollama_url=self.ollama_url,
             tool_registry=self._rag_registry,
@@ -1388,7 +1531,7 @@ class Orchestrator(TestFixLoopMixin):
 
         gh = self.target_github or self.github
         agent = PRProposalAgent(
-            model=_model("pr_proposal"),
+            model=self._resolve_agent_model("pr_proposal"),
             github_token=self._github_token,
             ollama_url=self.ollama_url,
             tool_registry=self._rag_registry,
@@ -1566,8 +1709,7 @@ class Orchestrator(TestFixLoopMixin):
             return
         from agents.discussion_agent import DiscussionAgent
         _overrides = getattr(self, "model_overrides", {})
-        _disc_override = _overrides.get("discussion", self.model)
-        _disc_model = _disc_override.get("model", self.model) if isinstance(_disc_override, dict) else _disc_override
+        _disc_model = self._resolve_agent_model("discussion")
         _llm_cfg = getattr(self, "_llm_cfg", {})
         agent = DiscussionAgent.from_file(
             config_path=config_path,
@@ -1771,246 +1913,348 @@ class Orchestrator(TestFixLoopMixin):
         return "\n\n".join(parts)
 
     def _make_stage_registry(self) -> dict[str, "PipelineStage"]:
-        """Build the full registry of all known pipeline stages."""
-        _registry = {
-            "pm": PipelineStage(
-                name="pm",
-                label="📋 Product Manager",
-                description="Analyzing requirements & writing PRD...",
-                checkpoint_key="pm",
-                fn=lambda r: self._stage_pm(r, r.requirement),
-                required_output_fields=["prd"],
-                is_critical=True,
-            ),
-            "pm_reviewer": PipelineStage(
-                name="pm_reviewer",
-                label="📝 PM Reviewer",
-                description="Reviewing PRD for completeness...",
-                checkpoint_key="pm_reviewer",
-                fn=lambda r: self._stage_pm_reviewer(r, r.requirement),
-            ),
-            "architect": PipelineStage(
-                name="architect",
-                label="🏗️  Architect",
-                description="Designing system architecture...",
-                checkpoint_key="architect",
-                fn=lambda r: self._stage_architect(r),
-                required_output_fields=["design"],
-                is_critical=True,
-            ),
-            "architect_reviewer": PipelineStage(
-                name="architect_reviewer",
-                label="🔎 Architect Reviewer",
-                description="Reviewing system design...",
-                checkpoint_key="architect_reviewer",
-                fn=lambda r: self._stage_architect_reviewer(r),
-            ),
-            "tier_review": PipelineStage(
-                name="tier_review",
-                label="🏷️  Tier Review",
-                description="Classifying modules into junior/senior tiers...",
-                checkpoint_key="tier_review",
-                fn=lambda r: self._stage_tier_review(r),
-                # parallel_group can be set here for custom pipeline.yaml arrangements
-                # where tier_review and qa_planner appear consecutively.
-                # They are not consecutive in the built-in MODES, so no group is set by default.
-            ),
-            "junior_engineer": PipelineStage(
-                name="junior_engineer",
-                label="🟢 Junior Engineers",
-                description="Implementing junior module(s)...",
-                checkpoint_key="junior_engineer",
-                fn=lambda r: self._stage_junior_engineer(r),
-                skip_if=lambda r: "engineer" in r.completed_stages,
-            ),
-            "senior_engineer": PipelineStage(
-                name="senior_engineer",
-                label="🔵 Senior Engineers",
-                description="Implementing senior module(s)...",
-                checkpoint_key="senior_engineer",
-                fn=lambda r: self._stage_senior_engineer(r),
-                skip_if=lambda r: "engineer" in r.completed_stages,
-            ),
-            "reviewer": PipelineStage(
-                name="reviewer",
-                label="🔍 Code Reviewer",
-                description="Reviewing generated code...",
-                checkpoint_key="reviewer",
-                fn=lambda r: self._stage_reviewer(r),
-                stop_if=lambda r: self.stop_on_review_issues and r.verdict == "CHANGES REQUESTED",
-                stop_message="⛔ Pipeline stopped: code reviewer requested changes.",
-            ),
-            "qa_planner": PipelineStage(
-                name="qa_planner",
-                label="📋 QA Planner",
-                description="Creating test plan & acceptance criteria...",
-                checkpoint_key="qa_planner",
-                fn=lambda r: self._stage_qa_planner(r),
-                # parallel_group can be set in custom pipeline.yaml configurations.
-            ),
-            "qa_engineer": PipelineStage(
-                name="qa_engineer",
-                label="🧪 QA Engineer",
-                description="Writing tests & producing test plan...",
-                checkpoint_key="qa",
-                fn=lambda r: self._stage_qa(r),
-            ),
-            "qa_write": PipelineStage(
-                name="qa_write",
-                label="✍️  QA Write (TDD)",
-                description="Writing tests before implementation...",
-                checkpoint_key="qa_write",
-                fn=lambda r: self._stage_qa_write(r),
-            ),
-            "test_fix": PipelineStage(
-                name="test_fix",
-                label="🏃 Test Runner + Fix Loop",
-                description="Executing tests (with auto-fix)…",
-                checkpoint_key="test_runner",
-                fn=lambda r: self._stage_test_fix_loop(r),
-                skip_if=lambda r: not r.test_files,
-            ),
-            "deploy_tester": PipelineStage(
-                name="deploy_tester",
-                label="🚀 Deployment Tester",
-                description="Generating deployment smoke tests...",
-                checkpoint_key="deployment_tester",
-                fn=lambda r: self._stage_deployment_tester(r),
-            ),
-            "deploy_fix": PipelineStage(
-                name="deploy_fix",
-                label="🐳 Deploy Test Runner + Fix Loop",
-                description="Running deployment tests (with auto-fix)…",
-                checkpoint_key="deploy_test_runner",
-                fn=lambda r: self._stage_deploy_fix_loop(r),
-                skip_if=lambda r: not r.deploy_files,
-            ),
-            "engineer": PipelineStage(
-                name="engineer",
-                label="👷 Engineer",
-                description="Implementing modules (single-tier)...",
-                checkpoint_key="engineer",
-                fn=lambda r: self._stage_engineer(r),
-            ),
-            "diagnose": PipelineStage(
-                name="diagnose",
-                label="🔬 Diagnoser",
-                description="Diagnosing bug from issue body and existing files...",
-                checkpoint_key="diagnose",
-                fn=lambda r: self._stage_diagnose(r),
-            ),
-            "bug_fix": PipelineStage(
-                name="bug_fix",
-                label="🛠️  Bug Fix",
-                description="Applying bug fix patches...",
-                checkpoint_key="bug_fix",
-                fn=lambda r: self._stage_bug_fix(r),
-            ),
-            "doc_generate": PipelineStage(
-                name="doc_generate",
-                label="📚 Doc Generator",
-                description="Generating documentation files...",
-                checkpoint_key="doc_generate",
-                fn=lambda r: self._stage_doc_generate(r),
-            ),
-            "doc_commit_pr": PipelineStage(
-                name="doc_commit_pr",
-                label="📤 Doc Commit + PR",
-                description="Committing docs and opening PR...",
-                checkpoint_key="doc_commit_pr",
-                fn=lambda r: self._stage_doc_commit_pr(r),
-            ),
-            "pr_analyst": PipelineStage(
-                name="pr_analyst",
-                label="🔍 PR Analyst",
-                description="Analysing campaign brief...",
-                checkpoint_key="pr_analyst",
-                fn=lambda r: self._stage_pr_analyst(r),
-            ),
-            "pr_creative": PipelineStage(
-                name="pr_creative",
-                label="🎨 PR Creative",
-                description="Generating campaign concepts...",
-                checkpoint_key="pr_creative",
-                fn=lambda r: self._stage_pr_creative(r),
-            ),
-            "pr_proposal": PipelineStage(
-                name="pr_proposal",
-                label="📋 PR Proposal",
-                description="Assembling proposal and opening PR...",
-                checkpoint_key="pr_proposal",
-                fn=lambda r: self._stage_pr_proposal(r),
-            ),
-            "validation_gate": PipelineStage(
-                name="validation_gate",
-                label="🔍 Validation Gate",
-                description="Syntax-checking and linting generated code...",
-                checkpoint_key="validation_gate",
-                fn=lambda r: self._stage_validation_gate(r),
-            ),
-            "bootstrap_patterns": PipelineStage(
-                name="bootstrap_patterns",
-                label="🌱 Bootstrap Patterns",
-                description="Scanning repo and generating .github/AGENTS.md...",
-                checkpoint_key="bootstrap_patterns",
-                fn=lambda r: self._stage_bootstrap_patterns(r),
-            ),
-            "news_triage": PipelineStage(
-                name="news_triage",
-                label="🗞️  Editorial Triage",
-                description="Editorial team voting: publish or skip?",
-                checkpoint_key="news_triage",
-                fn=lambda r: self._stage_news_triage(r),
-                stop_if=lambda r: r.editorial_verdict == "SKIP",
-                stop_message="🚫 Editorial triage: story skipped — pipeline aborted.",
-            ),
-            "news_writer": PipelineStage(
-                name="news_writer",
-                label="✍️  News Writer",
-                description="Writing news article draft...",
-                checkpoint_key="news_writer",
-                fn=lambda r: self._stage_news_writer(r),
-            ),
-            "news_editor": PipelineStage(
-                name="news_editor",
-                label="📝 News Editor",
-                description="Editing and finalising article...",
-                checkpoint_key="news_editor",
-                fn=lambda r: self._stage_news_editor(r),
-            ),
-            "translate_cantonese": PipelineStage(
-                name="translate_cantonese",
-                label="🀄 Translate (Cantonese)",
-                description="Translating article to Written Cantonese...",
-                checkpoint_key="translate_cantonese",
-                fn=lambda r: self._stage_translate(r, "cantonese", "article_zh_hk"),
-            ),
-            "translate_zh_traditional": PipelineStage(
-                name="translate_zh_traditional",
-                label="🀄 Translate (Traditional Chinese)",
-                description="Translating article to Traditional Chinese...",
-                checkpoint_key="translate_zh_traditional",
-                fn=lambda r: self._stage_translate(r, "traditional_chinese", "article_zh_tw"),
-            ),
-            "news_reviewer": PipelineStage(
-                name="news_reviewer",
-                label="🔍 News Reviewer",
-                description="Reviewing article quality and translation correctness...",
-                checkpoint_key="news_reviewer",
-                fn=lambda r: self._stage_news_reviewer(r),
-            ),
-            "news_article_pr": PipelineStage(
-                name="news_article_pr",
-                label="📨 News Article PR",
-                description="Opening PR with article...",
-                checkpoint_key="news_article_pr",
-                fn=lambda r: self._stage_news_article_pr(r),
-            ),
-        }
+        """Build and return the complete stage registry by composing sub-group builders."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages.update(self._build_product_stages())
+        stages.update(self._build_engineering_stages())
+        stages.update(self._build_content_stages())
+        stages.update(self._build_utility_stages())
+        stages.update(self._build_discussion_stages())
         # Wire per-stage timeouts from config
-        for _name, _stage in _registry.items():
+        for _name, _stage in stages.items():
             if _name in (self._stage_timeouts or {}):
                 _stage.timeout_s = self._stage_timeouts[_name]  # type: ignore[index]
+        return stages
+
+    # ------------------------------------------------------------------
+    # Stage sub-builders
+    # ------------------------------------------------------------------
+
+    def _build_product_stages(self) -> dict[str, "PipelineStage"]:
+        """Build product pipeline stages (PM, PM reviewer, and PR campaign stages)."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages.update(self._build_product_stages_pm())
+        stages.update(self._build_product_stages_pr())
+        return stages
+
+    def _build_product_stages_pm(self) -> dict[str, "PipelineStage"]:
+        """Build product manager and PM reviewer stages."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["pm"] = PipelineStage(
+            name="pm",
+            label="📋 Product Manager",
+            description="Analyzing requirements & writing PRD...",
+            checkpoint_key="pm",
+            fn=lambda r: self._stage_pm(r, r.requirement),
+            required_output_fields=["prd"],
+            is_critical=True,
+        )
+        stages["pm_reviewer"] = PipelineStage(
+            name="pm_reviewer",
+            label="📝 PM Reviewer",
+            description="Reviewing PRD for completeness...",
+            checkpoint_key="pm_reviewer",
+            fn=lambda r: self._stage_pm_reviewer(r, r.requirement),
+        )
+        return stages
+
+    def _build_product_stages_pr(self) -> dict[str, "PipelineStage"]:
+        """Build PR (marketing campaign) pipeline stages."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["pr_analyst"] = PipelineStage(
+            name="pr_analyst",
+            label="🔍 PR Analyst",
+            description="Analysing campaign brief...",
+            checkpoint_key="pr_analyst",
+            fn=lambda r: self._stage_pr_analyst(r),
+        )
+        stages["pr_creative"] = PipelineStage(
+            name="pr_creative",
+            label="🎨 PR Creative",
+            description="Generating campaign concepts...",
+            checkpoint_key="pr_creative",
+            fn=lambda r: self._stage_pr_creative(r),
+        )
+        stages["pr_proposal"] = PipelineStage(
+            name="pr_proposal",
+            label="📋 PR Proposal",
+            description="Assembling proposal and opening PR...",
+            checkpoint_key="pr_proposal",
+            fn=lambda r: self._stage_pr_proposal(r),
+        )
+        return stages
+
+    def _build_engineering_stages(self) -> dict[str, "PipelineStage"]:
+        """Build all engineering pipeline stages across design, impl, QA, and debug groups."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages.update(self._build_engineering_stages_design())
+        stages.update(self._build_engineering_stages_impl())
+        stages.update(self._build_engineering_stages_qa())
+        stages.update(self._build_engineering_stages_test())
+        stages.update(self._build_engineering_stages_fix())
+        stages.update(self._build_engineering_stages_debug())
+        return stages
+
+    def _build_engineering_stages_design(self) -> dict[str, "PipelineStage"]:
+        """Build architecture design and tier-review stages."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["architect"] = PipelineStage(
+            name="architect",
+            label="🏗️  Architect",
+            description="Designing system architecture...",
+            checkpoint_key="architect",
+            fn=lambda r: self._stage_architect(r),
+            required_output_fields=["design"],
+            is_critical=True,
+        )
+        stages["architect_reviewer"] = PipelineStage(
+            name="architect_reviewer",
+            label="🔎 Architect Reviewer",
+            description="Reviewing system design...",
+            checkpoint_key="architect_reviewer",
+            fn=lambda r: self._stage_architect_reviewer(r),
+        )
+        stages["tier_review"] = PipelineStage(
+            name="tier_review",
+            label="🏷️  Tier Review",
+            description="Classifying modules into junior/senior tiers...",
+            checkpoint_key="tier_review",
+            fn=lambda r: self._stage_tier_review(r),
+            # parallel_group can be set here for custom pipeline.yaml arrangements
+            # where tier_review and qa_planner appear consecutively.
+            # They are not consecutive in the built-in MODES, so no group is set by default.
+        )
+        return stages
+
+    def _build_engineering_stages_impl(self) -> dict[str, "PipelineStage"]:
+        """Build engineer implementation stages (junior, senior, single-tier)."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["junior_engineer"] = PipelineStage(
+            name="junior_engineer",
+            label="🟢 Junior Engineers",
+            description="Implementing junior module(s)...",
+            checkpoint_key="junior_engineer",
+            fn=lambda r: self._stage_junior_engineer(r),
+            skip_if=lambda r: "engineer" in r.completed_stages,
+        )
+        stages["senior_engineer"] = PipelineStage(
+            name="senior_engineer",
+            label="🔵 Senior Engineers",
+            description="Implementing senior module(s)...",
+            checkpoint_key="senior_engineer",
+            fn=lambda r: self._stage_senior_engineer(r),
+            skip_if=lambda r: "engineer" in r.completed_stages,
+        )
+        stages["engineer"] = PipelineStage(
+            name="engineer",
+            label="👷 Engineer",
+            description="Implementing modules (single-tier)...",
+            checkpoint_key="engineer",
+            fn=lambda r: self._stage_engineer(r),
+        )
+        return stages
+
+    def _build_engineering_stages_qa(self) -> dict[str, "PipelineStage"]:
+        """Build code review and QA planning/engineering stages."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["reviewer"] = PipelineStage(
+            name="reviewer",
+            label="🔍 Code Reviewer",
+            description="Reviewing generated code...",
+            checkpoint_key="reviewer",
+            fn=lambda r: self._stage_reviewer(r),
+            stop_if=lambda r: self.stop_on_review_issues and r.verdict == "CHANGES REQUESTED",
+            stop_message="⛔ Pipeline stopped: code reviewer requested changes.",
+        )
+        stages["qa_planner"] = PipelineStage(
+            name="qa_planner",
+            label="📋 QA Planner",
+            description="Creating test plan & acceptance criteria...",
+            checkpoint_key="qa_planner",
+            fn=lambda r: self._stage_qa_planner(r),
+            # parallel_group can be set in custom pipeline.yaml configurations.
+        )
+        stages["qa_engineer"] = PipelineStage(
+            name="qa_engineer",
+            label="🧪 QA Engineer",
+            description="Writing tests & producing test plan...",
+            checkpoint_key="qa",
+            fn=lambda r: self._stage_qa(r),
+        )
+        return stages
+
+    def _build_engineering_stages_test(self) -> dict[str, "PipelineStage"]:
+        """Build TDD write, test-runner loop, and validation-gate stages."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["qa_write"] = PipelineStage(
+            name="qa_write",
+            label="✍️  QA Write (TDD)",
+            description="Writing tests before implementation...",
+            checkpoint_key="qa_write",
+            fn=lambda r: self._stage_qa_write(r),
+        )
+        stages["test_fix"] = PipelineStage(
+            name="test_fix",
+            label="🏃 Test Runner + Fix Loop",
+            description="Executing tests (with auto-fix)…",
+            checkpoint_key="test_runner",
+            fn=lambda r: self._stage_test_fix_loop(r),
+            skip_if=lambda r: not r.test_files,
+        )
+        stages["validation_gate"] = PipelineStage(
+            name="validation_gate",
+            label="🔍 Validation Gate",
+            description="Syntax-checking and linting generated code...",
+            checkpoint_key="validation_gate",
+            fn=lambda r: self._stage_validation_gate(r),
+        )
+        return stages
+
+    def _build_engineering_stages_fix(self) -> dict[str, "PipelineStage"]:
+        """Build deployment tester and deploy-fix-loop stages."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["deploy_tester"] = PipelineStage(
+            name="deploy_tester",
+            label="🚀 Deployment Tester",
+            description="Generating deployment smoke tests...",
+            checkpoint_key="deployment_tester",
+            fn=lambda r: self._stage_deployment_tester(r),
+        )
+        stages["deploy_fix"] = PipelineStage(
+            name="deploy_fix",
+            label="🐳 Deploy Test Runner + Fix Loop",
+            description="Running deployment tests (with auto-fix)…",
+            checkpoint_key="deploy_test_runner",
+            fn=lambda r: self._stage_deploy_fix_loop(r),
+            skip_if=lambda r: not r.deploy_files,
+        )
+        return stages
+
+    def _build_engineering_stages_debug(self) -> dict[str, "PipelineStage"]:
+        """Build bug diagnose and bug-fix stages."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["diagnose"] = PipelineStage(
+            name="diagnose",
+            label="🔬 Diagnoser",
+            description="Diagnosing bug from issue body and existing files...",
+            checkpoint_key="diagnose",
+            fn=lambda r: self._stage_diagnose(r),
+        )
+        stages["bug_fix"] = PipelineStage(
+            name="bug_fix",
+            label="🛠️  Bug Fix",
+            description="Applying bug fix patches...",
+            checkpoint_key="bug_fix",
+            fn=lambda r: self._stage_bug_fix(r),
+        )
+        return stages
+
+    def _build_content_stages(self) -> dict[str, "PipelineStage"]:
+        """Build all content/news pipeline stages (writing, translation, review)."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages.update(self._build_content_stages_writing())
+        stages.update(self._build_content_stages_translate())
+        stages.update(self._build_content_stages_review())
+        return stages
+
+    def _build_content_stages_writing(self) -> dict[str, "PipelineStage"]:
+        """Build news triage, writer, and editor stages."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["news_triage"] = PipelineStage(
+            name="news_triage",
+            label="🗞️  Editorial Triage",
+            description="Editorial team voting: publish or skip?",
+            checkpoint_key="news_triage",
+            fn=lambda r: self._stage_news_triage(r),
+            stop_if=lambda r: r.editorial_verdict == "SKIP",
+            stop_message="🚫 Editorial triage: story skipped — pipeline aborted.",
+        )
+        stages["news_writer"] = PipelineStage(
+            name="news_writer",
+            label="✍️  News Writer",
+            description="Writing news article draft...",
+            checkpoint_key="news_writer",
+            fn=lambda r: self._stage_news_writer(r),
+        )
+        stages["news_editor"] = PipelineStage(
+            name="news_editor",
+            label="📝 News Editor",
+            description="Editing and finalising article...",
+            checkpoint_key="news_editor",
+            fn=lambda r: self._stage_news_editor(r),
+        )
+        return stages
+
+    def _build_content_stages_translate(self) -> dict[str, "PipelineStage"]:
+        """Build translation stages (Cantonese and Traditional Chinese)."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["translate_cantonese"] = PipelineStage(
+            name="translate_cantonese",
+            label="🀄 Translate (Cantonese)",
+            description="Translating article to Written Cantonese...",
+            checkpoint_key="translate_cantonese",
+            fn=lambda r: self._stage_translate(r, "cantonese", "article_zh_hk"),
+        )
+        stages["translate_zh_traditional"] = PipelineStage(
+            name="translate_zh_traditional",
+            label="🀄 Translate (Traditional Chinese)",
+            description="Translating article to Traditional Chinese...",
+            checkpoint_key="translate_zh_traditional",
+            fn=lambda r: self._stage_translate(r, "traditional_chinese", "article_zh_tw"),
+        )
+        return stages
+
+    def _build_content_stages_review(self) -> dict[str, "PipelineStage"]:
+        """Build news article reviewer and PR-open stages."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["news_reviewer"] = PipelineStage(
+            name="news_reviewer",
+            label="🔍 News Reviewer",
+            description="Reviewing article quality and translation correctness...",
+            checkpoint_key="news_reviewer",
+            fn=lambda r: self._stage_news_reviewer(r),
+        )
+        stages["news_article_pr"] = PipelineStage(
+            name="news_article_pr",
+            label="📨 News Article PR",
+            description="Opening PR with article...",
+            checkpoint_key="news_article_pr",
+            fn=lambda r: self._stage_news_article_pr(r),
+        )
+        return stages
+
+    def _build_utility_stages(self) -> dict[str, "PipelineStage"]:
+        """Build utility stages: doc generation, doc PR, and bootstrap patterns."""
+        stages: dict[str, "PipelineStage"] = {}
+        stages["doc_generate"] = PipelineStage(
+            name="doc_generate",
+            label="📚 Doc Generator",
+            description="Generating documentation files...",
+            checkpoint_key="doc_generate",
+            fn=lambda r: self._stage_doc_generate(r),
+        )
+        stages["doc_commit_pr"] = PipelineStage(
+            name="doc_commit_pr",
+            label="📤 Doc Commit + PR",
+            description="Committing docs and opening PR...",
+            checkpoint_key="doc_commit_pr",
+            fn=lambda r: self._stage_doc_commit_pr(r),
+        )
+        stages["bootstrap_patterns"] = PipelineStage(
+            name="bootstrap_patterns",
+            label="🌱 Bootstrap Patterns",
+            description="Scanning repo and generating .github/AGENTS.md...",
+            checkpoint_key="bootstrap_patterns",
+            fn=lambda r: self._stage_bootstrap_patterns(r),
+        )
+        return stages
+
+    def _build_discussion_stages(self) -> dict[str, "PipelineStage"]:
+        """Auto-discover discussions/*.yaml presets and register as discuss_<name> stages.
+
+        Registered dynamically at runtime — no fixed sub-builders possible.
+        """
+        stages: dict[str, "PipelineStage"] = {}
         # Auto-discover discussions/*.yaml and register as discuss_<name> stages
         discussions_dir = getattr(self, "_discussions_dir", Path(__file__).parent / "discussions")
         if discussions_dir.is_dir():
@@ -2019,21 +2263,21 @@ class Orchestrator(TestFixLoopMixin):
             )
             for preset_path in all_presets:
                 stage_key = f"discuss_{preset_path.stem.replace('-', '_')}"
-                if stage_key in _registry:
+                if stage_key in stages:
                     log.warning(
                         "discuss stage key collision: '%s' from '%s' already registered; skipping.",
                         stage_key, preset_path.name,
                     )
                     continue
                 label_name = preset_path.stem.replace("-", " ").replace("_", " ").title()
-                _registry[stage_key] = PipelineStage(
+                stages[stage_key] = PipelineStage(
                     name=stage_key,
                     label=f"💬 Discuss: {label_name}",
                     description=f"Multi-agent round-table discussion ({preset_path.name})",
                     checkpoint_key=stage_key,
                     fn=lambda r, p=str(preset_path): self._stage_discuss(r, p),
                 )
-        return _registry
+        return stages
 
     def _load_pipeline_yaml(self, config_path: str) -> "list | None":
         """Parse and validate pipeline.yaml from the same directory as config_path.
@@ -2612,14 +2856,56 @@ class Orchestrator(TestFixLoopMixin):
         if self.target_github is None:
             raise RuntimeError("target_github is required for run_revision()")
 
-        # ── 1. PR metadata ────────────────────────────────────────────────────
+        ctx = self._revision_fetch_pr_context(pr_number)
+        self._revision_inject_skills(ctx["pr_body"])
+
+        cap_result = self._revision_check_cap(pr_number, ctx["current_rev"])
+        if cap_result:
+            return cap_result
+
+        update_result = self._revision_maybe_update_branch(pr_number, ctx["pr"], ctx["head_branch"])
+        if update_result:
+            return update_result
+
+        fb_ctx = self._revision_collect_feedback(pr_number)
+        if "status" in fb_ctx:
+            return fb_ctx
+
+        files_ctx = self._revision_collect_files(
+            pr_number, ctx["head_branch"], ctx["issue_number"], fb_ctx["merge_branches"]
+        )
+        augmented_design = self._revision_build_augmented_design(
+            files_ctx["design"], ctx["head_branch"], files_ctx["current_files"],
+            files_ctx["merge_branch_files"], fb_ctx["feedback_md"],
+        )
+
+        new_revision = ctx["current_rev"] + 1
+        console.print(f"\n[bold cyan]🔄 Revision {new_revision}/{self.max_revisions}[/bold cyan]")
+        return self._revision_execute(
+            pr_number, ctx["head_branch"], augmented_design, files_ctx, fb_ctx, ctx, new_revision
+        )
+
+    # ── run_revision() helpers ────────────────────────────────────────────────
+
+    def _revision_fetch_pr_context(self, pr_number: int) -> dict:
+        """Fetch PR metadata needed for revision: pr object, head branch, body, issue number, and current revision count."""
         pr = self.target_github.get_pr(pr_number)
         head_branch = pr["head"]["ref"]
         pr_body = pr.get("body") or ""
         issue_number = self._extract_issue_number(pr_body)
         labels = [lbl["name"] for lbl in pr.get("labels", [])]
+        current_rev = self._get_revision_number(labels)
+        return {
+            "pr": pr,
+            "head_branch": head_branch,
+            "pr_body": pr_body,
+            "issue_number": issue_number,
+            "labels": labels,
+            "current_rev": current_rev,
+        }
 
-        # ── Inject skills ─────────────────────────────────────────────────────
+    def _revision_inject_skills(self, pr_body: str) -> None:
+        """Inject skills relevant to the PR into engineer, reviewer, and QA agents."""
         if self.skill_loader:
             active_repo = self.target_github.repo
             repo_languages = self.target_github.get_repo_languages(active_repo)
@@ -2637,8 +2923,8 @@ class Orchestrator(TestFixLoopMixin):
                     if original:
                         agent.system_prompt = block_text + "\n\n---\n\n" + original
 
-        # ── 2. Check revision cap ─────────────────────────────────────────────
-        current_rev = self._get_revision_number(labels)
+    def _revision_check_cap(self, pr_number: int, current_rev: int) -> Optional[dict]:
+        """Return an early-exit dict if the revision cap has been reached, else None."""
         if current_rev >= self.max_revisions:
             self.target_github.add_pr_comment(
                 pr_number,
@@ -2646,51 +2932,56 @@ class Orchestrator(TestFixLoopMixin):
                 "No further automated revisions will be made.",
             )
             return {"status": "max_revisions_reached"}
+        return None
 
-        # ── 0. Auto-update branch from base (if configured + requested) ──────
-        # Note: get_issue_comments is also called inside _collect_pr_feedback (step 3).
-        # We fetch here early to detect the update-branch directive before collecting feedback.
-        if self._update_branch_enabled:
-            pr_base_branch = pr["base"]["ref"]
-            pr_issue_comments = self.target_github.get_issue_comments(pr_number)
-            update_directive_feedback = [
-                {"body": c.get("body", ""), "author": c.get("user", {}).get("login", "")}
-                for c in pr_issue_comments
-            ]
-            if self._parse_update_directive(update_directive_feedback):
-                pr_ctx = PRContext(
-                    pr_title=pr.get("title", ""),
-                    pr_body=pr.get("body", "") or "",
-                    design_doc="",
-                    skills="",
-                )
-                update_result = self._update_branch_from_base(
-                    head_branch, base_branch=pr_base_branch, pr_number=pr_number,
-                    pr_context=pr_ctx,
-                )
-                if update_result["status"] == "conflict":
-                    return update_result
+    def _revision_maybe_update_branch(self, pr_number: int, pr: dict, head_branch: str) -> Optional[dict]:
+        """If auto-update is configured and a directive is present, sync branch with its base. Returns conflict dict or None."""
+        if not self._update_branch_enabled:
+            return None
+        pr_base_branch = pr["base"]["ref"]
+        pr_issue_comments = self.target_github.get_issue_comments(pr_number)
+        update_directive_feedback = [
+            {"body": c.get("body", ""), "author": c.get("user", {}).get("login", "")}
+            for c in pr_issue_comments
+        ]
+        if self._parse_update_directive(update_directive_feedback):
+            pr_ctx = PRContext(
+                pr_title=pr.get("title", ""),
+                pr_body=pr.get("body", "") or "",
+                design_doc="",
+                skills="",
+            )
+            update_result = self._update_branch_from_base(
+                head_branch, base_branch=pr_base_branch, pr_number=pr_number,
+                pr_context=pr_ctx,
+            )
+            if update_result["status"] == "conflict":
+                return update_result
+        return None
 
-        # ── 3. Collect human feedback ─────────────────────────────────────────
+    def _revision_collect_feedback(self, pr_number: int) -> dict:
+        """Collect human feedback from PR. Returns dict with feedback/feedback_md/merge_branches, or {"status": "no_feedback"}."""
         feedback = self._collect_pr_feedback(pr_number)
         if not feedback:
             return {"status": "no_feedback"}
-
         feedback_md = self._format_feedback(feedback)
         console.print(f"  💬 Collected [bold]{len(feedback)}[/bold] feedback item(s) from PR #{pr_number}")
-
         # ── 3b. Detect merge directives ───────────────────────────────────────
         merge_branches = self._parse_merge_directives(feedback)
         if merge_branches:
             console.print(
                 f"  🔀 Merge directives found: {', '.join(f'[cyan]{b}[/cyan]' for b in merge_branches)}"
             )
+        return {"feedback": feedback, "feedback_md": feedback_md, "merge_branches": merge_branches}
 
+    def _revision_collect_files(
+        self, pr_number: int, head_branch: str, issue_number: Optional[int], merge_branches: list
+    ) -> dict:
+        """Fetch design doc, current branch files, and merge-branch files. Returns dict with design/current_files/merge_branch_files."""
         # ── 4. Fetch design from linked issue ─────────────────────────────────
         design = self._fetch_design_from_issue(issue_number) if issue_number else ""
         if not design:
             console.print("  [yellow]⚠️  No system design found in linked issue — engineer will use feedback only[/yellow]")
-
         # ── 5. Read current files from branch ─────────────────────────────────
         pr_files = self.target_github.get_pr_files(pr_number)
         current_files: dict[str, str] = {}
@@ -2699,9 +2990,7 @@ class Orchestrator(TestFixLoopMixin):
             content = self.target_github.get_file_content(path, ref=head_branch)
             if content is not None:
                 current_files[path] = content
-
         console.print(f"  📂 Read [bold]{len(current_files)}[/bold] current file(s) from branch [cyan]{head_branch}[/cyan]")
-
         # ── 5b. Fetch files from merge branches ───────────────────────────────
         merge_branch_files: dict[str, dict[str, str]] = {}
         for mb in merge_branches:
@@ -2711,8 +3000,17 @@ class Orchestrator(TestFixLoopMixin):
                 console.print(
                     f"  📂 Fetched [bold]{len(mb_files)}[/bold] file(s) from merge branch [cyan]{mb}[/cyan]"
                 )
+        return {"design": design, "current_files": current_files, "merge_branch_files": merge_branch_files}
 
-        # ── 6. Build augmented design for engineer ────────────────────────────
+    def _revision_build_augmented_design(
+        self,
+        design: str,
+        head_branch: str,
+        current_files: dict,
+        merge_branch_files: dict,
+        feedback_md: str,
+    ) -> str:
+        """Compose the full design document string augmented with current code, merge-branch files, and PR feedback."""
         current_files_block = "\n\n".join(
             f"### `{path}`\n```\n{self._safe_fence(content)}\n```"
             for path, content in current_files.items()
@@ -2728,7 +3026,7 @@ class Orchestrator(TestFixLoopMixin):
                 f"## Files from Branch `{mb}` (incorporate these — make the implementation pass these tests)\n\n"
                 f"{mb_block}"
             )
-        augmented_design = (
+        return (
             f"{design}\n\n"
             f"---\n\n"
             f"## Current Code on Branch `{head_branch}`\n\n"
@@ -2738,10 +3036,8 @@ class Orchestrator(TestFixLoopMixin):
             f"{feedback_md}"
         )
 
-        # ── 7. Re-run engineer → reviewer → QA ───────────────────────────────
-        new_revision = current_rev + 1
-        console.print(f"\n[bold cyan]🔄 Revision {new_revision}/{self.max_revisions}[/bold cyan]")
-
+    def _revision_build_modules(self, current_files: dict, merge_branch_files: dict) -> list:
+        """Build the revision_modules list for the engineer agent."""
         merge_hint = ""
         if merge_branch_files:
             branch_names = ", ".join(f"`{b}`" for b in merge_branch_files)
@@ -2749,7 +3045,6 @@ class Orchestrator(TestFixLoopMixin):
                 f"\n\nFiles from merge branch(es) {branch_names} are included above. "
                 f"Make your revised implementation pass those tests."
             )
-
         revision_modules = [
             {
                 "name": "Revision",
@@ -2761,9 +3056,20 @@ class Orchestrator(TestFixLoopMixin):
                 ),
             }
         ]
+        return revision_modules
 
+    def _revision_run_engineer(
+        self,
+        pr_number: int,
+        augmented_design: str,
+        current_files: dict,
+        merge_branch_files: dict,
+        pr: dict,
+        new_revision: int,
+    ) -> tuple:
+        """Run the engineer agent to produce revised files. Returns (error_dict, None) on failure or (None, revised_files)."""
+        revision_modules = self._revision_build_modules(current_files, merge_branch_files)
         project_name = pr.get("title", f"PR #{pr_number}").replace("[Implementation] ", "")
-
         # Engineer: generate revised files
         console.print("  👷 [cyan]Engineer[/cyan] — revising code based on PR feedback...")
         eng_result = self.engineer.run_all_modules(augmented_design, revision_modules, project_name)
@@ -2775,9 +3081,13 @@ class Orchestrator(TestFixLoopMixin):
                 "⚠️ Revision aborted: the engineer agent produced no updated files. "
                 "Please retry or check the model logs.",
             )
-            return {"status": "error", "reason": "engineer_returned_no_files"}
+            return {"status": "error", "reason": "engineer_returned_no_files"}, None
+        return None, revised_files
 
-        # Commit revised files to the existing branch
+    def _revision_commit_revised_files(
+        self, pr_number: int, head_branch: str, new_revision: int, revised_files: dict
+    ) -> Optional[dict]:
+        """Commit all revised files to the branch. Returns an error dict on failure, None on success."""
         commit_errors: list[str] = []
         for filepath, content in revised_files.items():
             try:
@@ -2790,7 +3100,6 @@ class Orchestrator(TestFixLoopMixin):
             except RuntimeError as exc:
                 commit_errors.append(f"{filepath}: {exc}")
                 console.print(f"  [red]⚠️  Failed to commit {filepath}: {exc}[/red]")
-
         if commit_errors:
             self.target_github.add_pr_comment(
                 pr_number,
@@ -2798,8 +3107,18 @@ class Orchestrator(TestFixLoopMixin):
                 f"Could not commit:\n" + "\n".join(f"- `{e}`" for e in commit_errors),
             )
             return {"status": "error", "reason": "commit_failed", "errors": commit_errors}
+        console.print(f"  ✅ Committed [bold]{len(revised_files)}[/bold] revised file(s) to [cyan]{head_branch}[/cyan]")
+        return None
 
-        # Commit files from merge branches that the engineer did not already update
+    def _revision_commit_merge_files(
+        self,
+        pr_number: int,
+        head_branch: str,
+        revised_files: dict,
+        current_files: dict,
+        merge_branch_files: dict,
+    ) -> None:
+        """Commit any merge-branch files not already revised by the engineer or present on the branch."""
         merge_commit_errors: list[str] = []
         for mb, mb_files in merge_branch_files.items():
             for filepath, content in mb_files.items():
@@ -2815,7 +3134,6 @@ class Orchestrator(TestFixLoopMixin):
                 except RuntimeError as exc:
                     merge_commit_errors.append(f"{filepath}: {exc}")
                     console.print(f"  [yellow]⚠️  Could not commit merge file {filepath}: {exc}[/yellow]")
-
         if merge_commit_errors:
             self.target_github.add_pr_comment(
                 pr_number,
@@ -2823,12 +3141,18 @@ class Orchestrator(TestFixLoopMixin):
                 + "\n".join(f"- `{e}`" for e in merge_commit_errors),
             )
 
-        console.print(f"  ✅ Committed [bold]{len(revised_files)}[/bold] revised file(s) to [cyan]{head_branch}[/cyan]")
-
+    def _revision_run_reviewer_and_qa(
+        self,
+        revised_files: dict,
+        design: str,
+        project_name: str,
+        head_branch: str,
+        new_revision: int,
+    ) -> tuple:
+        """Run code review and QA passes, committing any new test files. Returns (rev_result, test_files)."""
         # Code Reviewer
         rev_result = self.reviewer.run(revised_files, design or "N/A", project_name)
         console.print(f"  🔍 Code review verdict: [bold]{rev_result.get('verdict', '?')}[/bold]")
-
         # QA Engineer
         qa_result = self.qa.run(revised_files, design or "N/A", project_name)
         test_files: dict[str, str] = qa_result.get("test_files", {})
@@ -2839,24 +3163,34 @@ class Orchestrator(TestFixLoopMixin):
                 message=f"test: revision {new_revision} — update tests [{filepath}]",
                 branch=head_branch,
             )
+        return rev_result, test_files
 
+    def _revision_post_summary(
+        self,
+        pr_number: int,
+        new_revision: int,
+        feedback: list,
+        revised_files: dict,
+        rev_result: dict,
+        test_files: dict,
+        merge_branch_files: dict,
+        current_rev: int,
+    ) -> None:
+        """Update the revision label and post a summary comment to the PR."""
         # ── 8. Update label and post summary comment ──────────────────────────
         old_label = f"ai-revision-{current_rev}" if current_rev > 0 else None
         new_label = f"ai-revision-{new_revision}"
-
         self.target_github.ensure_labels([
             {"name": new_label, "color": "0075ca", "description": f"AI revision round {new_revision}"}
         ])
         if old_label:
             self.target_github.remove_pr_label(pr_number, old_label)
         self.target_github.add_pr_label(pr_number, new_label)
-
         merge_branch_note = ""
         if merge_branch_files:
             names = ", ".join(f"`{b}`" for b in merge_branch_files)
             total_files = sum(len(v) for v in merge_branch_files.values())
             merge_branch_note = f"\n**Incorporated branches:** {names} ({total_files} file(s))\n"
-
         summary = (
             f"## ✅ Revision {new_revision} Complete\n\n"
             f"The AI agents have addressed **{len(feedback)} feedback item(s)**:\n\n"
@@ -2871,32 +3205,51 @@ class Orchestrator(TestFixLoopMixin):
         )
         self.target_github.add_pr_comment(pr_number, summary)
 
+    def _revision_execute(
+        self,
+        pr_number: int,
+        head_branch: str,
+        augmented_design: str,
+        files_ctx: dict,
+        fb_ctx: dict,
+        ctx: dict,
+        new_revision: int,
+    ) -> dict:
+        """Orchestrate engineer run, commits, review, QA, and summary posting for a revision round."""
+        eng_err, revised_files = self._revision_run_engineer(
+            pr_number, augmented_design, files_ctx["current_files"],
+            files_ctx["merge_branch_files"], ctx["pr"], new_revision,
+        )
+        if eng_err:
+            return eng_err
+        commit_err = self._revision_commit_revised_files(
+            pr_number, head_branch, new_revision, revised_files
+        )
+        if commit_err:
+            return commit_err
+        self._revision_commit_merge_files(
+            pr_number, head_branch, revised_files,
+            files_ctx["current_files"], files_ctx["merge_branch_files"],
+        )
+        project_name = ctx["pr"].get("title", f"PR #{pr_number}").replace("[Implementation] ", "")
+        rev_result, test_files = self._revision_run_reviewer_and_qa(
+            revised_files, files_ctx["design"], project_name, head_branch, new_revision,
+        )
+        self._revision_post_summary(
+            pr_number, new_revision, fb_ctx["feedback"], revised_files,
+            rev_result, test_files, files_ctx["merge_branch_files"], ctx["current_rev"],
+        )
         return {"status": "ok", "revision": new_revision, "files_updated": len(revised_files)}
 
-    def run(self, requirement: str, trigger_issue_body: Optional[str] = None, resume: bool = True, issue_number: Optional[int] = None) -> PipelineResult:
-        """Execute the full pipeline for a given requirement.
+    # ── Context-setup helpers (extracted from run()) ──────────────────────────
 
-        Args:
-            requirement: The user's software requirement in plain English.
-            trigger_issue_body: Optional raw body of the GitHub Issue that triggered this run.
-                If it contains a "Target repo:" directive, code goes to that repo instead of
-                the tracker repo.
-            resume: If True (default), load a saved checkpoint and skip already-completed stages.
+    def _resolve_target_repo(self, trigger_issue_body: Optional[str]) -> None:
+        """Detect target project repo from trigger_issue_body and set self.target_github.
 
-        Returns:
-            A PipelineResult with all artifacts.
+        If trigger_issue_body contains a 'Target repo:' directive pointing to a
+        different repo than the tracker repo, a new GitHubClient is created for
+        that repo.  Falls back to self.github when no override is present.
         """
-        start_time = time.time()
-        run_id = str(uuid.uuid4())
-        ct = self._cost_tracking
-        if ct.get("enabled", False):
-            active_repo = str(
-                self.target_github.repo if self.target_github else
-                (self.github.repo if self.github else "local")
-            )
-            get_ledger().start_run(run_id, "", active_repo)  # project_name updated in _finish
-
-        # ── Detect target project repo (multi-repo support) ───────────────────
         target_repo_override = parse_target_repo(trigger_issue_body or "")
         if target_repo_override and self.github and target_repo_override != self.github.repo:
             self.target_github = GitHubClient(repo=target_repo_override, github_token=self._github_token)
@@ -2904,8 +3257,8 @@ class Orchestrator(TestFixLoopMixin):
         elif not self.target_github:
             self.target_github = self.github
 
-        # ── Fetch repo context (file tree) ────────────────────────────────────
-        repo_context: Optional[RepoContext] = None
+    def _inject_repo_context(self) -> None:
+        """Fetch the target repo file tree and prepend it to planning agents' system prompts."""
         if self.repo_context_loader and self.target_github:
             repo_context = self.repo_context_loader.build(self.target_github)
             if repo_context.tree_text:
@@ -2919,13 +3272,11 @@ class Orchestrator(TestFixLoopMixin):
                         if not agent.system_prompt.startswith(tree_block):
                             agent.system_prompt = tree_block + agent.system_prompt
 
-        # ── Inject long-term memory into agents ───────────────────────────────
-        active_repo = str(self.target_github.repo if self.target_github else
-                          (self.github.repo if self.github else "local"))
+    def _inject_memory(self, active_repo: str) -> None:
+        """Load recent memories for active_repo and prepend to agent system prompts."""
         memory_context = self.memory.recall(active_repo)
         if memory_context:
             console.print(f"  🧠 [dim]Loaded memory from {active_repo}[/dim]")
-            # Prepend past-work context to each agent's system prompt
             for agent in (self.pm, self.architect, self.engineer,
                           self.junior_engineer, self.senior_engineer,
                           self.reviewer, self.qa, self.qa_planner):
@@ -2933,46 +3284,54 @@ class Orchestrator(TestFixLoopMixin):
                     original = self._original_system_prompts.get(agent, agent.system_prompt)
                     agent.system_prompt = memory_context + "\n\n---\n\n" + original
 
-        # ── Inject skills into agents ─────────────────────────────────────────
-        if self.skill_loader:
-            repo_languages: list[str] = []
-            if self.target_github:
-                repo_languages = self.target_github.get_repo_languages(active_repo)
-            explicit_skills = _parse_explicit_skills(trigger_issue_body or "")
-            skill_ctx = SkillContext(
-                issue_body=trigger_issue_body or requirement,
-                explicit_skills=explicit_skills,
-                repo_languages=repo_languages,
-            )
-            matched_skills = self.skill_loader.detect(skill_ctx)
-            if matched_skills:
-                skill_names = ", ".join(s.name for s in matched_skills)
-                console.print(f"  🎯 [dim]Skills loaded: {skill_names}[/dim]")
-            # Save original prompts before any injection (memory + skills)
-            # This prevents prompt stacking if run() is called multiple times on the same instance
-            _role_agents = {
-                "product_manager": self.pm,
-                "pm_reviewer": self.pm_reviewer,
-                "architect": self.architect,
-                "architect_reviewer": self.architect_reviewer,
-                "engineer": self.engineer,
-                "junior_engineer": self.junior_engineer,
-                "senior_engineer": self.senior_engineer,
-                "tier_reviewer": self.tier_reviewer,
-                "code_reviewer": self.reviewer,
-                "qa_planner": self.qa_planner,
-                "qa_engineer": self.qa,
-                "deployment_tester": self.deployment_tester,
-            }
-            for role, agent in _role_agents.items():
-                blocks = self.skill_loader.for_role(role, matched_skills)
-                block_text = self.skill_loader.render_prompt_block(blocks)
-                if block_text:
-                    original = getattr(self, '_original_system_prompts', {}).get(agent, agent.system_prompt or "")
-                    if original:
-                        agent.system_prompt = block_text + "\n\n---\n\n" + original
+    def _apply_skills_to_agents(self, matched_skills: list) -> None:
+        """Inject matched skill blocks into each role agent's system prompt."""
+        if not self.skill_loader:
+            return
+        _role_agents = {
+            "product_manager": self.pm,
+            "pm_reviewer": self.pm_reviewer,
+            "architect": self.architect,
+            "architect_reviewer": self.architect_reviewer,
+            "engineer": self.engineer,
+            "junior_engineer": self.junior_engineer,
+            "senior_engineer": self.senior_engineer,
+            "tier_reviewer": self.tier_reviewer,
+            "code_reviewer": self.reviewer,
+            "qa_planner": self.qa_planner,
+            "qa_engineer": self.qa,
+            "deployment_tester": self.deployment_tester,
+        }
+        for role, agent in _role_agents.items():
+            blocks = self.skill_loader.for_role(role, matched_skills)
+            block_text = self.skill_loader.render_prompt_block(blocks)
+            if block_text:
+                original = getattr(self, '_original_system_prompts', {}).get(agent, agent.system_prompt or "")
+                if original:
+                    agent.system_prompt = block_text + "\n\n---\n\n" + original
 
-        # ── Load checkpoint if resuming ───────────────────────────────────────
+    def _inject_skills(self, trigger_issue_body: Optional[str], requirement: str, active_repo: str) -> None:
+        """Detect skills relevant to this run and inject them into agent system prompts."""
+        if not self.skill_loader:
+            return
+        repo_languages: list[str] = []
+        if self.target_github:
+            repo_languages = self.target_github.get_repo_languages(active_repo)
+        explicit_skills = _parse_explicit_skills(trigger_issue_body or "")
+        skill_ctx = SkillContext(
+            issue_body=trigger_issue_body or requirement,
+            explicit_skills=explicit_skills,
+            repo_languages=repo_languages,
+        )
+        matched_skills = self.skill_loader.detect(skill_ctx)
+        if matched_skills:
+            skill_names = ", ".join(s.name for s in matched_skills)
+            console.print(f"  🎯 [dim]Skills loaded: {skill_names}[/dim]")
+        # Inject skill blocks on top of memory-enriched prompts (reads _original_system_prompts to avoid stacking)
+        self._apply_skills_to_agents(matched_skills)
+
+    def _load_or_init_result(self, requirement: str, resume: bool) -> "PipelineResult":
+        """Load a prior checkpoint for resumption, or return a fresh PipelineResult."""
         result = self._load_checkpoint(requirement) if resume else None
         if result:
             console.print(
@@ -2981,14 +3340,10 @@ class Orchestrator(TestFixLoopMixin):
             )
         else:
             result = PipelineResult(requirement=requirement)
+        return result
 
-        # ── Extract prior-work context from trigger_issue_body ────────────────
-        # When the watcher appends prior issue comments (PRD, design, reviews,
-        # human feedback) to trigger_issue_body, make them available to agents
-        # as "Prior Work Context".  The context is stored on the orchestrator
-        # instance so _stage_pm (and other stages) can prepend it to their
-        # effective requirement without altering the canonical `requirement`
-        # string (which is used for checkpoint matching).
+    def _extract_prior_context(self, trigger_issue_body: Optional[str]) -> None:
+        """Extract 'Prior Work Context' block from trigger_issue_body into self._issue_prior_context."""
         _prior_marker = "\n\n---\n\n## 📜 Prior Work Context\n\n"
         if trigger_issue_body and _prior_marker in trigger_issue_body:
             self._issue_prior_context: str = trigger_issue_body[
@@ -2997,15 +3352,8 @@ class Orchestrator(TestFixLoopMixin):
         else:
             self._issue_prior_context = ""
 
-        # Set run_id on result (new run or restored checkpoint)
-        if not result.run_id:
-            result.run_id = run_id
-
-        # Pre-set issue_number if provided by caller (allows pause before PM creates it)
-        if issue_number is not None and not result.issue_number:
-            result.issue_number = issue_number
-
-        # ── Progress tracker ───────────────────────────────────────────────────
+    def _setup_progress_tracker(self, result: "PipelineResult") -> None:
+        """Initialise self._tracker for this run, restoring state if resuming."""
         self._tracker = ProgressTracker(
             github=self.github,
             issue_number=result.issue_number,
@@ -3020,6 +3368,324 @@ class Orchestrator(TestFixLoopMixin):
         # Keep result in sync with tracker's comment_id
         result.progress_comment_id = self._tracker.comment_id
 
+    # ── Stage-loop helpers ────────────────────────────────────────────────────
+
+    def _initialize_run(
+        self,
+        requirement: str,
+        trigger_issue_body: Optional[str],
+        resume: bool,
+        issue_number: Optional[int],
+        run_id: str,
+        start_time: float,
+    ) -> "PipelineResult":
+        """Set up ledger, inject context, load checkpoint, configure tracker; return result."""
+        ct = self._cost_tracking
+        if ct.get("enabled", False):
+            active_repo = str(
+                self.target_github.repo if self.target_github else
+                (self.github.repo if self.github else "local")
+            )
+            get_ledger().start_run(run_id, "", active_repo)  # project_name updated in _finish
+
+        self._resolve_target_repo(trigger_issue_body)
+        self._inject_repo_context()
+        active_repo = str(self.target_github.repo if self.target_github else
+                          (self.github.repo if self.github else "local"))
+        self._inject_memory(active_repo)
+        self._inject_skills(trigger_issue_body, requirement, active_repo)
+
+        result = self._load_or_init_result(requirement, resume)
+        self._extract_prior_context(trigger_issue_body)
+
+        # Set run_id on result (new run or restored checkpoint)
+        if not result.run_id:
+            result.run_id = run_id
+
+        # Pre-set issue_number if provided by caller (allows pause before PM creates it)
+        if issue_number is not None and not result.issue_number:
+            result.issue_number = issue_number
+
+        self._setup_progress_tracker(result)
+        return result
+
+    def _run_standard_revision_loops(
+        self,
+        result: "PipelineResult",
+        requirement: str,
+        start_time: float,
+    ) -> Optional["PipelineResult"]:
+        """Run PM and Architect review loops for the standard (non-YAML) pipeline.
+
+        Returns an early-exit PipelineResult if a loop fails, otherwise None.
+        """
+        if "pm_review_loop" not in result.completed_stages:
+            ok = self._prd_revision_loop(result, requirement)
+            if not ok:
+                return self._finish(result, start_time)
+        else:
+            console.print("  ⏭️  [dim]PRD revision loop — skipped (checkpoint)[/dim]")
+
+        if "architect_review_loop" not in result.completed_stages:
+            ok = self._design_revision_loop(result)
+            if not ok:
+                return self._finish(result, start_time)
+        else:
+            console.print("  ⏭️  [dim]Design revision loop — skipped (checkpoint)[/dim]")
+
+        return None
+
+    def _run_preamble_stages(
+        self,
+        result: "PipelineResult",
+        requirement: str,
+        start_time: float,
+    ) -> Optional["PipelineResult"]:
+        """Run pre-loop stages: standard revision loops (if applicable) and RAG index.
+
+        Returns an early-exit PipelineResult if a stage fails, otherwise None.
+        """
+        # ── Stage 1 + 2: hardcoded PM / Arch revision loops (standard pipeline only) ──
+        if getattr(self, '_pipeline_yaml_stages', None) is None:
+            early_exit = self._run_standard_revision_loops(result, requirement, start_time)
+            if early_exit is not None:
+                return early_exit
+
+        # ── RAG index (always before engineer, not mode-dependent) ─────────────
+        # Sync issue_number into tracker — PM may have just created the GitHub issue
+        self._tracker.issue_number = result.issue_number
+        if self.repo_auto_indexer and self.target_github and "rag_index" not in result.completed_stages:
+            self._run_stage(
+                "📦 RAG Index",
+                "Indexing repo codebase into RAG...",
+                result,
+                lambda: self._stage_repo_index(result),
+            )
+            result.add_completed_stage("rag_index")
+
+        return None
+
+    def _collect_stage_batch(
+        self,
+        stage_list: list,
+        i: int,
+    ) -> "tuple[list, int]":
+        """Collect a parallel batch starting at index *i*.
+
+        Returns ``(batch, new_i)`` where *batch* is the list of stages to run
+        together and *new_i* is the updated index for the outer loop.
+        """
+        stage = stage_list[i]
+        if stage.parallel_group is not None:
+            batch = [stage]
+            j = i + 1
+            while j < len(stage_list) and stage_list[j].parallel_group == stage.parallel_group:
+                batch.append(stage_list[j])
+                j += 1
+            return batch, j
+        return [stage], i + 1
+
+    def _filter_runnable_stages(
+        self,
+        batch: list,
+        result: "PipelineResult",
+    ) -> list:
+        """Filter *batch* to stages whose preconditions are met.
+
+        Already-completed and skip_if-matching stages are logged and excluded.
+        Returns the list of runnable stages.
+        """
+        runnable = []
+        for s in batch:
+            if s.checkpoint_key in result.completed_stages or s.name in result.completed_stages:
+                console.print(f"  ⏭️  [dim]{s.label} — skipped (checkpoint)[/dim]")
+                self._tracker.mark_skipped(s.checkpoint_key)
+            elif s.skip_if(result):
+                console.print(f"  ⏭️  [dim]{s.label} — skipped[/dim]")
+                self._tracker.mark_skipped(s.checkpoint_key)
+            else:
+                runnable.append(s)
+        return runnable
+
+    def _execute_sequential_stage(
+        self,
+        s: "StageSpec",
+        result: "PipelineResult",
+        start_time: float,
+    ) -> Optional["PipelineResult"]:
+        """Execute a single sequential stage (loop block or regular).
+
+        Returns an early-exit PipelineResult if the stage fails, otherwise None.
+        """
+        _stage_token = current_stage.set(s.checkpoint_key)
+        try:
+            if s.loop_stages:
+                # Loop block from pipeline.yaml
+                ok = self._run_loop_stage(s, result)
+                if not ok:
+                    # Can't use _abort_pipeline here — mark_failed must precede checkpoint save
+                    self._tracker.mark_failed(s.checkpoint_key)
+                    result.progress_comment_id = self._tracker.comment_id
+                    self._save_checkpoint(result)
+                    return self._finish(result, start_time)
+            else:
+                self._run_stage(
+                    s.label, s.description, result,
+                    lambda ss=s: ss.fn(result),
+                    required_output_fields=s.required_output_fields,
+                )
+        finally:
+            current_stage.reset(_stage_token)
+        return None
+
+    def _mark_batch_outcomes(
+        self,
+        runnable: list,
+        result: "PipelineResult",
+        stage_results: "dict[str, bool]",
+        errors_before: int,
+    ) -> bool:
+        """Mark each stage in the batch as done or failed.
+
+        For parallel batches uses *stage_results*; for sequential batches
+        compares the error count.  Returns True if any stage failed.
+        Sequential done-marking is delegated to _finalize_stage_batch → _mark_sequential_stage_done.
+        """
+        any_failed = False
+        if len(runnable) > 1:
+            for s in runnable:
+                if not stage_results.get(s.checkpoint_key, True):
+                    self._tracker.mark_failed(
+                        s.checkpoint_key,
+                        str(result.errors[-1]) if result.errors else "",
+                    )
+                    any_failed = True
+                else:
+                    if s.name == "senior_engineer":
+                        result.add_completed_stage("engineer")
+                    result.add_completed_stage(s.checkpoint_key)
+                    self._tracker.mark_done(s.checkpoint_key)
+        elif len(result.errors) > errors_before:
+            any_failed = True
+            self._tracker.mark_failed(runnable[0].checkpoint_key, str(result.errors[-1]))
+        return any_failed
+
+    def _finalize_stage_batch(
+        self,
+        runnable: list,
+        result: "PipelineResult",
+        stage_results: "dict[str, bool]",
+        errors_before: int,
+        start_time: float,
+    ) -> Optional["PipelineResult"]:
+        """Mark outcomes, save checkpoint, check stop_if; return early exit or None."""
+        any_failed = self._mark_batch_outcomes(runnable, result, stage_results, errors_before)
+
+        if any_failed:
+            return self._abort_pipeline(result, start_time)
+
+        # Mark sequential stage done (parallel stages handled in _mark_batch_outcomes)
+        if len(runnable) == 1:
+            self._mark_sequential_stage_done(runnable[0], result)
+
+        result.progress_comment_id = self._tracker.comment_id
+        self._save_checkpoint(result)
+
+        # Early pipeline stop — only for sequential stages.
+        # NOTE: checkpoint saved before stop_if check (intentional): on resume,
+        # the completed stage is skipped and the pipeline continues from the next.
+        if len(runnable) == 1:
+            s = runnable[0]
+            if s.stop_if(result):
+                console.print(
+                    f"\n  🛑 [bold yellow]{s.stop_message or 'Pipeline stopped early.'}[/bold yellow]"
+                )
+                return self._finish(result, start_time)
+
+        return None
+
+    def _mark_sequential_stage_done(
+        self,
+        s: "StageSpec",
+        result: "PipelineResult",
+    ) -> None:
+        """Mark a sequential stage complete, including the backward-compat ``engineer`` alias."""
+        if s.name == "senior_engineer":
+            result.add_completed_stage("engineer")
+        result.add_completed_stage(s.checkpoint_key)
+        self._tracker.mark_done(s.checkpoint_key)
+
+    def _execute_stage_batch(
+        self,
+        runnable: list,
+        result: "PipelineResult",
+        start_time: float,
+    ) -> "tuple[Optional[PipelineResult], dict[str, bool]]":
+        """Dispatch a batch to parallel or sequential execution.
+
+        Returns ``(early_exit, stage_results)`` where *early_exit* is a
+        PipelineResult when the batch failed (else None) and *stage_results*
+        maps checkpoint keys to success booleans (parallel batches only).
+        """
+        if len(runnable) > 1:
+            stage_results: dict[str, bool] = {}  # checkpoint_key → succeeded
+            early_exit = self._run_parallel_batch(runnable, result, start_time, stage_results)
+            return early_exit, stage_results
+        stage_results = {}
+        early_exit = self._execute_sequential_stage(runnable[0], result, start_time)
+        return early_exit, stage_results
+
+    def _abort_pipeline(
+        self,
+        result: "PipelineResult",
+        start_time: float,
+    ) -> "PipelineResult":
+        """Save checkpoint and return partial result when the pipeline is aborted."""
+        result.progress_comment_id = self._tracker.comment_id
+        self._save_checkpoint(result)
+        return self._finish(result, start_time)
+
+    def _run_stage_loop(
+        self,
+        result: "PipelineResult",
+        start_time: float,
+    ) -> "PipelineResult":
+        """Iterate the mode-determined stage list until all stages complete or one fails."""
+        stage_list = self._build_stage_list()
+        i = 0
+        while i < len(stage_list):
+            batch, i = self._collect_stage_batch(stage_list, i)
+            runnable = self._filter_runnable_stages(batch, result)
+
+            if not runnable:
+                continue
+
+            for s in runnable:
+                self._tracker.mark_in_progress(s.checkpoint_key)
+
+            errors_before = len(result.errors)
+            early_exit, stage_results = self._execute_stage_batch(runnable, result, start_time)
+            if early_exit is not None:
+                return early_exit
+
+            early_exit = self._finalize_stage_batch(
+                runnable, result, stage_results, errors_before, start_time
+            )
+            if early_exit is not None:
+                return early_exit
+
+        # Pipeline complete — remove checkpoint
+        self._clear_checkpoint(result)
+        return self._finish(result, start_time)
+
+    def run(self, requirement: str, trigger_issue_body: Optional[str] = None, resume: bool = True, issue_number: Optional[int] = None) -> PipelineResult:
+        """Execute the full pipeline for *requirement* and return a PipelineResult."""
+        start_time = time.time()
+        run_id = str(uuid.uuid4())
+        result = self._initialize_run(
+            requirement, trigger_issue_body, resume, issue_number, run_id, start_time
+        )
+
         console.print(Panel.fit(
             f"[bold cyan]🏢 AI Software House Pipeline[/bold cyan]\n"
             f"[dim]{requirement[:120]}{'...' if len(requirement) > 120 else ''}[/dim]",
@@ -3027,167 +3693,21 @@ class Orchestrator(TestFixLoopMixin):
         ))
 
         try:
-            # ── Stage 1 + 2: hardcoded PM / Arch revision loops (standard pipeline only) ──
-            if getattr(self, '_pipeline_yaml_stages', None) is None:
-                # ── Stage 1: PM + PM Reviewer revision loop ───────────────────────
-                if "pm_review_loop" not in result.completed_stages:
-                    ok = self._prd_revision_loop(result, requirement)
-                    if not ok:
-                        return self._finish(result, start_time)
-                else:
-                    console.print("  ⏭️  [dim]PRD revision loop — skipped (checkpoint)[/dim]")
-
-                # ── Stage 2: Architect + Architect Reviewer revision loop ─────────
-                if "architect_review_loop" not in result.completed_stages:
-                    ok = self._design_revision_loop(result)
-                    if not ok:
-                        return self._finish(result, start_time)
-                else:
-                    console.print("  ⏭️  [dim]Design revision loop — skipped (checkpoint)[/dim]")
-
-            # ── RAG index (always before engineer, not mode-dependent) ─────────────
-            # Sync issue_number into tracker — PM may have just created the GitHub issue
-            self._tracker.issue_number = result.issue_number
-            if self.repo_auto_indexer and self.target_github and "rag_index" not in result.completed_stages:
-                self._run_stage(
-                    "📦 RAG Index",
-                    "Indexing repo codebase into RAG...",
-                    result,
-                    lambda: self._stage_repo_index(result),
-                )
-                result.add_completed_stage("rag_index")
-
-            # ── Mode-driven stage loop ────────────────────────────────────────────
-            stage_list = self._build_stage_list()
-            i = 0
-            while i < len(stage_list):
-                stage = stage_list[i]
-
-                # Collect a parallel batch: current stage + following stages with the same group
-                if stage.parallel_group is not None:
-                    batch = [stage]
-                    j = i + 1
-                    while j < len(stage_list) and stage_list[j].parallel_group == stage.parallel_group:
-                        batch.append(stage_list[j])
-                        j += 1
-                    i = j
-                else:
-                    batch = [stage]
-                    i += 1
-
-                # Filter out already-completed and conditionally-skipped stages
-                runnable = []
-                for s in batch:
-                    if s.checkpoint_key in result.completed_stages or s.name in result.completed_stages:
-                        console.print(f"  ⏭️  [dim]{s.label} — skipped (checkpoint)[/dim]")
-                        self._tracker.mark_skipped(s.checkpoint_key)
-                    elif s.skip_if(result):
-                        console.print(f"  ⏭️  [dim]{s.label} — skipped[/dim]")
-                        self._tracker.mark_skipped(s.checkpoint_key)
-                    else:
-                        runnable.append(s)
-
-                if not runnable:
-                    continue
-
-                # Mark all runnable stages in-progress
-                for s in runnable:
-                    self._tracker.mark_in_progress(s.checkpoint_key)
-
-                # Track errors before this batch
-                errors_before = len(result.errors)
-
-                if len(runnable) > 1:
-                    # Parallel execution — Python copies context per thread so current_stage
-                    # is isolated; each thread sets its own token inside _run_stage_safe.
-                    stage_results: dict[str, bool] = {}  # checkpoint_key → succeeded
-                    early_exit = self._run_parallel_batch(runnable, result, start_time, stage_results)
-                    if early_exit is not None:
-                        return early_exit
-                else:
-                    s = runnable[0]
-                    _stage_token = current_stage.set(s.checkpoint_key)
-                    try:
-                        if s.loop_stages:
-                            # Loop block from pipeline.yaml
-                            ok = self._run_loop_stage(s, result)
-                            if not ok:
-                                self._tracker.mark_failed(s.checkpoint_key)
-                                result.progress_comment_id = self._tracker.comment_id
-                                self._save_checkpoint(result)
-                                return self._finish(result, start_time)
-                        else:
-                            self._run_stage(s.label, s.description, result, lambda ss=s: ss.fn(result), required_output_fields=s.required_output_fields)
-                    finally:
-                        current_stage.reset(_stage_token)
-
-                # Check for errors after the batch — only mark stages that actually failed
-                any_failed = False
-                if len(runnable) > 1:
-                    for s in runnable:
-                        if not stage_results.get(s.checkpoint_key, True):
-                            self._tracker.mark_failed(s.checkpoint_key, str(result.errors[-1]) if result.errors else "")
-                            any_failed = True
-                        else:
-                            if s.name == "senior_engineer":
-                                result.add_completed_stage("engineer")
-                            result.add_completed_stage(s.checkpoint_key)
-                            self._tracker.mark_done(s.checkpoint_key)
-                elif len(result.errors) > errors_before:
-                    any_failed = True
-                    self._tracker.mark_failed(runnable[0].checkpoint_key, str(result.errors[-1]))
-
-                if any_failed:
-                    result.progress_comment_id = self._tracker.comment_id
-                    self._save_checkpoint(result)
-                    return self._finish(result, start_time)
-
-                # Mark sequential stage done (parallel stages handled above)
-                if len(runnable) == 1:
-                    seq_s = runnable[0]
-                    # Backward-compat: senior_engineer stage also marks old "engineer" key
-                    if seq_s.name == "senior_engineer":
-                        result.add_completed_stage("engineer")
-                    result.add_completed_stage(seq_s.checkpoint_key)
-                    self._tracker.mark_done(seq_s.checkpoint_key)
-
-                result.progress_comment_id = self._tracker.comment_id
-                self._save_checkpoint(result)
-
-                # Early pipeline stop — only meaningful for a single sequential stage
-                # NOTE: checkpoint_key is saved before stop_if check (intentional).
-                # On resume, completed stages (incl. reviewer) are skipped, so
-                # the pipeline continues from the next stage rather than re-running
-                # the stage that triggered the stop.
-                if len(runnable) == 1:
-                    s = runnable[0]
-                    if s.stop_if(result):
-                        console.print(
-                            f"\n  🛑 [bold yellow]{s.stop_message or 'Pipeline stopped early.'}[/bold yellow]"
-                        )
-                        return self._finish(result, start_time)
-
-            # Pipeline complete — remove checkpoint
-            self._clear_checkpoint(result)
-            return self._finish(result, start_time)
+            early_exit = self._run_preamble_stages(result, requirement, start_time)
+            if early_exit is not None:
+                return early_exit
+            return self._run_stage_loop(result, start_time)
 
         except _ShutdownRequested:
-            # A graceful shutdown was requested (SIGTERM/SIGINT) while a stage was
-            # running.  Save the checkpoint so that the next run() with resume=True
-            # will pick up from the last *genuinely completed* stage — not from any
-            # stage that was interrupted before it finished.
+            # Graceful shutdown (SIGTERM/SIGINT): save checkpoint so resume=True picks up
+            # from the last *completed* stage, not the interrupted one.
             logging.info("Graceful shutdown: pipeline interrupted before completion")
-            result.progress_comment_id = self._tracker.comment_id
-            self._save_checkpoint(result)
-            return self._finish(result, start_time)
+            return self._abort_pipeline(result, start_time)
         except BudgetExceededError:
-            # The token budget was exhausted mid-pipeline.  Save the checkpoint so
-            # partial progress is not lost and the run can be inspected/resumed.
+            # Token budget exhausted: save checkpoint so partial progress is not lost.
             logging.warning("Token budget exceeded — saving checkpoint and aborting pipeline")
             result.add_error("Pipeline aborted: token budget exceeded")
-            result.progress_comment_id = self._tracker.comment_id
-            self._save_checkpoint(result)
-            return self._finish(result, start_time)
+            return self._abort_pipeline(result, start_time)
 
 
     # ── Stage implementations ────────────────────────────────────────────────
@@ -5059,7 +5579,7 @@ class Orchestrator(TestFixLoopMixin):
             try:
                 current_bank = self._read_memory_bank(self.target_github)
                 # Resolve model for memory_bank_updater from model_overrides
-                mb_model = self.model_overrides.get("memory_bank_updater", self.model)
+                mb_model = self._resolve_agent_model("memory_bank_updater")
                 updater = MemoryBankUpdaterAgent(
                     model=mb_model,
                     github_token=self._github_token,
