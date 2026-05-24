@@ -238,3 +238,67 @@ def test_call_with_tools_full_flow():
     # Verify history was updated
     assert len(agent._history) > 0
     assert agent._history[-1]["content"] == "Final answer after tool use"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# _after_write tests
+# ──────────────────────────────────────────────────────────────────────────
+
+def test_after_write_no_violations(tmp_path):
+    """_after_write returns empty list when all functions are compliant."""
+    f = tmp_path / "ok.py"
+    f.write_text("def small():\n    return 1\n")
+    llm = MagicMock()
+    llm.model = "gpt-4.1"
+    llm.supports_tools.return_value = False
+    agent = BaseAgent(model="gpt-4.1", llm=llm)
+    result = agent._after_write([f])
+    assert result == []
+
+
+def test_after_write_returns_violations(tmp_path):
+    """_after_write returns violation strings for oversized functions."""
+    body = "\n".join(f"    x{i} = {i}" for i in range(35))
+    f = tmp_path / "big.py"
+    f.write_text(f"def huge():\n{body}\n    return x0\n")
+    llm = MagicMock()
+    llm.model = "gpt-4.1"
+    llm.supports_tools.return_value = False
+    agent = BaseAgent(model="gpt-4.1", llm=llm)
+    result = agent._after_write([f])
+    assert len(result) == 1
+    assert "huge" in result[0]
+
+
+def test_after_write_empty_list():
+    """_after_write returns [] when given no files."""
+    llm = MagicMock()
+    llm.model = "gpt-4.1"
+    llm.supports_tools.return_value = False
+    agent = BaseAgent(model="gpt-4.1", llm=llm)
+    assert agent._after_write([]) == []
+
+
+def test_after_write_ignores_non_py_files(tmp_path):
+    """_after_write silently ignores non-Python files."""
+    f = tmp_path / "script.js"
+    f.write_text("function big() {}\n")
+    llm = MagicMock()
+    llm.model = "gpt-4.1"
+    llm.supports_tools.return_value = False
+    agent = BaseAgent(model="gpt-4.1", llm=llm)
+    assert agent._after_write([f]) == []
+
+
+def test_after_write_returns_empty_on_validation_error(tmp_path):
+    """_after_write returns [] and does not raise when validator errors."""
+    from unittest.mock import patch
+    f = tmp_path / "any.py"
+    f.write_text("def f(): pass\n")
+    llm = MagicMock()
+    llm.model = "gpt-4.1"
+    llm.supports_tools.return_value = False
+    agent = BaseAgent(model="gpt-4.1", llm=llm)
+    with patch("tools.fn_map.validate_function_sizes", side_effect=RuntimeError("boom")):
+        result = agent._after_write([f])
+    assert result == []

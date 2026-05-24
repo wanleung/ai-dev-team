@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Sequence
 
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
@@ -522,6 +522,23 @@ class BaseAgent:
             self._backend in ("opencode_zen", "opencode_go")
             and getattr(self._llm, "_anthropic_client", None) is not None
         )
+
+    def _after_write(self, files: Sequence[Path | str]) -> list[str]:
+        """Validate written files for function size violations.
+
+        Call this after writing code files to disk. Returns a list of
+        violation strings (empty if all functions are within the 30-line limit).
+        Used by the post-generation validation loop.
+        """
+        from tools.fn_map import validate_function_sizes
+        py_files = [p for p in (Path(f) for f in files) if p.suffix.lower() == ".py"]
+        if not py_files:
+            return []
+        try:
+            return validate_function_sizes(py_files)
+        except Exception as exc:  # noqa: BLE001 — validation must never break the pipeline
+            _log.warning("_after_write: validation error: %s", exc, exc_info=True)
+            return []
 
     def _build_messages(self, full_message: str) -> list[dict]:
         """Assemble the full messages list with system prompt + history + user turn."""

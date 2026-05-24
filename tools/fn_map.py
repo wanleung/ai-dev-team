@@ -12,6 +12,7 @@ import argparse
 import ast
 import html
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -117,9 +118,12 @@ def _parse_file(path: Path, root: Path) -> list[FunctionInfo]:
     try:
         src = path.read_text(encoding="utf-8", errors="replace")
         tree = ast.parse(src)
-    except SyntaxError:
+    except (SyntaxError, ValueError):
         return []
-    rel = str(path.relative_to(root))
+    try:
+        rel = str(path.relative_to(root))
+    except ValueError:
+        rel = path.name
     results = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -148,6 +152,34 @@ def detect_violations(funcs: list[FunctionInfo], limit: int) -> list[FunctionInf
         key=lambda f: f.line_count,
         reverse=True,
     )
+
+
+def validate_function_sizes(
+    files: list[Path],
+    limit: int = 30,
+) -> list[str]:
+    """Return violation strings for functions exceeding limit lines.
+
+    Each string has the format: "filename.py::function_name (N lines)".
+    Returns an empty list if all functions are within the limit.
+    Silently skips files with syntax errors or parse-time ValueErrors.
+    Returns an empty list if paths span different drives (e.g. Windows
+    mixed-drive inputs) — commonpath raises ValueError in that case.
+    """
+    paths = [Path(f).resolve() for f in files]
+    if not paths:
+        return []
+    if len(paths) == 1:
+        root = paths[0].parent
+    else:
+        try:
+            root = Path(os.path.commonpath([str(p) for p in paths]))
+        except ValueError:
+            # Different drives on Windows — cannot determine common root
+            return []
+    funcs = collect_functions(paths, root)
+    violations = detect_violations(funcs, limit)
+    return [f"{Path(v.file).name}::{v.name} ({v.line_count} lines)" for v in violations]
 
 
 def build_distribution(
