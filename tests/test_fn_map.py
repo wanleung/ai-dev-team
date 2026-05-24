@@ -268,3 +268,35 @@ def test_generate_html_has_filter_buttons(tmp_path):
     content = Path(out).read_text()
     assert "Violations only" in content
     assert "All" in content
+
+# ── Task 7: CLI integration ───────────────────────────────────────────────────
+import subprocess, sys
+
+def test_cli_runs_without_error(tmp_path):
+    """Run fn_map.py --no-html against a tiny sample dir and check exit code 0."""
+    sample = tmp_path / "sample.py"
+    sample.write_text("def alpha():\n    pass\n\ndef beta():\n    alpha()\n")
+    cfg = tmp_path / "fn_map.yaml"
+    cfg.write_text(f"include:\n  - sample.py\nlimit: 30\noutput:\n  html: null\n")
+    result = subprocess.run(
+        [sys.executable, "tools/fn_map.py", "--config", str(cfg), "--root", str(tmp_path)],
+        capture_output=True, text=True,
+        cwd="/home/wanleung/Projects/ai-software-house",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Function Size Report" in result.stdout
+
+def test_cli_writes_html(tmp_path):
+    sample = tmp_path / "sample.py"
+    sample.write_text("def alpha():\n    pass\n")
+    cfg = tmp_path / "fn_map.yaml"
+    out_html = tmp_path / "out.html"
+    cfg.write_text(f"include:\n  - sample.py\nlimit: 30\noutput:\n  html: {out_html}\n")
+    result = subprocess.run(
+        [sys.executable, "tools/fn_map.py", "--config", str(cfg), "--root", str(tmp_path)],
+        capture_output=True, text=True,
+        cwd="/home/wanleung/Projects/ai-software-house",
+    )
+    assert result.returncode == 0, result.stderr
+    assert out_html.exists()
+    assert "<!DOCTYPE html>" in out_html.read_text()

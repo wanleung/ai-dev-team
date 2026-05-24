@@ -8,6 +8,7 @@ Usage:
 """
 from __future__ import annotations
 
+import argparse
 import ast
 import json
 from dataclasses import dataclass, field
@@ -398,3 +399,33 @@ def generate_html(funcs: list[FunctionInfo], limit: int, output_path: str) -> No
         + detail + script + "</body></html>"
     )
     Path(output_path).write_text(html, encoding="utf-8")
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Function size reporter and HTML map generator")
+    p.add_argument("--config", default="fn_map.yaml", help="Path to fn_map.yaml (default: fn_map.yaml)")
+    p.add_argument("--limit", type=int, default=None, help="Override function line limit")
+    p.add_argument("--no-html", action="store_true", help="Skip HTML output")
+    p.add_argument("--root", default=".", help="Repo root directory (default: cwd)")
+    return p
+
+
+def main() -> None:
+    args = _build_arg_parser().parse_args()
+    cfg = load_config(args.config)
+    if args.limit is not None:
+        cfg.limit = args.limit
+    if args.no_html:
+        cfg.html_output = None
+    root = Path(args.root).resolve()
+    paths = resolve_paths(cfg.include, cfg.exclude, root)
+    funcs = collect_functions(paths, root)
+    print_terminal_report(funcs, cfg.limit)
+    if cfg.html_output:
+        html_path = str(Path(args.root) / cfg.html_output)
+        generate_html(funcs, cfg.limit, html_path)
+        print(f"\nHTML map written → {html_path}")
+
+
+if __name__ == "__main__":
+    main()
