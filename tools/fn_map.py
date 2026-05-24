@@ -68,18 +68,25 @@ def resolve_paths(
     exclude: list[str],
     root: Path,
 ) -> list[Path]:
-    """Expand include globs/dirs and filter out excluded prefixes."""
+    """Expand include globs/dirs and filter out excluded prefixes.
+    
+    Items ending with '/' are treated as directories (recursed for *.py).
+    Items without trailing '/' are treated as individual files.
+    Missing paths are silently skipped.
+    """
     collected: list[Path] = []
     for inc in include:
         p = root / inc
-        if p.is_dir():
-            collected.extend(p.rglob("*.py"))
-        elif p.is_file():
-            collected.append(p)
+        if inc.endswith("/"):
+            if p.is_dir():
+                collected.extend(p.rglob("*.py"))
+        else:
+            if p.is_file():
+                collected.append(p)
     result = []
     for p in collected:
         rel = str(p.relative_to(root))
-        excluded = any(rel.startswith(ex.rstrip("/")) for ex in exclude)
+        excluded = any(rel.startswith(ex.rstrip("/") + "/") for ex in exclude)
         if not excluded:
             result.append(p)
     return sorted(set(result))

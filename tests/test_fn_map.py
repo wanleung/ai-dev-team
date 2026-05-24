@@ -76,9 +76,16 @@ def test_resolve_paths_recurses_directory(tmp_path):
     f2 = sub / "two.py"
     f1.write_text("x = 1")
     f2.write_text("x = 2")
-    result = resolve_paths(["agents/"], [], root=tmp_path)
+    result = resolve_paths(["agents/"], [], root=tmp_path)  # trailing slash required
     assert f1 in result
     assert f2 in result
+
+def test_resolve_paths_exclude_does_not_match_prefix(tmp_path):
+    (tmp_path / "workspace_extra").mkdir()
+    f = tmp_path / "workspace_extra" / "file.py"
+    f.write_text("x = 1")
+    result = resolve_paths(["workspace_extra/"], ["workspace/"], root=tmp_path)
+    assert f in result  # should NOT be excluded — "workspace/" exclude must not match "workspace_extra/"
 
 def test_resolve_paths_ignores_missing_include(tmp_path):
     result = resolve_paths(["nonexistent.py"], [], root=tmp_path)
