@@ -222,6 +222,15 @@ def test_print_terminal_report_no_violations(capsys):
 # ── Task 6: HTML generation ──────────────────────────────────────────────────
 from tools.fn_map import generate_html, _render_function_card, _fn_css_class
 
+def test_render_function_card_escapes_html():
+    fn = FunctionInfo(
+        name='evil<script>alert(1)</script>',
+        file="test.py", lineno=1, line_count=10, calls=set()
+    )
+    card = _render_function_card(fn, 30)
+    assert "<script>" not in card
+    assert "&lt;script&gt;" in card
+
 def test_fn_css_class_ok():
     fn = _make_fn("ok", 20)
     assert _fn_css_class(fn, 30) == "fn-ok"

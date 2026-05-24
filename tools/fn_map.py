@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import html
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -248,7 +249,9 @@ def _fn_css_class(fn: FunctionInfo, limit: int) -> str:
 
 def _render_function_card(fn: FunctionInfo, limit: int) -> str:
     css = _fn_css_class(fn, limit)
-    key = f"{fn.file}::{fn.name}::{fn.lineno}"
+    file_safe = html.escape(fn.file)
+    name_safe = html.escape(fn.name)
+    key = f"{file_safe}::{name_safe}::{fn.lineno}"
     key_safe = key.replace("'", "\\'")
     calls_n = len(fn.calls)
     return (
@@ -256,7 +259,7 @@ def _render_function_card(fn: FunctionInfo, limit: int) -> str:
         f'onclick="showDetail(\'{key_safe}\')" '
         f'data-violation="{1 if fn.line_count > limit else 0}" '
         f'data-big="{1 if fn.line_count > 50 else 0}">'
-        f'<div class="fn-name">{fn.name}</div>'
+        f'<div class="fn-name">{name_safe}</div>'
         f'<div class="fn-meta">{fn.line_count} lines · :{fn.lineno}</div>'
         f'<div class="fn-calls">{calls_n} call{"s" if calls_n != 1 else ""}</div>'
         f'</div>'
@@ -267,10 +270,11 @@ def _render_module_group(file: str, funcs: list[FunctionInfo], limit: int) -> st
     violations = sum(1 for f in funcs if f.line_count > limit)
     cards = "\n".join(_render_function_card(f, limit) for f in funcs)
     badge_class = "badge-bad" if violations > 0 else "badge-ok"
+    file_safe = html.escape(file)
     return (
-        f'<div class="module-box" data-file="{file}">'
+        f'<div class="module-box" data-file="{file_safe}">'
         f'<div class="module-header">'
-        f'<span class="module-name">{file}</span>'
+        f'<span class="module-name">{file_safe}</span>'
         f'<span class="{badge_class}">{violations} violation{"s" if violations != 1 else ""}'
         f' / {len(funcs)} fn</span>'
         f'</div>'
@@ -283,7 +287,9 @@ def _build_fn_data_json(funcs: list[FunctionInfo], calledby: dict[str, list[str]
     """Build a JSON object mapping key → {name, file, lineno, lines, calls, calledBy}."""
     data: dict[str, dict] = {}
     for fn in funcs:
-        key = f"{fn.file}::{fn.name}::{fn.lineno}"
+        file_safe = html.escape(fn.file)
+        name_safe = html.escape(fn.name)
+        key = f"{file_safe}::{name_safe}::{fn.lineno}"
         data[key] = {
             "name": fn.name, "file": fn.file, "lineno": fn.lineno,
             "lines": fn.line_count, "calls": sorted(fn.calls),
@@ -292,40 +298,47 @@ def _build_fn_data_json(funcs: list[FunctionInfo], calledby: dict[str, list[str]
     return json.dumps(data)
 
 
+def _html_css() -> str:
+    """Return inline CSS for the HTML map."""
+    return (
+        "body{font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;margin:0}"
+        "#toolbar{background:#161b22;padding:.5em 1em;display:flex;gap:.6em;align-items:center;border-bottom:1px solid #30363d}"
+        "#toolbar h1{font-size:1em;margin:0;color:#79c0ff}"
+        ".filter-btn{background:#30363d;border:none;color:#e6edf3;padding:.25em .7em;border-radius:4px;cursor:pointer}"
+        ".filter-btn.active{background:#238636}"
+        "#layout{display:flex;height:calc(100vh - 41px)}"
+        "#sidebar{width:220px;border-right:1px solid #30363d;overflow-y:auto;padding:.5em}"
+        "#sidebar .s-file{padding:.3em .5em;border-radius:4px;cursor:pointer;display:flex;justify-content:space-between;font-size:.85em;margin-bottom:.2em}"
+        ".badge-bad{background:#da3633;color:#fff;padding:0 .4em;border-radius:3px;font-size:.8em}"
+        ".badge-ok{background:#1a7f37;color:#fff;padding:0 .4em;border-radius:3px;font-size:.8em}"
+        "#main{flex:1;overflow-y:auto;padding:1em}"
+        ".module-box{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:1em}"
+        ".module-header{padding:.5em 1em;border-bottom:1px solid #30363d;display:flex;gap:.6em;align-items:center}"
+        ".module-name{font-weight:bold}"
+        ".fn-cards{padding:.7em 1em;display:flex;flex-wrap:wrap;gap:.5em}"
+        ".fn-card{border-radius:6px;padding:.4em .7em;cursor:pointer;min-width:140px;border:1px solid}"
+        ".fn-ok{background:#0a1a0a;border-color:#238636}"
+        ".fn-warn{background:#1a1200;border-color:#d29922}"
+        ".fn-bad{background:#1a0a0a;border-color:#da3633}"
+        ".fn-name{font-weight:bold;font-size:.9em}"
+        ".fn-meta,.fn-calls{color:#8b949e;font-size:.75em}"
+        "#detail{border-top:1px solid #30363d;padding:1em;background:#161b22;min-height:80px;display:none}"
+        "#detail h3{margin:0 0 .5em;color:#79c0ff}"
+        ".detail-cols{display:flex;gap:2em}"
+        ".detail-col h4{color:#8b949e;font-size:.75em;text-transform:uppercase;margin:0 0 .3em}"
+        ".detail-col a{color:#3fb950;text-decoration:none;display:block;font-size:.85em}"
+        ".detail-col a:hover{text-decoration:underline}"
+        ".detail-col span{color:#8b949e;font-size:.85em;display:block}"
+    )
+
+
 def _html_head() -> str:
-    return """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8">
-<title>Function Map</title>
-<style>
-body{font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;margin:0}
-#toolbar{background:#161b22;padding:.5em 1em;display:flex;gap:.6em;align-items:center;border-bottom:1px solid #30363d}
-#toolbar h1{font-size:1em;margin:0;color:#79c0ff}
-.filter-btn{background:#30363d;border:none;color:#e6edf3;padding:.25em .7em;border-radius:4px;cursor:pointer}
-.filter-btn.active{background:#238636}
-#layout{display:flex;height:calc(100vh - 41px)}
-#sidebar{width:220px;border-right:1px solid #30363d;overflow-y:auto;padding:.5em}
-#sidebar .s-file{padding:.3em .5em;border-radius:4px;cursor:pointer;display:flex;justify-content:space-between;font-size:.85em;margin-bottom:.2em}
-.badge-bad{background:#da3633;color:#fff;padding:0 .4em;border-radius:3px;font-size:.8em}
-.badge-ok{background:#1a7f37;color:#fff;padding:0 .4em;border-radius:3px;font-size:.8em}
-#main{flex:1;overflow-y:auto;padding:1em}
-.module-box{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:1em}
-.module-header{padding:.5em 1em;border-bottom:1px solid #30363d;display:flex;gap:.6em;align-items:center}
-.module-name{font-weight:bold}
-.fn-cards{padding:.7em 1em;display:flex;flex-wrap:wrap;gap:.5em}
-.fn-card{border-radius:6px;padding:.4em .7em;cursor:pointer;min-width:140px;border:1px solid}
-.fn-ok{background:#0a1a0a;border-color:#238636}
-.fn-warn{background:#1a1200;border-color:#d29922}
-.fn-bad{background:#1a0a0a;border-color:#da3633}
-.fn-name{font-weight:bold;font-size:.9em}
-.fn-meta,.fn-calls{color:#8b949e;font-size:.75em}
-#detail{border-top:1px solid #30363d;padding:1em;background:#161b22;min-height:80px;display:none}
-#detail h3{margin:0 0 .5em;color:#79c0ff}
-.detail-cols{display:flex;gap:2em}
-.detail-col h4{color:#8b949e;font-size:.75em;text-transform:uppercase;margin:0 0 .3em}
-.detail-col a{color:#3fb950;text-decoration:none;display:block;font-size:.85em}
-.detail-col a:hover{text-decoration:underline}
-.detail-col span{color:#8b949e;font-size:.85em;display:block}
-</style></head><body>"""
+    """Return HTML document head with inline CSS."""
+    return (
+        '<!DOCTYPE html>\n<html lang="en"><head><meta charset="UTF-8">\n'
+        '<title>Function Map</title>\n'
+        f'<style>{_html_css()}</style></head><body>'
+    )
 
 
 def _html_sidebar(by_file: dict[str, list[FunctionInfo]], limit: int) -> str:
@@ -333,16 +346,18 @@ def _html_sidebar(by_file: dict[str, list[FunctionInfo]], limit: int) -> str:
     for file, funcs in sorted(by_file.items()):
         v = sum(1 for f in funcs if f.line_count > limit)
         badge = f'<span class="badge-{"bad" if v else "ok"}">{v}</span>'
+        file_safe = html.escape(file)
         items.append(
-            f'<div class="s-file" onclick="scrollToFile(\'{file}\')">'
-            f'{file}{badge}</div>'
+            f'<div class="s-file" onclick="scrollToFile(\'{file_safe}\')">'
+            f'{file_safe}{badge}</div>'
         )
     return f'<div id="sidebar">{"".join(items)}</div>'
 
 
 def _html_script(fn_data_json: str) -> str:
+    safe_json = fn_data_json.replace("</", "<\\/")
     return f"""<script>
-const FN_DATA = {fn_data_json};
+const FN_DATA = {safe_json};
 function showDetail(key) {{
   const d = FN_DATA[key]; if (!d) return;
   document.getElementById('detail').style.display = 'block';
