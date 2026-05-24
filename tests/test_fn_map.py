@@ -47,3 +47,9 @@ def test_load_config_overrides_include(tmp_path):
     yaml_file.write_text("include:\n  - foo.py\n  - bar/\n")
     cfg = load_config(str(yaml_file))
     assert cfg.include == ["foo.py", "bar/"]
+
+def test_load_config_overrides_exclude(tmp_path):
+    yaml_file = tmp_path / "fn_map.yaml"
+    yaml_file.write_text("exclude:\n  - custom_exclude/\n")
+    cfg = load_config(str(yaml_file))
+    assert cfg.exclude == ["custom_exclude/"]
