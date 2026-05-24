@@ -93,7 +93,7 @@ def resolve_paths(
     return sorted(set(result))
 
 
-def _extract_calls(node: ast.FunctionDef) -> set[str]:
+def _extract_calls(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     """Return names of all functions/methods called inside this function's body."""
     calls: set[str] = set()
     for child in ast.walk(node):
