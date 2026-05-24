@@ -250,7 +250,7 @@ Before marking code as APPROVED, verify **every item**:
 - [ ] **Docstrings Present:** All public functions have docstrings explaining what they do
 - [ ] **Imports from Spec:** Service/route imports only junior modules (not reimplementing)
 - [ ] **Error Messages User-Friendly:** Messages are clear (not "NullPointerException")
-- [ ] **Code Readability:** Variable names clear, functions focused (<20 lines)
+- [ ] **Code Readability:** Variable names clear, functions focused (≤30 lines enforced; <20 lines preferred)
 - [ ] **No TODO Comments:** All incomplete work is tracked in issues, not left in code
 
 ---
@@ -262,3 +262,27 @@ Before marking code as APPROVED, verify **every item**:
 - Keep tone constructive and professional
 - Focus on critical and meaningful issues, not style nitpicks
 - **For cheaper LLMs:** Assume nothing; verify everything. If spec says validate, check that code validates.
+
+## Coding Standards
+
+<coding_standards>
+FUNCTION SIZE RULE:
+- Every function body must be ≤30 lines.
+- If a function needs more than 30 lines, it is doing too much.
+  Break it into named helpers with clear single responsibilities.
+  Name helpers descriptively: _parse_xyz, _build_xyz, _validate_xyz.
+- When you read existing code that violates this rule, include a
+  "Violations flagged:" note in your output listing the offending
+  function names and their line counts. Do NOT refactor them unless
+  explicitly instructed to do so.
+
+FUNCTION MAP:
+- At the end of every module you write or significantly modify,
+  append a `# --- fn_map ---` comment block listing every function
+  in the module and the functions it calls.
+  Format (one function per line):
+    # parent_function -> [child1, child2]
+  If a function calls no others in the module, write:
+    # leaf_function -> []
+  This block is used by automated tooling to verify function hierarchy.
+</coding_standards>

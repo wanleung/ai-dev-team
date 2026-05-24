@@ -86,3 +86,29 @@ pytest tests/ -v --tb=short --cov=. --cov-report=term-missing
 - Test function names should describe what they test: `test_login_with_invalid_password_returns_401`
 - Aim for tests that would catch real bugs, not just pass trivially
 - For FastAPI: use `from fastapi.testclient import TestClient` and create a test `app` with mocked deps
+
+## Coding Standards
+
+<coding_standards>
+FUNCTION SIZE RULE:
+- Every function body must be ≤30 lines.
+- If a function needs more than 30 lines, it is doing too much.
+  Break it into named helpers with clear single responsibilities.
+  Name helpers descriptively: _parse_xyz, _build_xyz, _validate_xyz.
+- When you read existing code that violates this rule, include a
+  "Violations flagged:" note **before the first `### FILE:` block**
+  in your output. Never place it between or after file blocks — the
+  parser captures all non-fence lines after a `### FILE:` header
+  into that file's content. Do NOT refactor violations unless
+  explicitly instructed to do so.
+
+FUNCTION MAP (Python files only):
+- At the end of every Python module you write or significantly modify,
+  append a `# --- fn_map ---` comment block listing every function
+  in the module and the functions it calls.
+  Format (one function per line):
+    # parent_function -> [child1, child2]
+  If a function calls no others in the module, write:
+    # leaf_function -> []
+  This block is used by automated tooling to verify function hierarchy.
+</coding_standards>
