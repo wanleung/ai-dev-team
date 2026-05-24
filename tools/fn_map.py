@@ -8,6 +8,7 @@ Usage:
 """
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -90,3 +91,46 @@ def resolve_paths(
         if not excluded:
             result.append(p)
     return sorted(set(result))
+
+
+def _extract_calls(node: ast.FunctionDef) -> set[str]:
+    """Return names of all functions/methods called inside this function's body."""
+    calls: set[str] = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        if isinstance(child.func, ast.Name):
+            calls.add(child.func.id)
+        elif isinstance(child.func, ast.Attribute):
+            calls.add(child.func.attr)
+    return calls
+
+
+def _parse_file(path: Path, root: Path) -> list[FunctionInfo]:
+    """Parse one .py file and return a FunctionInfo for every function defined in it."""
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(src)
+    except SyntaxError:
+        return []
+    rel = str(path.relative_to(root))
+    results = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            results.append(FunctionInfo(
+                name=node.name,
+                file=rel,
+                lineno=node.lineno,
+                line_count=node.end_lineno - node.lineno + 1,
+                calls=_extract_calls(node),
+            ))
+    return results
+
+
+def collect_functions(paths: list[Path], root: Path) -> list[FunctionInfo]:
+    """Walk all paths and aggregate FunctionInfo from every .py file."""
+    funcs: list[FunctionInfo] = []
+    for p in paths:
+        funcs.extend(_parse_file(p, root))
+    return funcs
+

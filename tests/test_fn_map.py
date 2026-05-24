@@ -1,10 +1,11 @@
 """Tests for tools/fn_map.py — function size reporter and map generator."""
 from __future__ import annotations
 
+import ast
 import textwrap
 from pathlib import Path
 import pytest
-from tools.fn_map import FunctionInfo, FnMapConfig, load_config, resolve_paths
+from tools.fn_map import FunctionInfo, FnMapConfig, load_config, resolve_paths, _extract_calls, _parse_file, collect_functions
 
 # ── Task 1: Data model + config loader ──────────────────────────────────────
 
@@ -90,3 +91,57 @@ def test_resolve_paths_exclude_does_not_match_prefix(tmp_path):
 def test_resolve_paths_ignores_missing_include(tmp_path):
     result = resolve_paths(["nonexistent.py"], [], root=tmp_path)
     assert result == []
+
+# ── Task 3: AST analysis ────────────────────────────────────────────────────
+
+def _make_py(tmp_path, name, code):
+    f = tmp_path / name
+    f.write_text(code)
+    return f
+
+def test_extract_calls_finds_direct_call():
+    src = "def foo():\n    bar()\n    baz()\n"
+    tree = ast.parse(src)
+    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef))
+    calls = _extract_calls(node)
+    assert "bar" in calls
+    assert "baz" in calls
+
+def test_extract_calls_finds_method_call():
+    src = "def foo(self):\n    self.helper()\n"
+    tree = ast.parse(src)
+    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef))
+    calls = _extract_calls(node)
+    assert "helper" in calls
+
+def test_parse_file_basic(tmp_path):
+    f = _make_py(tmp_path, "sample.py", "def short():\n    pass\n")
+    results = _parse_file(f, tmp_path)
+    assert len(results) == 1
+    assert results[0].name == "short"
+    assert results[0].line_count == 2
+    assert results[0].lineno == 1
+    assert results[0].file == "sample.py"
+
+def test_parse_file_multi_function(tmp_path):
+    code = "def a():\n    pass\n\ndef b():\n    a()\n"
+    f = _make_py(tmp_path, "multi.py", code)
+    results = _parse_file(f, tmp_path)
+    names = {r.name for r in results}
+    assert names == {"a", "b"}
+    b_fn = next(r for r in results if r.name == "b")
+    assert "a" in b_fn.calls
+
+def test_parse_file_syntax_error_returns_empty(tmp_path):
+    f = _make_py(tmp_path, "bad.py", "def (broken")
+    results = _parse_file(f, tmp_path)
+    assert results == []
+
+def test_collect_functions_aggregates(tmp_path):
+    _make_py(tmp_path, "a.py", "def f1():\n    pass\n")
+    _make_py(tmp_path, "b.py", "def f2():\n    pass\n\ndef f3():\n    pass\n")
+    paths = [tmp_path / "a.py", tmp_path / "b.py"]
+    funcs = collect_functions(paths, tmp_path)
+    assert len(funcs) == 3
+    assert {f.name for f in funcs} == {"f1", "f2", "f3"}
+
