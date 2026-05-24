@@ -1,0 +1,28 @@
+# fn_map.yaml — function size report configuration
+# Run: python tools/fn_map.py
+
+limit: 30
+
+include:
+  - orchestrator.py
+  - watcher.py
+  - rss_watcher.py
+  - intake_triage.py
+  - intake_scoring.py
+  - main.py
+  - tracker_adapter.py
+  - config_schema.py
+  - agents/
+  - tools/
+
+exclude:
+  - workspace/
+  - .venv/
+  - venv/
+  - tests/
+  - .git/
+  - __pycache__/
+  - tools/fn_map.py
+
+output:
+  html: fn_map.html
