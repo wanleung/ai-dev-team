@@ -43,40 +43,33 @@ class SeniorEngineerAgent(EngineerAgent):
         Returns:
             Same as EngineerAgent.run_module.
         """
-        augmented_design = design
-        if junior_files:
-            file_dump = "\n\n".join(
-                f"### FILE: {path}\n```\n{content}\n```"
-                for path, content in junior_files.items()
-            )
-            augmented_design = (
-                f"## Junior Code Context\n\n"
-                f"The following utility/model files have already been implemented by junior engineers. "
-                f"You MUST use these files as-is — do NOT reimplement them.\n\n"
-                f"{file_dump}\n\n"
-                f"---\n\n"
-                f"{design}"
-            )
-
-        # Build truncated test section (mirrors EngineerAgent logic) and inject it
-        # directly into augmented_design so the parent receives test_files=None and
-        # does not double-inject the section.
-        if test_files:
-            MAX_FILE_CHARS = 3000
-            MAX_TOTAL_CHARS = 10000
-            parts = []
-            for path, content in test_files.items():
-                if len(content) > MAX_FILE_CHARS:
-                    content = content[:MAX_FILE_CHARS] + f"\n... (truncated, {len(content)} chars total)"
-                parts.append(f"### FILE: {path}\n```python\n{content}\n```")
-            test_section_body = "\n\n".join(parts)
-            if len(test_section_body) > MAX_TOTAL_CHARS:
-                test_section_body = test_section_body[:MAX_TOTAL_CHARS] + "\n... (additional test files truncated)"
-            augmented_design += (
-                f"\n\n## Pre-written tests your implementation must pass\n\n"
-                f"{test_section_body}\n\n"
-                f"Implement the module so all of the above tests pass. "
-                f"Do not modify the test files."
-            )
-
+        augmented_design = self._build_augmented_design(design, junior_files, test_files)
         return super().run_module(augmented_design, module, project_name, framework_context)
+
+    @staticmethod
+    def _build_augmented_design(
+        design: str, junior_files: dict[str, str] | None, test_files: dict[str, str] | None
+    ) -> str:
+        """Build augmented design with junior code context and test sections."""
+        augmented = design
+        if junior_files:
+            augmented = SeniorEngineerAgent._inject_junior_context(design, junior_files)
+        if test_files:
+            augmented += EngineerAgent._build_test_section_static(test_files)
+        return augmented
+
+    @staticmethod
+    def _inject_junior_context(design: str, junior_files: dict[str, str]) -> str:
+        """Inject junior code context into the design."""
+        file_dump = "\n\n".join(
+            f"### FILE: {path}\n```\n{content}\n```"
+            for path, content in junior_files.items()
+        )
+        return (
+            f"## Junior Code Context\n\n"
+            f"The following utility/model files have already been implemented by junior engineers. "
+            f"You MUST use these files as-is — do NOT reimplement them.\n\n"
+            f"{file_dump}\n\n"
+            f"---\n\n"
+            f"{design}"
+        )

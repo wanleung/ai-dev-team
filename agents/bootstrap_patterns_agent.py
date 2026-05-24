@@ -34,28 +34,36 @@ class BootstrapPatternsAgent(BaseAgent):
     role_name = "bootstrap_patterns_agent"
 
     def run(self, target_gh, commit: bool = True) -> str:
-        """Scan target_gh repo, generate codebase patterns content, and optionally commit it.
+        """Scan target repo and generate codebase patterns content.
 
         Args:
-            target_gh: GitHubClient pointing at the target repo.
-            commit: If True, commit .github/copilot-instructions.md to the repo's default branch.
+            target_gh: GitHubClient pointing at the target repo
+            commit: If True, commit .github/copilot-instructions.md to default branch
 
         Returns:
-            The generated markdown string.
+            Generated markdown string
         """
         repo_name = target_gh.repo
-
-        # Build file tree summary
-        try:
-            tree = target_gh.get_full_tree()
-        except Exception as e:
-            logger.warning("BootstrapPatternsAgent: could not fetch tree for %s: %s", repo_name, e)
-            tree = []
-
+        tree = self._fetch_tree(target_gh, repo_name)
         blobs = [e["path"] for e in tree if e.get("type") == "blob"]
         tree_summary = "\n".join(f"  {p}" for p in sorted(blobs)[:80])
+        samples = self._sample_key_files(target_gh, blobs)
+        prompt = self._build_prompt(repo_name, tree_summary, samples)
+        agents_md = self.call(prompt)
+        if commit:
+            self._commit_instructions(target_gh, agents_md, repo_name)
+        return agents_md
 
-        # Sample key files
+    def _fetch_tree(self, target_gh, repo_name: str) -> list:
+        """Fetch repo tree, returning empty list on error."""
+        try:
+            return target_gh.get_full_tree()
+        except Exception as e:
+            logger.warning("BootstrapPatternsAgent: could not fetch tree for %s: %s", repo_name, e)
+            return []
+
+    def _sample_key_files(self, target_gh, blobs: list[str]) -> list[str]:
+        """Sample up to 5 key files from the repo."""
         samples: list[str] = []
         for candidate in CANDIDATE_FILES:
             if candidate in blobs:
@@ -64,32 +72,32 @@ class BootstrapPatternsAgent(BaseAgent):
                     samples.append(f"### {candidate}\n```\n{content[:MAX_FILE_SAMPLE_CHARS]}\n```")
                     if len(samples) >= 5:
                         break
+        return samples
 
-        prompt = (
+    def _build_prompt(self, repo_name: str, tree_summary: str, samples: list[str]) -> str:
+        """Build the LLM prompt from repo context."""
+        return (
             f"Repo: {repo_name}\n\n"
             f"File tree (first 80 files):\n{tree_summary}\n\n"
             + ("\n\n".join(samples) if samples else "No key files sampled.")
         )
 
-        agents_md = self.call(prompt)
-
-        if commit:
-            try:
-                default_branch = target_gh.get_default_branch()
-                target_gh.commit_file(
-                    path=".github/copilot-instructions.md",
-                    content=agents_md,
-                    message="chore: add AI agent codebase patterns [bootstrap]",
-                    branch=default_branch,
-                )
-                logger.info(
-                    "BootstrapPatternsAgent: committed .github/copilot-instructions.md to %s",
-                    repo_name,
-                )
-            except Exception as e:
-                logger.warning(
-                    "BootstrapPatternsAgent: could not commit to %s: %s",
-                    repo_name, e,
-                )
-
-        return agents_md
+    def _commit_instructions(self, target_gh, content: str, repo_name: str) -> None:
+        """Commit the generated copilot-instructions.md to the repo."""
+        try:
+            default_branch = target_gh.get_default_branch()
+            target_gh.commit_file(
+                path=".github/copilot-instructions.md",
+                content=content,
+                message="chore: add AI agent codebase patterns [bootstrap]",
+                branch=default_branch,
+            )
+            logger.info(
+                "BootstrapPatternsAgent: committed .github/copilot-instructions.md to %s",
+                repo_name,
+            )
+        except Exception as e:
+            logger.warning(
+                "BootstrapPatternsAgent: could not commit to %s: %s",
+                repo_name, e,
+            )

@@ -82,6 +82,47 @@ def _is_dashscope_model(model: str) -> bool:
     return model.startswith("dashscope/")
 
 
+# ── Module-level helpers for truncate_files ────────────────────────────────
+
+def _sort_files_by_priority(files: dict[str, str]) -> list[str]:
+    """Return file paths sorted by priority: source > other > config > tests."""
+    def priority(path: str) -> int:
+        p = path.lower()
+        if "/test" in p or p.startswith("test"):
+            return 3          # dropped first when budget is tight
+        if path.endswith((".py", ".js", ".ts", ".go", ".rs", ".java", ".kt", ".swift")):
+            return 0          # kept first
+        if path.endswith((".yaml", ".yml", ".json", ".toml", ".cfg", ".ini", ".md")):
+            return 2
+        return 1
+    return sorted(files.keys(), key=priority)
+
+
+def _truncate_to_budget(
+    files: dict[str, str], sorted_paths: list[str], max_chars: int, max_per_file: int
+) -> dict[str, str]:
+    """Keep files in priority order until budget is exhausted."""
+    result: dict[str, str] = {}
+    remaining = max_chars
+    skipped = []
+    for path in sorted_paths:
+        content = files[path]
+        if len(content) > max_per_file:
+            content = content[:max_per_file] + f"\n... [truncated — {len(content) - max_per_file} chars omitted]"
+        entry_len = len(path) + len(content) + 40
+        if entry_len <= remaining:
+            result[path] = content
+            remaining -= entry_len
+        else:
+            skipped.append(path)
+        if remaining <= 0:
+            break
+    all_skipped = skipped + [p for p in sorted_paths if p not in result and p not in skipped]
+    if all_skipped:
+        result["__summary__"] = f"[{len(all_skipped)} additional file(s) omitted to fit token limit: {', '.join(all_skipped)}]"
+    return result
+
+
 class BaseAgent:
     """Base class for all software house agents.
 
@@ -124,49 +165,44 @@ class BaseAgent:
         self.model = model
         self.system_prompt = self._load_system_prompt(roles_dir)
         self._token = github_token
+        self._history: list[dict] = []
+        self._init_retry_settings(retry_delay, max_api_retries, inter_call_delay)
+        self._init_stream_flags(ollama_think, ollama_preserve_thinking, ollama_stream,
+                                opencode_stream, github_models_stream)
+        if llm is not None:
+            self._llm: _LLMBackend = llm
+        else:
+            self._llm = self._build_backend(
+                model=model, github_token=github_token, backend=backend,
+                ollama_url=ollama_url, ollama_think=ollama_think,
+                ollama_preserve_thinking=ollama_preserve_thinking, ollama_stream=ollama_stream,
+                opencode_stream=opencode_stream, github_models_stream=github_models_stream,
+                opencode_zen_api_key=opencode_zen_api_key, opencode_zen_base_url=opencode_zen_base_url,
+                opencode_go_base_url=opencode_go_base_url, nvidia_nim_api_key=nvidia_nim_api_key,
+                nvidia_nim_base_url=nvidia_nim_base_url, dashscope_api_key=dashscope_api_key,
+                dashscope_url=dashscope_url, dashscope_think=dashscope_think,
+                dashscope_preserve_thinking=dashscope_preserve_thinking, dashscope_stream=dashscope_stream,
+                retry_delay=retry_delay, max_api_retries=max_api_retries, inter_call_delay=inter_call_delay,
+            )
+        self._backend: str = self._detect_backend_name()
+        self._api_model: str = self._llm.model
+        self.model = self._llm.model
+
+    def _init_retry_settings(self, retry_delay: int, max_api_retries: int, inter_call_delay: int) -> None:
+        """Store retry/delay configuration on the instance."""
         self._retry_delay = retry_delay
         self._max_api_retries = max_api_retries
         self._inter_call_delay = inter_call_delay
+
+    def _init_stream_flags(self, ollama_think: bool, ollama_preserve_thinking: bool,
+                           ollama_stream: bool, opencode_stream: bool,
+                           github_models_stream: bool) -> None:
+        """Store streaming/thinking flags on the instance."""
         self._ollama_think = ollama_think
         self._ollama_preserve_thinking = ollama_preserve_thinking
         self._ollama_stream = ollama_stream
         self._opencode_stream = opencode_stream
         self._github_models_stream = github_models_stream
-        self._history: list[dict] = []
-
-        if llm is not None:
-            self._llm: _LLMBackend = llm
-        else:
-            self._llm = self._build_backend(
-                model=model,
-                github_token=github_token,
-                backend=backend,
-                ollama_url=ollama_url,
-                ollama_think=ollama_think,
-                ollama_preserve_thinking=ollama_preserve_thinking,
-                ollama_stream=ollama_stream,
-                opencode_stream=opencode_stream,
-                github_models_stream=github_models_stream,
-                opencode_zen_api_key=opencode_zen_api_key,
-                opencode_zen_base_url=opencode_zen_base_url,
-                opencode_go_base_url=opencode_go_base_url,
-                nvidia_nim_api_key=nvidia_nim_api_key,
-                nvidia_nim_base_url=nvidia_nim_base_url,
-                dashscope_api_key=dashscope_api_key,
-                dashscope_url=dashscope_url,
-                dashscope_think=dashscope_think,
-                dashscope_preserve_thinking=dashscope_preserve_thinking,
-                dashscope_stream=dashscope_stream,
-                retry_delay=retry_delay,
-                max_api_retries=max_api_retries,
-                inter_call_delay=inter_call_delay,
-            )
-
-        # Backward-compat attributes derived from the backend
-        self._backend: str = self._detect_backend_name()
-        self._api_model: str = self._llm.model
-        # Keep self.model in sync with the injected backend's actual model string
-        self.model = self._llm.model
 
     # ── Backward-compat properties ─────────────────────────────────────────────
 
@@ -257,112 +293,104 @@ class BaseAgent:
         inter_call_delay: int,
     ) -> _LLMBackend:
         """Detect which backend to use and construct it from the supplied kwargs."""
-        use_opencode_zen = (backend == "opencode_zen") or (
-            backend is None and _is_opencode_zen_model(model)
-        )
-        use_opencode_go = (backend == "opencode_go") or (
-            backend is None and _is_opencode_go_model(model)
-        )
-        use_nvidia_nim = (backend == "nvidia_nim") or (
-            backend is None and _is_nvidia_nim_model(model)
-        )
-        use_copilot = (backend == "copilot") or (
-            backend is None and _is_copilot_model(model)
-        )
-        use_dashscope = (backend == "dashscope") or (
-            backend is None and _is_dashscope_model(model)
-        )
-        use_anthropic = (backend == "anthropic") or (
-            backend is None
-            and not use_opencode_zen and not use_opencode_go
-            and not use_nvidia_nim and not use_copilot and not use_dashscope
-            and _is_anthropic_model(model)
-        )
-        use_ollama = (backend == "ollama") or (
-            backend is None and _is_ollama_model(model)
-        )
-        use_opencode = (backend == "opencode") or (
-            backend is None and _is_opencode_model(model)
-        )
-
+        flags = self._resolve_backend_flags(model, backend)
         common = dict(
             inter_call_delay=inter_call_delay,
             max_retries=max_api_retries,
             retry_delay=retry_delay,
         )
+        kw = dict(
+            ollama_url=ollama_url, ollama_think=ollama_think,
+            ollama_preserve_thinking=ollama_preserve_thinking, ollama_stream=ollama_stream,
+            opencode_stream=opencode_stream, github_models_stream=github_models_stream,
+            opencode_zen_api_key=opencode_zen_api_key, opencode_zen_base_url=opencode_zen_base_url,
+            opencode_go_base_url=opencode_go_base_url, nvidia_nim_api_key=nvidia_nim_api_key,
+            nvidia_nim_base_url=nvidia_nim_base_url, dashscope_api_key=dashscope_api_key,
+            dashscope_url=dashscope_url, dashscope_think=dashscope_think,
+            dashscope_preserve_thinking=dashscope_preserve_thinking, dashscope_stream=dashscope_stream,
+        )
+        return self._instantiate_backend(flags, model, github_token, common, kw)
 
-        if use_copilot:
-            from agents.backends.copilot import CopilotBackend
-            return CopilotBackend(model=model, **common)
+    def _resolve_backend_flags(self, model: str, backend: Optional[str]) -> dict[str, bool]:
+        """Map model prefix / explicit backend name to boolean selection flags."""
+        use_opencode_zen = (backend == "opencode_zen") or (backend is None and _is_opencode_zen_model(model))
+        use_opencode_go = (backend == "opencode_go") or (backend is None and _is_opencode_go_model(model))
+        use_nvidia_nim = (backend == "nvidia_nim") or (backend is None and _is_nvidia_nim_model(model))
+        use_copilot = (backend == "copilot") or (backend is None and _is_copilot_model(model))
+        use_dashscope = (backend == "dashscope") or (backend is None and _is_dashscope_model(model))
+        no_special = not any([use_opencode_zen, use_opencode_go, use_nvidia_nim, use_copilot, use_dashscope])
+        use_anthropic = (backend == "anthropic") or (backend is None and no_special and _is_anthropic_model(model))
+        return {
+            "use_copilot": use_copilot,
+            "use_opencode_go": use_opencode_go,
+            "use_opencode_zen": use_opencode_zen,
+            "use_nvidia_nim": use_nvidia_nim,
+            "use_opencode": (backend == "opencode") or (backend is None and _is_opencode_model(model)),
+            "use_anthropic": use_anthropic,
+            "use_ollama": (backend == "ollama") or (backend is None and _is_ollama_model(model)),
+            "use_dashscope": use_dashscope,
+        }
 
-        if use_opencode_go:
-            from agents.backends.opencode_go import OpenCodeGoBackend
-            return OpenCodeGoBackend(
-                model=model,
-                api_key=opencode_zen_api_key,
-                base_url=opencode_go_base_url,
-                stream=opencode_stream,
-                **common,
-            )
-
-        if use_opencode_zen:
-            from agents.backends.opencode_zen import OpenCodeZenBackend
-            return OpenCodeZenBackend(
-                model=model,
-                api_key=opencode_zen_api_key,
-                base_url=opencode_zen_base_url,
-                stream=opencode_stream,
-                **common,
-            )
-
-        if use_nvidia_nim:
-            from agents.backends.nvidia_nim import NvidiaNimBackend
-            return NvidiaNimBackend(
-                model=model,
-                nvidia_nim_api_key=nvidia_nim_api_key,
-                nvidia_nim_base_url=nvidia_nim_base_url,
-                **common,
-            )
-
-        if use_opencode:
-            from agents.backends.opencode import OpenCodeBackend
-            return OpenCodeBackend(model=model)
-
-        if use_anthropic:
-            from agents.backends.anthropic import AnthropicBackend
-            return AnthropicBackend(model=model, **common)
-
-        if use_ollama:
-            from agents.backends.ollama import OllamaBackend
-            return OllamaBackend(
-                model=model,
-                ollama_url=ollama_url,
-                think=ollama_think,
-                preserve_thinking=ollama_preserve_thinking,
-                stream=ollama_stream,
-                **common,
-            )
-
-        if use_dashscope:
-            from agents.backends.dashscope import DashScopeBackend
-            return DashScopeBackend(
-                model=model,
-                dashscope_api_key=dashscope_api_key,
-                dashscope_url=dashscope_url,
-                think=dashscope_think,
-                preserve_thinking=dashscope_preserve_thinking,
-                stream=dashscope_stream,
-                **common,
-            )
-
-        # Default: GitHub Models
+    def _instantiate_backend(
+        self, flags: dict[str, bool], model: str,
+        github_token: Optional[str], common: dict, kw: dict,
+    ) -> _LLMBackend:
+        """Construct the LLM backend from resolved flags and kwargs."""
+        result = (
+            self._try_github_and_opencode_backends(flags, model, common, kw)
+            or self._try_cloud_backends(flags, model, common, kw)
+            or self._try_local_backends(flags, model, common, kw)
+        )
+        if result is not None:
+            return result
         from agents.backends.github_models import GitHubModelsBackend
         return GitHubModelsBackend(
-            model=model,
-            github_token=github_token,
-            stream=github_models_stream,
-            **common,
+            model=model, github_token=github_token,
+            stream=kw["github_models_stream"], **common,
         )
+
+    def _try_github_and_opencode_backends(self, flags: dict[str, bool], model: str, common: dict, kw: dict) -> Optional[_LLMBackend]:
+        """Return a GitHub Copilot or OpenCode-family backend if flagged; None otherwise."""
+        if flags["use_copilot"]:
+            from agents.backends.copilot import CopilotBackend
+            return CopilotBackend(model=model, **common)
+        if flags["use_opencode_go"]:
+            from agents.backends.opencode_go import OpenCodeGoBackend
+            return OpenCodeGoBackend(model=model, api_key=kw["opencode_zen_api_key"],
+                base_url=kw["opencode_go_base_url"], stream=kw["opencode_stream"], **common)
+        if flags["use_opencode_zen"]:
+            from agents.backends.opencode_zen import OpenCodeZenBackend
+            return OpenCodeZenBackend(model=model, api_key=kw["opencode_zen_api_key"],
+                base_url=kw["opencode_zen_base_url"], stream=kw["opencode_stream"], **common)
+        if flags["use_opencode"]:
+            from agents.backends.opencode import OpenCodeBackend
+            return OpenCodeBackend(model=model)
+        return None
+
+    def _try_cloud_backends(self, flags: dict[str, bool], model: str, common: dict, kw: dict) -> Optional[_LLMBackend]:
+        """Return a cloud API backend (NIM, Anthropic, DashScope) if flagged; None otherwise."""
+        if flags["use_nvidia_nim"]:
+            from agents.backends.nvidia_nim import NvidiaNimBackend
+            return NvidiaNimBackend(model=model, nvidia_nim_api_key=kw["nvidia_nim_api_key"],
+                nvidia_nim_base_url=kw["nvidia_nim_base_url"], **common)
+        if flags["use_anthropic"]:
+            from agents.backends.anthropic import AnthropicBackend
+            return AnthropicBackend(model=model, **common)
+        if flags["use_dashscope"]:
+            from agents.backends.dashscope import DashScopeBackend
+            return DashScopeBackend(model=model, dashscope_api_key=kw["dashscope_api_key"],
+                dashscope_url=kw["dashscope_url"], think=kw["dashscope_think"],
+                preserve_thinking=kw["dashscope_preserve_thinking"], stream=kw["dashscope_stream"], **common)
+        return None
+
+    def _try_local_backends(self, flags: dict[str, bool], model: str, common: dict, kw: dict) -> Optional[_LLMBackend]:
+        """Return an Ollama backend if flagged; None otherwise."""
+        if flags["use_ollama"]:
+            from agents.backends.ollama import OllamaBackend
+            return OllamaBackend(model=model, ollama_url=kw["ollama_url"],
+                think=kw["ollama_think"], preserve_thinking=kw["ollama_preserve_thinking"],
+                stream=kw["ollama_stream"], **common)
+        return None
 
     def _ensure_copilot_session(self) -> None:
         """Backward-compat shim: refresh Copilot session token if near expiry."""
@@ -477,29 +505,32 @@ class BaseAgent:
             The assistant's reply text.
         """
         full_message = f"{context}\n\n{user_message}" if context else user_message
-
-        # Route through backward-compat methods so tests can patch them.
-        if self._backend in ("anthropic",) or (
-            self._backend in ("opencode_zen", "opencode_go")
-            and getattr(self._llm, "_anthropic_client", None) is not None
-        ):
+        if self._backend in ("anthropic",) or self._is_anthropic_zen_go_backend():
             return self._call_anthropic(full_message)
-
         if self._backend == "opencode":
             return self._call_opencode(full_message)
-
-        # All other (OpenAI-compatible) backends: delegate to _llm directly.
-        messages: list[dict] = []
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
-        messages.extend(self._history)
-        messages.append({"role": "user", "content": full_message})
-
+        messages = self._build_messages(full_message)
         from llm_pool import get_pool
         with get_pool().acquire(self._backend):
             reply = self._llm.call(messages)
         self._record_exchange(full_message, reply)
         return reply
+
+    def _is_anthropic_zen_go_backend(self) -> bool:
+        """Return True if the current backend uses an Anthropic client under the hood."""
+        return (
+            self._backend in ("opencode_zen", "opencode_go")
+            and getattr(self._llm, "_anthropic_client", None) is not None
+        )
+
+    def _build_messages(self, full_message: str) -> list[dict]:
+        """Assemble the full messages list with system prompt + history + user turn."""
+        messages: list[dict] = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.extend(self._history)
+        messages.append({"role": "user", "content": full_message})
+        return messages
 
     def call_with_tools(
         self,
@@ -524,30 +555,29 @@ class BaseAgent:
         Raises:
             NotImplementedError: If the current backend does not support tool calling.
         """
-        if not self._llm.supports_tools():
-            suffix = ""
-            if self._backend == "opencode_go":
-                suffix = " (MiniMax models use Anthropic endpoint)"
-            elif self._backend == "opencode_zen":
-                suffix = " (Claude models)"
-            raise NotImplementedError(
-                f"call_with_tools is not supported for the '{self._backend}' backend{suffix}. "
-                "Use the 'github_models', 'ollama', 'opencode_zen' (non-Claude), "
-                "or 'opencode_go' (non-MiniMax) backend for tool-calling."
-            )
-
+        self._assert_tools_supported()
         full_message = f"{context}\n\n{user_message}" if context else user_message
-        messages: list[dict] = []
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
-        messages.extend(self._history)
-        messages.append({"role": "user", "content": full_message})
-
+        messages = self._build_messages(full_message)
         from llm_pool import get_pool
         with get_pool().acquire(self._backend):
             reply = self._llm.call_with_tools(messages, tools, max_turns)
         self._record_exchange(full_message, reply)
         return reply
+
+    def _assert_tools_supported(self) -> None:
+        """Raise NotImplementedError if the current backend does not support tool calling."""
+        if self._llm.supports_tools():
+            return
+        suffix = ""
+        if self._backend == "opencode_go":
+            suffix = " (MiniMax models use Anthropic endpoint)"
+        elif self._backend == "opencode_zen":
+            suffix = " (Claude models)"
+        raise NotImplementedError(
+            f"call_with_tools is not supported for the '{self._backend}' backend{suffix}. "
+            "Use the 'github_models', 'ollama', 'opencode_zen' (non-Claude), "
+            "or 'opencode_go' (non-MiniMax) backend for tool-calling."
+        )
 
     # ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -557,49 +587,10 @@ class BaseAgent:
         max_chars: int = 12_000,
         max_per_file: int | None = None,
     ) -> dict[str, str]:
-        """Return a subset of files that fits within max_chars total.
-
-        Prioritises non-test, non-config files (source code first).
-        Truncates individual files that are very long.
-        Adds a summary comment when files are dropped.
-
-        Args:
-            max_chars:    Total character budget across all files.
-            max_per_file: Per-file character cap. Defaults to min(3_000, max_chars // 2).
-        """
-        def priority(path: str) -> int:
-            p = path.lower()
-            if "/test" in p or p.startswith("test"):
-                return 3
-            if p.endswith((".yaml", ".yml", ".json", ".toml", ".cfg", ".ini", ".md")):
-                return 2
-            return 1
-
-        sorted_files = sorted(files.items(), key=lambda kv: priority(kv[0]))
-        result: dict[str, str] = {}
-        used = 0
-        skipped = []
-
+        """Truncate files to fit within max_chars, prioritising source over config files."""
         _max_per_file = max_per_file if max_per_file is not None else min(3_000, max_chars // 2)
-
-        for path, content in sorted_files:
-            if len(content) > _max_per_file:
-                content = content[:_max_per_file] + f"\n... [truncated — {len(content) - _max_per_file} chars omitted]"
-
-            entry_len = len(path) + len(content) + 40
-            if used + entry_len <= max_chars:
-                result[path] = content
-                used += entry_len
-            else:
-                skipped.append(path)
-
-        if skipped:
-            result["__summary__"] = (
-                f"[{len(skipped)} additional file(s) omitted to fit token limit: "
-                + ", ".join(skipped) + "]"
-            )
-
-        return result
+        sorted_paths = _sort_files_by_priority(files)
+        return _truncate_to_budget(files, sorted_paths, max_chars, _max_per_file)
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(model={self.model!r})"

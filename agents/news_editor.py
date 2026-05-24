@@ -24,15 +24,28 @@ class NewsEditorAgent(BaseAgent):
         """Edit and finalise the article.
 
         Args:
-            article_draft: The draft article from NewsWriterAgent (or discuss_news_draft synthesis).
-            issue_body: The original brief for reference.
-            discussion_synthesis: Optional synthesis from discuss_news_draft stage.
-            reviewer_notes: Optional reviewer feedback to address in this edit.
+            article_draft: Draft article markdown
+            issue_body: Original issue brief
+            discussion_synthesis: Pre-write analysis synthesis
+            reviewer_notes: Reviewer feedback requiring fixes
 
         Returns:
-            dict with key:
-                - article (str): Final publication-ready markdown article
+            dict with 'article' (final markdown str)
         """
+        prompt = self._build_edit_prompt(
+            article_draft, issue_body, discussion_synthesis, reviewer_notes
+        )
+        article = self.call(prompt)
+        return {"article": self._validate_frontmatter(article, article_draft)}
+
+    def _build_edit_prompt(
+        self,
+        article_draft: str,
+        issue_body: str,
+        discussion_synthesis: str,
+        reviewer_notes: str,
+    ) -> str:
+        """Build the editing prompt from all input sections."""
         reviewer_section = (
             f"A reviewer found the following issues that must be fixed:\n\n"
             f"---\n{reviewer_notes}\n---\n\n"
@@ -46,7 +59,7 @@ class NewsEditorAgent(BaseAgent):
             else ""
         )
         original_brief = f"Original brief:\n---\n{issue_body}\n---\n\n" if issue_body.strip() else ""
-        prompt = (
+        return (
             f"{reviewer_section}"
             f"{synthesis_section}"
             f"{original_brief}"
@@ -54,15 +67,13 @@ class NewsEditorAgent(BaseAgent):
             f"---\n{article_draft}\n---\n\n"
             f"Follow your role instructions. Output the final article only."
         )
-        article = self.call(prompt)
 
-        # Guard: if the model returned commentary instead of the article
-        # (no YAML frontmatter fence), fall back to the original draft.
+    def _validate_frontmatter(self, article: str, fallback: str) -> str:
+        """Validate article has YAML frontmatter, fallback to original if missing."""
         if "---" not in article:
             import logging
             logging.getLogger("news_editor").warning(
                 "news_editor output missing frontmatter — using original draft as fallback"
             )
-            article = article_draft
-
-        return {"article": article}
+            return fallback
+        return article

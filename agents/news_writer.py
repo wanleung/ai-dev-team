@@ -28,13 +28,18 @@ class NewsWriterAgent(BaseAgent):
         """Write a news article draft.
 
         Args:
-            issue_body: The GitHub issue body containing the news brief and source URL.
-            discussion_synthesis: Optional synthesis from discuss_news_analysis stage.
+            issue_body: News brief from GitHub issue
+            discussion_synthesis: Pre-write analysis synthesis
 
         Returns:
-            dict with key:
-                - article_draft (str): Full markdown article with YAML frontmatter
+            dict with 'article_draft' (markdown str with YAML frontmatter)
         """
+        prompt = self._build_writer_prompt(issue_body, discussion_synthesis)
+        article_draft = self._call_writer(prompt)
+        return {"article_draft": article_draft}
+
+    def _build_writer_prompt(self, issue_body: str, discussion_synthesis: str) -> str:
+        """Build the writing prompt from issue body and optional discussion synthesis."""
         synthesis_section = (
             f"A pre-write analysis of this story has been conducted.\n"
             f"Use the key insights below to guide your article — do not copy them verbatim.\n\n"
@@ -48,7 +53,7 @@ class NewsWriterAgent(BaseAgent):
             if self._tool_registry is not None
             else ""
         )
-        prompt = (
+        return (
             f"{synthesis_section}"
             f"Write a news article based on the following brief:\n\n"
             f"---\n{issue_body}\n---\n\n"
@@ -58,8 +63,9 @@ class NewsWriterAgent(BaseAgent):
             f"Do NOT describe what you are doing, mention file paths, or say the article was written anywhere. "
             f"Your entire response must be the article itself."
         )
+
+    def _call_writer(self, prompt: str) -> str:
+        """Call the LLM with or without tools depending on registry availability."""
         if self._tool_registry is not None:
-            article_draft = self.call_with_tools(prompt, self._tool_registry)
-        else:
-            article_draft = self.call(prompt)
-        return {"article_draft": article_draft}
+            return self.call_with_tools(prompt, self._tool_registry)
+        return self.call(prompt)

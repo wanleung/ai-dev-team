@@ -44,19 +44,7 @@ class CodeReviewerAgent(BaseAgent):
                 - has_critical_issues (bool): True if changes are required
         """
         files_to_review = self.truncate_files(files, max_chars=80_000, max_per_file=8_000)
-
-        code_section = "\n\n".join(
-            f"### FILE: {path}\n```\n{content}\n```" for path, content in files_to_review.items()
-        )
-
-        prompt = (
-            f"Please review the following code for the project '{project_name}'.\n\n"
-            f"**PRD (for acceptance criteria reference):**\n---\n{prd}\n---\n\n"
-            f"**Code to review:**\n\n{code_section}\n\n"
-            f"Use the run_linter tool on any Python files you want to check for lint errors, "
-            f"then provide a thorough code review following your role instructions."
-        )
-
+        prompt = self._build_review_prompt(files_to_review, prd, project_name)
         review = self.call_with_tools(prompt, tools=self._tool_registry)
         verdict = self._extract_verdict(review)
 
@@ -65,6 +53,21 @@ class CodeReviewerAgent(BaseAgent):
             "verdict": verdict,
             "has_critical_issues": verdict == self.VERDICT_CHANGES,
         }
+
+    def _build_review_prompt(
+        self, files_to_review: dict[str, str], prd: str, project_name: str
+    ) -> str:
+        """Build the prompt for code review."""
+        code_section = "\n\n".join(
+            f"### FILE: {path}\n```\n{content}\n```" for path, content in files_to_review.items()
+        )
+        return (
+            f"Please review the following code for the project '{project_name}'.\n\n"
+            f"**PRD (for acceptance criteria reference):**\n---\n{prd}\n---\n\n"
+            f"**Code to review:**\n\n{code_section}\n\n"
+            f"Use the run_linter tool on any Python files you want to check for lint errors, "
+            f"then provide a thorough code review following your role instructions."
+        )
 
     def run_with_github(
         self,

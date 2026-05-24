@@ -54,55 +54,11 @@ class EngineerAgent(BaseAgent):
         """
         framework_section = f"## Framework Documentation\n\n{framework_context}\n\n" if framework_context else ""
         scaffold_hint = "\n\n> Note: If you scaffold a new project, check for AGENTS.md afterwards for framework-specific guidance." if not framework_context else ""
-
-        test_section = ""
-        if test_files:
-            MAX_FILE_CHARS = 3000
-            MAX_TOTAL_CHARS = 10000
-            parts = []
-            for path, content in test_files.items():
-                if len(content) > MAX_FILE_CHARS:
-                    content = content[:MAX_FILE_CHARS] + f"\n... (truncated, {len(content)} chars total)"
-                parts.append(f"### FILE: {path}\n```python\n{content}\n```")
-            test_section_body = "\n\n".join(parts)
-            if len(test_section_body) > MAX_TOTAL_CHARS:
-                test_section_body = test_section_body[:MAX_TOTAL_CHARS] + "\n... (additional test files truncated)"
-            test_section = (
-                f"\n\n## Pre-written tests your implementation must pass\n\n"
-                f"{test_section_body}\n\n"
-                f"Implement the module so all of the above tests pass. "
-                f"Do not modify the test files."
-            )
-
-        prompt = (
-            f"{framework_section}"
-            f"You are implementing the '{module['name']}' module for the project '{project_name}'.\n\n"
-            f"Module description: {module.get('description', '')}\n\n"
-            f"Full System Design:\n---\n{design}\n---"
-            f"{test_section}\n\n"
-            f"Please implement ALL files for this module. "
-            f"Output each file using the '### FILE: path/to/file.py' format as instructed."
-            f"{scaffold_hint}"
-        )
-
-        if self._tool_registry is not None:
-            rag_hint = (
-                "\n\nYou have access to RAG search tools: `search_codebase` and `search_docs`. "
-                "Use them to find relevant existing code patterns and documentation before implementing."
-            )
-            try:
-                response = self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
-            except NotImplementedError:
-                response = self.call(prompt)
-        else:
-            response = self.call(prompt)
+        test_section = self._build_test_section(test_files)
+        prompt = self._build_module_prompt(module, design, project_name, framework_section, test_section, scaffold_hint)
+        response = self._call_llm_with_tools(prompt)
         files = self._parse_files(response)
-
-        return {
-            "module_name": module["name"],
-            "files": files,
-            "raw_response": response,
-        }
+        return {"module_name": module["name"], "files": files, "raw_response": response}
 
     def run_all_modules(
         self,
@@ -128,29 +84,8 @@ class EngineerAgent(BaseAgent):
                 - modules (list[dict]): Each module's run_module() result
                 - all_files (dict): Merged {filepath: content} across all modules
         """
-        results = []
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for i, mod in enumerate(modules):
-                if i > 0:
-                    # Small stagger to avoid burst rate limits (60k tokens/min window)
-                    time.sleep(2)
-                futures.append(
-                    executor.submit(
-                        self.run_module, design, mod, project_name, framework_context,
-                        all_files=None, test_files=test_files
-                    )
-                )
-            for future in futures:
-                result = future.result()
-                results.append(result)
-
-        # Merge all files across modules
-        all_files: dict[str, str] = {}
-        for result in results:
-            all_files.update(result["files"])
-
+        results = self._submit_module_futures(modules, design, project_name, framework_context, test_files, max_workers)
+        all_files = self._merge_module_files(results)
         return {"modules": results, "all_files": all_files}
 
     def run_with_github(
@@ -185,37 +120,11 @@ class EngineerAgent(BaseAgent):
                 - pr_url (str): Pull request URL
         """
         result = self.run_all_modules(design, modules, project_name, max_workers, framework_context=framework_context, test_files=test_files)
-
-        # Create feature branch
         safe_name = re.sub(r"[^a-z0-9-]", "-", project_name.lower())[:40]
         branch_name = f"{branch_prefix}/{safe_name}"
         github_client.create_branch(branch_name)
-
-        # Commit all generated files
-        for filepath, content in result["all_files"].items():
-            github_client.commit_file(
-                path=filepath,
-                content=content,
-                message=f"feat: implement {filepath} [{project_name}]",
-                branch=branch_name,
-            )
-
-        # Open a PR
-        issue_ref = f"\nCloses #{issue_number}" if issue_number else ""
-        pr = github_client.create_pull_request(
-            title=f"[Implementation] {project_name}",
-            body=(
-                f"## 🤖 AI-Generated Implementation\n\n"
-                f"This PR was created by the **EngineerAgent** of the AI Software House.\n\n"
-                f"**Project:** {project_name}\n"
-                f"**Modules implemented:** {', '.join(m['name'] for m in modules)}\n"
-                f"**Files:** {len(result['all_files'])}\n"
-                f"{issue_ref}"
-            ),
-            head=branch_name,
-            draft=False,
-        )
-
+        self._commit_files_to_branch(github_client, result["all_files"], branch_name, project_name)
+        pr = self._open_implementation_pr(github_client, project_name, modules, branch_name, issue_number, len(result["all_files"]))
         result["branch"] = branch_name
         result["pr_number"] = pr["number"]
         result["pr_url"] = pr["html_url"]
@@ -242,6 +151,156 @@ class EngineerAgent(BaseAgent):
             {filepath: content} of ONLY the files that need to change.
             Empty dict if the LLM returns no parseable file blocks.
         """
+        prompt = self._build_fix_prompt(failure_output, all_files, design, project_name, framework_context)
+        response = self.call(prompt)
+        if not response or "### FILE:" not in response:
+            return {}
+        return self._parse_files(response)
+
+    @staticmethod
+    def _parse_files(response: str) -> dict[str, str]:
+        """Parse '### FILE: path' sections from the LLM response into a dict."""
+        files, current_path, current_lines = {}, None, []
+        in_code_block = False
+        for line in response.splitlines():
+            if line.strip().startswith("### FILE:"):
+                if current_path and current_lines:
+                    files[current_path] = "\n".join(current_lines).strip()
+                current_path = line.strip().removeprefix("### FILE:").strip()
+                current_lines, in_code_block = [], False
+                continue
+            if current_path is not None:
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    in_code_block = not in_code_block
+                    continue
+                current_lines.append(line)
+        if current_path and current_lines:
+            files[current_path] = "\n".join(current_lines).strip()
+        if not files and response.strip():
+            files["main.py"] = response.strip()
+        return files
+
+    def _build_test_section(self, test_files: dict[str, str] | None) -> str:
+        """Build the test section for the prompt."""
+        return self._build_test_section_static(test_files)
+
+    @staticmethod
+    def _build_test_section_static(test_files: dict[str, str] | None) -> str:
+        """Build the test section for the prompt (static implementation)."""
+        if not test_files:
+            return ""
+        MAX_FILE_CHARS, MAX_TOTAL_CHARS = 3000, 10000
+        parts = [
+            f"### FILE: {path}\n```python\n{content[:MAX_FILE_CHARS]}{f'... (truncated, {len(content)} chars total)' if len(content) > MAX_FILE_CHARS else ''}\n```"
+            for path, content in test_files.items()
+        ]
+        test_section_body = "\n\n".join(parts)
+        if len(test_section_body) > MAX_TOTAL_CHARS:
+            test_section_body = test_section_body[:MAX_TOTAL_CHARS] + "\n... (additional test files truncated)"
+        return (
+            f"\n\n## Pre-written tests your implementation must pass\n\n"
+            f"{test_section_body}\n\n"
+            f"Implement the module so all of the above tests pass. "
+            f"Do not modify the test files."
+        )
+
+    def _build_module_prompt(
+        self, module: dict, design: str, project_name: str, 
+        framework_section: str, test_section: str, scaffold_hint: str
+    ) -> str:
+        """Build the complete module implementation prompt."""
+        return (
+            f"{framework_section}"
+            f"You are implementing the '{module['name']}' module for the project '{project_name}'.\n\n"
+            f"Module description: {module.get('description', '')}\n\n"
+            f"Full System Design:\n---\n{design}\n---"
+            f"{test_section}\n\n"
+            f"Please implement ALL files for this module. "
+            f"Output each file using the '### FILE: path/to/file.py' format as instructed."
+            f"{scaffold_hint}"
+        )
+
+    def _call_llm_with_tools(self, prompt: str) -> str:
+        """Call LLM with optional tool registry support."""
+        if self._tool_registry is not None:
+            rag_hint = (
+                "\n\nYou have access to RAG search tools: `search_codebase` and `search_docs`. "
+                "Use them to find relevant existing code patterns and documentation before implementing."
+            )
+            try:
+                return self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
+            except NotImplementedError:
+                return self.call(prompt)
+        return self.call(prompt)
+
+    def _submit_module_futures(
+        self, modules: list[dict], design: str, project_name: str, 
+        framework_context: str, test_files: dict[str, str] | None, max_workers: int
+    ) -> list[dict]:
+        """Submit module implementation tasks to thread pool and collect results."""
+        results = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for i, mod in enumerate(modules):
+                if i > 0:
+                    time.sleep(2)  # Avoid burst rate limits
+                futures.append(
+                    executor.submit(
+                        self.run_module, design, mod, project_name, framework_context,
+                        all_files=None, test_files=test_files
+                    )
+                )
+            results = [future.result() for future in futures]
+        return results
+
+    @staticmethod
+    def _merge_module_files(results: list[dict]) -> dict[str, str]:
+        """Merge all files across module results."""
+        all_files: dict[str, str] = {}
+        for result in results:
+            all_files.update(result["files"])
+        return all_files
+
+    @staticmethod
+    def _commit_files_to_branch(
+        github_client, files: dict[str, str], branch_name: str, project_name: str
+    ) -> None:
+        """Commit all generated files to the feature branch."""
+        for filepath, content in files.items():
+            github_client.commit_file(
+                path=filepath,
+                content=content,
+                message=f"feat: implement {filepath} [{project_name}]",
+                branch=branch_name,
+            )
+
+    @staticmethod
+    def _open_implementation_pr(
+        github_client, project_name: str, modules: list[dict], 
+        branch_name: str, issue_number: Optional[int], file_count: int
+    ) -> dict:
+        """Create and return the implementation PR."""
+        issue_ref = f"\nCloses #{issue_number}" if issue_number else ""
+        return github_client.create_pull_request(
+            title=f"[Implementation] {project_name}",
+            body=(
+                f"## 🤖 AI-Generated Implementation\n\n"
+                f"This PR was created by the **EngineerAgent** of the AI Software House.\n\n"
+                f"**Project:** {project_name}\n"
+                f"**Modules implemented:** {', '.join(m['name'] for m in modules)}\n"
+                f"**Files:** {file_count}\n"
+                f"{issue_ref}"
+            ),
+            head=branch_name,
+            draft=False,
+        )
+
+    def _build_fix_prompt(
+        self, failure_output: str, all_files: dict[str, str], 
+        design: str, project_name: str, framework_context: str
+    ) -> str:
+        """Build the fix failures prompt."""
         framework_section = (
             f"## Framework Documentation\n\n{framework_context}\n\n"
             if framework_context else ""
@@ -250,7 +309,7 @@ class EngineerAgent(BaseAgent):
             f"## File: {path}\n\n````\n{content}\n````"
             for path, content in all_files.items()
         )
-        prompt = (
+        return (
             f"{framework_section}"
             f"You are fixing test failures in the project '{project_name}'.\n\n"
             f"## Test Failure Output\n\n````\n{failure_output}\n````\n\n"
@@ -261,45 +320,3 @@ class EngineerAgent(BaseAgent):
             f"Return ONLY the files that need to change, using the '### FILE: path/to/file.py' format.\n"
             f"Do not return files that do not need to change."
         )
-        response = self.call(prompt)
-        # Only parse if the response contains explicit FILE markers;
-        # do not apply the _parse_files fallback that wraps plain text as main.py.
-        if not response or "### FILE:" not in response:
-            return {}
-        return self._parse_files(response)
-
-    @staticmethod
-    def _parse_files(response: str) -> dict[str, str]:
-        """Parse '### FILE: path' sections from the LLM response into a dict."""
-        files: dict[str, str] = {}
-        current_path: Optional[str] = None
-        current_lines: list[str] = []
-        in_code_block = False
-
-        for line in response.splitlines():
-            # Detect FILE header
-            if line.strip().startswith("### FILE:"):
-                # Save previous file
-                if current_path and current_lines:
-                    files[current_path] = "\n".join(current_lines).strip()
-                current_path = line.strip().removeprefix("### FILE:").strip()
-                current_lines = []
-                in_code_block = False
-                continue
-
-            if current_path is not None:
-                # Skip opening/closing code fence
-                if line.strip().startswith("```"):
-                    in_code_block = not in_code_block
-                    continue
-                current_lines.append(line)
-
-        # Save last file
-        if current_path and current_lines:
-            files[current_path] = "\n".join(current_lines).strip()
-
-        # Fallback: if no FILE markers, treat entire response as main.py
-        if not files and response.strip():
-            files["main.py"] = response.strip()
-
-        return files

@@ -91,6 +91,55 @@ class DiscussionConfig:
                 raise ValueError("auto_participants['select'] must be an integer")
 
     @classmethod
+    def _load_yaml_config(cls, config_path: str, base_dir: Path | None = None) -> tuple[dict, Path, Path]:
+        """Load and validate YAML configuration file.
+        
+        Returns:
+            Tuple of (data, path, repo_root)
+        """
+        p = Path(config_path)
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        repo_root = base_dir if base_dir is not None else p.parent.parent
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"{config_path!r}: expected a YAML mapping at top level, got {type(data).__name__}"
+            )
+        raw_participants = data.get("participants", [])
+        if not isinstance(raw_participants, list):
+            raise ValueError(f"{config_path!r}: 'participants' must be a list")
+        return data, p, repo_root
+
+    @staticmethod
+    def _resolve_persona(entry: dict, repo_root: Path) -> str:
+        """Resolve persona string from entry (persona_file or inline persona)."""
+        if "persona_file" in entry:
+            pf = repo_root / entry["persona_file"]
+            return pf.read_text(encoding="utf-8")
+        if "persona" in entry:
+            return entry["persona"]
+        raise ValueError(
+            f"Participant {entry.get('role', '?')!r} requires 'persona' or 'persona_file'"
+        )
+
+    @classmethod
+    def _build_participants(cls, raw_participants: list, repo_root: Path) -> list[Participant]:
+        """Build list of Participant objects from raw YAML entries."""
+        participants = []
+        for entry in raw_participants:
+            role = entry.get("role") if isinstance(entry, dict) else None
+            if not role:
+                raise ValueError(f"Participant entry missing required 'role' key: {entry!r}")
+            participants.append(
+                Participant(
+                    role=role,
+                    persona=cls._resolve_persona(entry, repo_root),
+                    llm=entry.get("llm"),
+                    homework_llm=entry.get("homework_llm"),
+                )
+            )
+        return participants
+
+    @classmethod
     def from_yaml(cls, config_path: str, base_dir: Path | None = None) -> "DiscussionConfig":
         """Load a DiscussionConfig from a preset YAML file.
 
@@ -103,47 +152,13 @@ class DiscussionConfig:
             base_dir: Optional root directory for resolving persona_file paths.
                       Useful when the YAML is not at the standard depth.
         """
-        p = Path(config_path)
-        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        repo_root = base_dir if base_dir is not None else p.parent.parent
-
-        if not isinstance(data, dict):
-            raise ValueError(
-                f"{config_path!r}: expected a YAML mapping at top level, got {type(data).__name__}"
-            )
+        data, p, repo_root = cls._load_yaml_config(config_path, base_dir)
         raw_participants = data.get("participants", [])
-        if not isinstance(raw_participants, list):
-            raise ValueError(f"{config_path!r}: 'participants' must be a list")
-
-        def resolve_persona(entry: dict) -> str:
-            if "persona_file" in entry:
-                pf = repo_root / entry["persona_file"]
-                return pf.read_text(encoding="utf-8")
-            if "persona" in entry:
-                return entry["persona"]
-            raise ValueError(
-                f"Participant {entry.get('role', '?')!r} requires 'persona' or 'persona_file'"
-            )
-
-        participants = []
-        for entry in raw_participants:
-            role = entry.get("role") if isinstance(entry, dict) else None
-            if not role:
-                raise ValueError(f"Participant entry missing required 'role' key: {entry!r}")
-            participants.append(
-                Participant(
-                    role=role,
-                    persona=resolve_persona(entry),
-                    llm=entry.get("llm"),
-                    homework_llm=entry.get("homework_llm"),
-                )
-            )
-
+        participants = cls._build_participants(raw_participants, repo_root)
         moderator: Optional[Participant] = None
         if "moderator" in data:
             mod = data["moderator"]
-            moderator = Participant(role="moderator", persona=resolve_persona(mod))
-
+            moderator = Participant(role="moderator", persona=cls._resolve_persona(mod, repo_root))
         return cls(
             participants=participants,
             homework_round=bool(data.get("homework_round", False)),
@@ -179,26 +194,11 @@ class DiscussionAgent:
         """Initialise with a resolved DiscussionConfig.
 
         Args:
-            config:        Resolved :class:`DiscussionConfig` instance.
-            model:         Default LLM model string for all participants.
-            github_token:  Optional GitHub token (forwarded to BaseAgent).
-            ollama_url:    Ollama base URL (forwarded to BaseAgent).
-            console:       Optional ``rich.console.Console`` instance.  When
-                           provided, each participant's turn header is printed
-                           and response tokens are streamed live.  Streaming
-                           only applies to sequential discussion rounds — the
-                           homework round is always silent regardless of this
-                           setting.
-            roles_dir:     Optional path to the directory containing role persona
-                           files (``{role}.md``).  Defaults to
-                           ``Path(__file__).parent.parent / "roles"`` (the repo
-                           root ``roles/`` folder).  Used by
-                           :meth:`_select_participants` when ``auto_participants``
-                           is configured.
-            tool_registry: Optional ToolRegistry passed to participants during
-                           the homework round only.  Ignored for discussion rounds.
-                           Only used when a participant declares ``homework_llm``
-                           and that backend supports tool calling.
+            config: Resolved DiscussionConfig instance.
+            model: Default LLM model for all participants.
+            console: Optional Console for streaming output (discussion rounds only).
+            roles_dir: Path to roles/ directory for auto_participants (defaults to repo root).
+            tool_registry: Optional tools for homework round when participant uses homework_llm.
         """
         self.config = config
         self.model = model
@@ -294,6 +294,70 @@ class DiscussionAgent:
             lines.append("")
         return "\n".join(lines)
 
+    def _build_participant_messages(
+        self, context: str, transcript: list[Turn], participant: Participant
+    ) -> list[dict]:
+        """Build messages for participant prompt."""
+        if transcript:
+            transcript_text = self._format_transcript_for_prompt(transcript)
+            user = (
+                f"## Context\n\n{context}\n\n"
+                f"## Discussion so far\n\n{transcript_text}\n\n"
+                f"Please add your perspective. "
+                f"If you believe the group has reached consensus, "
+                f"include '{self.config.early_exit}' in your response."
+            )
+        else:
+            user = (
+                f"## Context\n\n{context}\n\n"
+                "Please provide your initial analysis and perspective."
+            )
+        return [
+            {"role": "system", "content": participant.persona},
+            {"role": "user", "content": user},
+        ]
+
+    def _build_homework_config(self, model: str) -> dict:
+        """Build backend config dict for homework round."""
+        hw_cfg: dict = {
+            "model": model,
+            "ollama_url": self.ollama_url,
+            "dashscope_api_key": self.dashscope_api_key,
+            "dashscope_url": self.dashscope_url,
+            "think": self.dashscope_think,
+            "preserve_thinking": self.dashscope_preserve_thinking,
+            "stream": self.dashscope_stream,
+        }
+        if self.fallbacks:
+            hw_cfg["fallbacks"] = self.fallbacks
+        return hw_cfg
+
+    def _call_homework_with_tools(
+        self, participant: Participant, user_content: str, backend
+    ) -> str:
+        """Call participant's homework round with tool support."""
+        from agents.base_agent import BaseAgent
+        from agents.backends.factory import create_backend
+        hw_cfg = self._build_homework_config(participant.homework_llm)
+        hw_llm = create_backend(hw_cfg, github_token=self.github_token)
+        hw_agent = BaseAgent(
+            model=participant.homework_llm,
+            llm=hw_llm,
+            github_token=self.github_token,
+            system_prompt=participant.persona,
+        )
+        try:
+            return hw_agent.call_with_tools(user_content, tools=self.tool_registry)
+        except NotImplementedError:
+            logger.warning(
+                "DiscussionAgent: %s homework_llm '%s' doesn't support tools, falling back",
+                participant.role, participant.homework_llm,
+            )
+            return backend.call([
+                {"role": "system", "content": participant.persona},
+                {"role": "user", "content": user_content},
+            ])
+
     def _call_participant(
         self,
         participant: Participant,
@@ -314,84 +378,36 @@ class DiscussionAgent:
         Discussion rounds always use the fast ``llm`` model without tools.
         """
         is_homework = round_num == 0
-        if is_homework and participant.homework_llm:
-            effective_llm = participant.homework_llm
-        else:
-            effective_llm = participant.llm
+        effective_llm = participant.homework_llm if (is_homework and participant.homework_llm) else participant.llm
         backend = self._make_backend(effective_llm)
-
-        # Print turn header for sequential discussion rounds only.
         streaming = self.console is not None and round_num > 0
         if streaming:
             self.console.print(
                 f"\n[bold cyan]{participant.role}[/bold cyan] (round {round_num})"
             )
-
-        if transcript:
-            transcript_text = self._format_transcript_for_prompt(transcript)
-            user = (
-                f"## Context\n\n{context}\n\n"
-                f"## Discussion so far\n\n{transcript_text}\n\n"
-                f"Please add your perspective. "
-                f"If you believe the group has reached consensus, "
-                f"include '{self.config.early_exit}' in your response."
-            )
-        else:
-            user = (
-                f"## Context\n\n{context}\n\n"
-                "Please provide your initial analysis and perspective."
-            )
-        messages = [
-            {"role": "system", "content": participant.persona},
-            {"role": "user", "content": user},
-        ]
-
-        on_token = None
-        if streaming:
-            on_token = lambda tok: self.console.print(tok, end="", highlight=False)
-
-        # Homework round: use tool-calling if a homework_llm and tool_registry are set
+        messages = self._build_participant_messages(context, transcript, participant)
+        on_token = (lambda tok: self.console.print(tok, end="", highlight=False)) if streaming else None
         if is_homework and participant.homework_llm and self.tool_registry is not None:
-            from agents.base_agent import BaseAgent
-            hw_cfg: dict = {
-                "model": participant.homework_llm,
-                "ollama_url": self.ollama_url,
-                "dashscope_api_key": self.dashscope_api_key,
-                "dashscope_url": self.dashscope_url,
-                "think": self.dashscope_think,
-                "preserve_thinking": self.dashscope_preserve_thinking,
-                "stream": self.dashscope_stream,
-            }
-            if self.fallbacks:
-                hw_cfg["fallbacks"] = self.fallbacks
-            from agents.backends.factory import create_backend
-            hw_llm = create_backend(hw_cfg, github_token=self.github_token)
-            hw_agent = BaseAgent(
-                model=participant.homework_llm,
-                llm=hw_llm,
-                github_token=self.github_token,
-                system_prompt=participant.persona,
-            )
-            try:
-                content = hw_agent.call_with_tools(user, tools=self.tool_registry)
-            except NotImplementedError:
-                # homework_llm doesn't support tools — fall back to plain call
-                logger.warning(
-                    "DiscussionAgent: %s homework_llm '%s' doesn't support tools, "
-                    "falling back to plain call",
-                    participant.role, participant.homework_llm,
-                )
-                content = backend.call(messages, on_token=on_token)
+            content = self._call_homework_with_tools(participant, messages[1]["content"], backend)
         else:
             content = backend.call(messages, on_token=on_token)
         return Turn(role=participant.role, content=content, round_num=round_num)
 
-    def _run_homework_round(self, context: str) -> list[Turn]:
-        """Run homework round: all participants think independently in parallel.
+    def _run_homework_sequential(self, context: str) -> list[Turn]:
+        """Run homework sequentially as fallback when thread pool unavailable."""
+        # ThreadPoolExecutor cannot be created (interpreter shutdown in a leaked
+        # background thread). Run participants sequentially as fallback.
+        transcript = []
+        for p in self.config.participants:
+            try:
+                transcript.append(self._call_participant(p, context, [], 0))
+            except Exception as e:
+                logger.warning("DiscussionAgent: %s failed in homework: %s", p.role, e)
+                transcript.append(Turn(role=p.role, content=f"[Error: {e}]", round_num=0))
+        return transcript
 
-        Falls back to sequential execution if the thread pool cannot be created
-        (e.g. interpreter shutdown during a leaked background thread).
-        """
+    def _run_homework_round(self, context: str) -> list[Turn]:
+        """Run homework round: all participants think independently in parallel."""
         transcript: list[Turn] = []
         try:
             with ThreadPoolExecutor(max_workers=len(self.config.participants)) as pool:
@@ -414,38 +430,44 @@ class DiscussionAgent:
                             Turn(role=participant.role, content=f"[Error: {exc}]", round_num=0)
                         )
         except RuntimeError as exc:
-            # ThreadPoolExecutor cannot be created (interpreter shutdown in a leaked
-            # background thread). Run participants sequentially as fallback.
             logger.warning(
                 "DiscussionAgent: parallel homework unavailable (%s) — running sequentially", exc
             )
-            transcript = []
-            for p in self.config.participants:
-                try:
-                    transcript.append(self._call_participant(p, context, [], 0))
-                except Exception as e:
-                    logger.warning("DiscussionAgent: %s failed in homework: %s", p.role, e)
-                    transcript.append(Turn(role=p.role, content=f"[Error: {e}]", round_num=0))
+            transcript = self._run_homework_sequential(context)
         return transcript
 
+    def _parse_llm_selection_response(self, response: str, pool: list[str], n: int) -> list[str]:
+        """Parse LLM response and extract valid role names."""
+        selected = [
+            line.strip().lstrip("- ").lower()
+            for line in response.splitlines()
+            if line.strip()
+        ]
+        pool_lower = {r.lower() for r in pool}
+        return [r for r in selected if r in pool_lower][:n]
+
+    def _load_selected_participants(self, valid_roles: list[str]) -> list[Participant]:
+        """Load persona files for selected roles and build Participant list."""
+        participants: list[Participant] = []
+        for role in valid_roles:
+            persona_file = self.roles_dir / f"{role}.md"
+            if not persona_file.exists():
+                logger.warning(
+                    "auto_participants: persona file not found for role %s, skipping", role
+                )
+                continue
+            participants.append(Participant(role=role, persona=persona_file.read_text()))
+        return participants
+
     def _select_participants(self, context: str) -> list[Participant]:
-        """Use LLM to select participants from the auto_participants pool.
-
-        Sends a prompt to the backend asking it to choose the best subset of
-        roles for the given context.  If the LLM response contains no
-        recognisable role names (or the call fails), falls back to
-        ``config.participants``.
-
-        Args:
-            context: The discussion context string.
+        """Use LLM to select participants from auto_participants pool.
 
         Returns:
-            A list of :class:`Participant` objects to use for the discussion.
+            List of Participant objects (falls back to config.participants on error).
         """
         cfg = self.config.auto_participants
         pool: list[str] = cfg.get("pool", [])
         n: int = cfg.get("select", len(pool))
-
         prompt = (
             f"You are selecting discussion participants. Given this context:\n{context}\n\n"
             f"Choose {n} roles from this pool that would provide the most valuable perspectives:\n"
@@ -458,32 +480,14 @@ class DiscussionAgent:
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt},
             ])
-            selected = [
-                line.strip().lstrip("- ").lower()
-                for line in response.splitlines()
-                if line.strip()
-            ]
-            pool_lower = {r.lower() for r in pool}
-            valid = [r for r in selected if r in pool_lower][:n]
+            valid = self._parse_llm_selection_response(response, pool, n)
             if not valid:
-                logger.warning(
-                    "auto_participants: no valid roles in LLM response, falling back"
-                )
+                logger.warning("auto_participants: no valid roles, falling back")
                 return self.config.participants
-            participants: list[Participant] = []
-            for role in valid:
-                persona_file = self.roles_dir / f"{role}.md"
-                if not persona_file.exists():
-                    logger.warning(
-                        "auto_participants: persona file not found for role %s, skipping", role
-                    )
-                    continue
-                participants.append(Participant(role=role, persona=persona_file.read_text()))
+            participants = self._load_selected_participants(valid)
             return participants if participants else self.config.participants
         except Exception as exc:
-            logger.warning(
-                "auto_participants: selection failed (%s), falling back", exc
-            )
+            logger.warning("auto_participants: selection failed (%s), falling back", exc)
             return self.config.participants
 
     def _extract_mentions(self, text: str, participants: list | None = None) -> list:
@@ -492,40 +496,58 @@ class DiscussionAgent:
         role_map = {p.role: p for p in source}
         return [role_map[m] for m in _MENTION_RE.findall(text) if m in role_map]
 
+    def _process_participant_turn(
+        self, participant: Participant, context: str, transcript: list[Turn],
+        round_num: int, effective_participants: list[Participant]
+    ) -> tuple[Turn | None, list[Participant], bool]:
+        """Process one participant turn. Returns (turn|None, mentioned_participants, consensus).
+        
+        Appends the resulting Turn to `transcript` as a side effect.
+        """
+        try:
+            turn = self._call_participant(participant, context, transcript, round_num)
+            transcript.append(turn)
+            if self.config.early_exit in turn.content:
+                logger.info(
+                    "DiscussionAgent: early exit signal from '%s' in round %d",
+                    participant.role, round_num,
+                )
+                return turn, [], True
+            mentions = [
+                p for p in self._extract_mentions(turn.content, effective_participants)
+                if p is not participant
+            ]
+            return turn, mentions, False
+        except Exception as exc:
+            logger.warning(
+                "DiscussionAgent: %s failed in round %d: %s",
+                participant.role, round_num, exc,
+            )
+            transcript.append(
+                Turn(role=participant.role, content=f"[Error: {exc}]", round_num=round_num)
+            )
+            return None, [], False
+
     def _run_discussion_rounds(self, context: str, transcript: list[Turn]) -> list[Turn]:
         """Run N discussion rounds with @mention-based turn order routing."""
-        if self.config.auto_participants:
-            effective_participants = self._select_participants(context)
-        else:
-            effective_participants = self.config.participants
+        effective_participants = (
+            self._select_participants(context)
+            if self.config.auto_participants
+            else self.config.participants
+        )
         turn_order = list(effective_participants)
         for round_num in range(1, self.config.max_rounds + 1):
             next_priority: list[Participant] = []
             consensus = False
             for participant in turn_order:
-                try:
-                    turn = self._call_participant(participant, context, transcript, round_num)
-                    transcript.append(turn)
-                    if self.config.early_exit in turn.content:
-                        logger.info(
-                            "DiscussionAgent: early exit signal from '%s' in round %d",
-                            participant.role, round_num,
-                        )
-                        consensus = True
-                        break
-                    # Collect @mentions to reprioritise next round
-                    for p in self._extract_mentions(turn.content, effective_participants):
-                        if p is not participant and p not in next_priority:
-                            next_priority.append(p)
-                except Exception as exc:
-                    logger.warning(
-                        "DiscussionAgent: %s failed in round %d: %s",
-                        participant.role, round_num, exc,
-                    )
-                    transcript.append(
-                        Turn(role=participant.role, content=f"[Error: {exc}]", round_num=round_num)
-                    )
-            # Rebuild turn order: mentioned roles first, rest in original order
+                _, mentions, consensus = self._process_participant_turn(
+                    participant, context, transcript, round_num, effective_participants
+                )
+                for p in mentions:
+                    if p not in next_priority:
+                        next_priority.append(p)
+                if consensus:
+                    break
             remaining = [p for p in effective_participants if p not in next_priority]
             turn_order = next_priority + remaining
             if consensus:
@@ -571,65 +593,10 @@ class DiscussionAgent:
         if self.config.output_mode in ("synthesis", "both"):
             result.discussion_synthesis = synthesis
 
-    def run(
-        self,
-        result: "PipelineResult | None" = None,
-        *,
-        context: Optional[str] = None,
-        memory_store=None,
-        repo: str = "local",
-    ) -> "DiscussionResult":
-        """Execute the full discussion and write results to result.
-
-        Supports two call styles:
-
-        1. Legacy / orchestrator style::
-
-               agent.run(pipeline_result, memory_store=store)
-
-           ``result`` must be a ``PipelineResult``.  Context is extracted via
-           ``_build_context(result)`` and outputs are written back to ``result``.
-
-        2. Standalone / test style::
-
-               disc_result = agent.run(context="some text", memory_store=store)
-
-           ``context`` is used directly.  A ``DiscussionResult`` is always
-           returned by both styles.
-
-        Args:
-            result:       Optional PipelineResult (legacy style). When provided the
-                          context is built from its fields and outputs are written
-                          back to it.
-            context:      Optional raw context string (standalone style). Takes
-                          priority when ``result`` is None.
-            memory_store: Optional MemoryStore.  When ``config.memory`` is True and
-                          this is not None, the synthesis (or transcript) is
-                          persisted after the run.
-
-        Returns:
-            A :class:`DiscussionResult` with the raw transcript and synthesis.
-        """
-        # Resolve context string from whichever source was provided.
-        if context is None:
-            if result is None:
-                raise ValueError("DiscussionAgent.run() requires either 'result' or 'context'.")
-            context = self._build_context(result)
-
-        transcript = self._run_homework_round(context) if self.config.homework_round else []
-        transcript = self._run_discussion_rounds(context, transcript)
-        synthesis = ""
-        if self.config.output_mode in ("synthesis", "both"):
-            synthesis = self._run_synthesis(context, transcript)
-
-        disc_result = DiscussionResult(transcript=transcript, synthesis=synthesis)
-
-        # Write outputs back to PipelineResult when using the legacy call style.
-        if result is not None:
-            self._write_outputs(result, transcript, synthesis)
-            result.add_completed_stage(f"discuss_{self.config.name}")
-
-        # Persist to memory store if configured.
+    def _persist_to_memory(
+        self, disc_result: DiscussionResult, memory_store, repo: str
+    ) -> None:
+        """Persist discussion to memory store if configured."""
         if self.config.memory and memory_store is not None:
             summary = (
                 disc_result.synthesis
@@ -643,4 +610,40 @@ class DiscussionAgent:
                 mode="discussion",
             )
 
+    def run(
+        self,
+        result: "PipelineResult | None" = None,
+        *,
+        context: Optional[str] = None,
+        memory_store=None,
+        repo: str = "local",
+    ) -> "DiscussionResult":
+        """Execute the full discussion and return a DiscussionResult.
+
+        Two call styles:
+        - Pipeline: pass result (context extracted, outputs written back)
+        - Standalone: pass context directly (returns DiscussionResult only)
+
+        Args:
+            result: Optional PipelineResult (context extracted, outputs written back).
+            context: Optional raw context string (standalone style, takes priority if result=None).
+            memory_store: Optional MemoryStore for persisting transcript when config.memory=True.
+
+        Returns:
+            DiscussionResult with transcript and synthesis.
+        """
+        if context is None:
+            if result is None:
+                raise ValueError("DiscussionAgent.run() requires either 'result' or 'context'.")
+            context = self._build_context(result)
+        transcript = self._run_homework_round(context) if self.config.homework_round else []
+        transcript = self._run_discussion_rounds(context, transcript)
+        synthesis = ""
+        if self.config.output_mode in ("synthesis", "both"):
+            synthesis = self._run_synthesis(context, transcript)
+        disc_result = DiscussionResult(transcript=transcript, synthesis=synthesis)
+        if result is not None:
+            self._write_outputs(result, transcript, synthesis)
+            result.add_completed_stage(f"discuss_{self.config.name}")
+        self._persist_to_memory(disc_result, memory_store, repo)
         return disc_result

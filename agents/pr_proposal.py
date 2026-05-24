@@ -44,27 +44,15 @@ class PRProposalAgent(BaseAgent):
         """Execute the PR Proposal pipeline stage.
 
         Args:
-            context: Pipeline context dictionary containing:
-                - pr_analyst: Dict with Opportunity, Audience, Angle, Channels, Risks
-                - pr_creative: List of concept dicts
-                - issue_number: Integer GitHub issue number
-                - github_client: Initialized GitHubClient instance
+            context: Must contain pr_analyst dict, pr_creative list, issue_number int, github_client.
 
         Returns:
-            Updated context dictionary with 'pr_proposal' key containing:
-                - pr_url, pr_number, branch_name, markdown_body
-        """
-        analyst_output = context.get("pr_analyst")
-        concepts = context.get("pr_creative")
-        issue_number = context.get("issue_number")
-        github_client = context.get("github_client")
+            Updated context with pr_proposal dict (pr_url, pr_number, branch_name, markdown_body).
 
-        if not analyst_output or not concepts:
-            raise ValueError("Missing pr_analyst or pr_creative in context")
-        if not issue_number:
-            raise ValueError("Missing issue_number in context")
-        if not github_client:
-            raise ValueError("Missing github_client in context")
+        Raises:
+            ValueError: If required context missing. TimeoutError: LLM timeout. RuntimeError: PR creation failure.
+        """
+        analyst_output, concepts, issue_number, github_client = self._validate_context(context)
 
         user_prompt = self._construct_user_prompt(analyst_output, concepts)
         llm_response = self._call_llm_with_retry(user_prompt)
@@ -80,12 +68,7 @@ class PRProposalAgent(BaseAgent):
             markdown_body=markdown_body,
         )
 
-        context["pr_proposal"] = {
-            "pr_url": pr_result.get("pr_url"),
-            "pr_number": pr_result.get("pr_number"),
-            "branch_name": branch_name,
-            "markdown_body": markdown_body
-        }
+        context["pr_proposal"] = self._build_result(pr_result, branch_name, markdown_body)
         logger.info("PR Proposal stage completed successfully")
         return context
 
@@ -105,31 +88,16 @@ class PRProposalAgent(BaseAgent):
             "Please assemble the following research findings and creative concepts into a polished campaign proposal.",
             "",
             "### Analyst Research",
-            f"- **Opportunity**: {analyst_output.get('Opportunity', 'N/A')}",
-            f"- **Audience**: {analyst_output.get('Audience', 'N/A')}",
-            f"- **Angle**: {analyst_output.get('Angle', 'N/A')}",
-            f"- **Channels**: {', '.join(analyst_output.get('Channels', []))}",
-            f"- **Risks**: {', '.join(analyst_output.get('Risks', []))}",
-            "",
-            "### Creative Concepts",
         ]
-
-        for i, concept in enumerate(concepts, 1):
-            prompt_parts.append(f"\n#### Concept {i}")
-            prompt_parts.append(f"- **Big Idea**: {concept.get('big_idea', 'N/A')}")
-            prompt_parts.append(f"- **How It Works**: {concept.get('how_it_works', 'N/A')}")
-            prompt_parts.append(f"- **Why It Works**: {concept.get('why_it_works', 'N/A')}")
-            prompt_parts.append(f"- **Headline Hook**: {concept.get('headline_hook', 'N/A')}")
-            prompt_parts.append(f"- **Platform Tactics**: {json.dumps(concept.get('platform_tactics', {}))}")
-            prompt_parts.append(f"- **Press Release Angle**: {concept.get('press_release_angle', 'N/A')}")
-            prompt_parts.append(f"- **Social Copy Example**: {concept.get('social_copy_example', 'N/A')}")
-
+        prompt_parts.extend(self._format_analyst_section(analyst_output))
+        prompt_parts.append("")
+        prompt_parts.append("### Creative Concepts")
+        prompt_parts.extend(self._format_concepts_section(concepts))
         prompt_parts.extend([
             "",
             "Generate the proposal document exactly as specified in your system instructions.",
             "Ensure the final JSON block with pr_title and pr_body is strictly valid and parsable."
         ])
-
         return "\n".join(prompt_parts)
 
     def _call_llm_with_retry(self, user_prompt: str) -> str:
@@ -206,6 +174,91 @@ class PRProposalAgent(BaseAgent):
             slug = "campaign-concept"
         return f"campaign/{issue_number}-{slug}"
 
+    def _validate_context(self, context: Dict[str, Any]) -> tuple:
+        """Validate and extract required fields from context."""
+        analyst_output = context.get("pr_analyst")
+        concepts = context.get("pr_creative")
+        issue_number = context.get("issue_number")
+        github_client = context.get("github_client")
+
+        if not analyst_output or not concepts:
+            raise ValueError("Missing pr_analyst or pr_creative in context")
+        if not issue_number:
+            raise ValueError("Missing issue_number in context")
+        if not github_client:
+            raise ValueError("Missing github_client in context")
+
+        return analyst_output, concepts, issue_number, github_client
+
+    def _build_result(self, pr_result: Dict[str, Any], branch_name: str, markdown_body: str) -> Dict[str, Any]:
+        """Build the result dictionary for context."""
+        return {
+            "pr_url": pr_result.get("pr_url"),
+            "pr_number": pr_result.get("pr_number"),
+            "branch_name": branch_name,
+            "markdown_body": markdown_body
+        }
+
+    def _format_analyst_section(self, analyst_output: Dict[str, Any]) -> List[str]:
+        """Format analyst research section."""
+        return [
+            f"- **Opportunity**: {analyst_output.get('Opportunity', 'N/A')}",
+            f"- **Audience**: {analyst_output.get('Audience', 'N/A')}",
+            f"- **Angle**: {analyst_output.get('Angle', 'N/A')}",
+            f"- **Channels**: {', '.join(analyst_output.get('Channels', []))}",
+            f"- **Risks**: {', '.join(analyst_output.get('Risks', []))}",
+        ]
+
+    def _format_concepts_section(self, concepts: List[Dict[str, Any]]) -> List[str]:
+        """Format creative concepts section."""
+        lines = []
+        for i, concept in enumerate(concepts, 1):
+            lines.append(f"\n#### Concept {i}")
+            lines.append(f"- **Big Idea**: {concept.get('big_idea', 'N/A')}")
+            lines.append(f"- **How It Works**: {concept.get('how_it_works', 'N/A')}")
+            lines.append(f"- **Why It Works**: {concept.get('why_it_works', 'N/A')}")
+            lines.append(f"- **Headline Hook**: {concept.get('headline_hook', 'N/A')}")
+            lines.append(f"- **Platform Tactics**: {json.dumps(concept.get('platform_tactics', {}))}")
+            lines.append(f"- **Press Release Angle**: {concept.get('press_release_angle', 'N/A')}")
+            lines.append(f"- **Social Copy Example**: {concept.get('social_copy_example', 'N/A')}")
+        return lines
+
+    def _attempt_pr_creation(
+        self, client: GitHubClient, branch: str, title: str, body: str, issue_number: int, markdown_body: str
+    ) -> Dict[str, Any]:
+        """Attempt to create PR with branch and file commit."""
+        actual_branch = client.create_branch(branch)
+        file_path = f"proposals/campaign-{issue_number}.md"
+        client.commit_file(
+            path=file_path,
+            content=markdown_body,
+            message=f"feat: add campaign proposal for issue #{issue_number}",
+            branch=actual_branch,
+        )
+        response = client.create_pull_request(title=title, body=body, head=actual_branch)
+        return {"pr_url": response.get("html_url"), "pr_number": response.get("number")}
+
+    def _handle_pr_error(
+        self, error: Exception, client: GitHubClient, original_branch: str, current_branch: str, issue_number: int
+    ) -> str:
+        """Handle PR creation errors and return new branch name if retryable."""
+        error_msg = str(error).lower()
+        if "branch" in error_msg and ("exist" in error_msg or "409" in error_msg):
+            new_branch = f"{original_branch}-{int(time.time())}"
+            logger.warning(f"Branch exists, retrying with {new_branch}")
+            return new_branch
+        elif "rate limit" in error_msg or "429" in error_msg:
+            logger.warning("GitHub rate limit hit, waiting 60s")
+            time.sleep(RATE_LIMIT_WAIT)
+            return current_branch
+        else:
+            logger.error(f"PR creation failed: {error}")
+            try:
+                client.add_issue_comment(issue_number, f"Pipeline failed to create PR: {error}")
+            except Exception:
+                logger.error("Failed to comment on issue about PR failure")
+            raise RuntimeError(f"PR creation failed: {error}") from error
+
     def _create_pr_with_retry(
         self,
         client: GitHubClient,
@@ -234,46 +287,11 @@ class PRProposalAgent(BaseAgent):
         current_branch = branch_name
         for attempt in range(MAX_PR_RETRIES):
             try:
-                # Create the branch from default
-                actual_branch = client.create_branch(current_branch)
-
-                # Commit the proposal file to the branch
-                file_path = f"proposals/campaign-{issue_number}.md"
-                client.commit_file(
-                    path=file_path,
-                    content=markdown_body,
-                    message=f"feat: add campaign proposal for issue #{issue_number}",
-                    branch=actual_branch,
+                return self._attempt_pr_creation(
+                    client, current_branch, title, body, issue_number, markdown_body
                 )
-
-                # Open the PR
-                response = client.create_pull_request(
-                    title=title,
-                    body=body,
-                    head=actual_branch,
-                )
-                return {
-                    "pr_url": response.get("html_url"),
-                    "pr_number": response.get("number"),
-                }
             except Exception as e:
-                error_msg = str(e).lower()
-                if "branch" in error_msg and ("exist" in error_msg or "409" in error_msg):
-                    current_branch = f"{branch_name}-{int(time.time())}"
-                    logger.warning(f"Branch exists, retrying with {current_branch}")
-                    continue
-                elif "rate limit" in error_msg or "429" in error_msg:
-                    logger.warning("GitHub rate limit hit, waiting 60s")
-                    time.sleep(RATE_LIMIT_WAIT)
-                    continue
-                else:
-                    logger.error(f"PR creation failed: {e}")
-                    try:
-                        client.add_issue_comment(
-                            issue_number,
-                            f"Pipeline failed to create PR: {e}"
-                        )
-                    except Exception:
-                        logger.error("Failed to comment on issue about PR failure")
-                    raise RuntimeError(f"PR creation failed: {e}") from e
+                current_branch = self._handle_pr_error(
+                    e, client, branch_name, current_branch, issue_number
+                )
         raise RuntimeError("Failed to create PR after maximum retries")

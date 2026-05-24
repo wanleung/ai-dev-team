@@ -37,37 +37,20 @@ class DeploymentTesterAgent(BaseAgent):
 
     def run(self, files: dict[str, str], prd: str, project_name: str = "Project") -> dict:
         """Generate deployment test artefacts.
+        
+        Args:
+            files: Generated code files dict
+            prd: PRD markdown
+            project_name: Human-readable project name
 
         Returns:
-            dict with keys:
-                - deploy_files (dict): {filepath: content} — compose, smoke tests, scripts
-                - deploy_plan (str): deployment test plan markdown
-                - raw_response (str): full LLM response
+            dict with 'deploy_files', 'deploy_plan', 'raw_response'
         """
-        # Show the LLM the Dockerfile / compose files if present, plus key source files
-        deploy_snippets = {
-            k: v for k, v in files.items()
-            if any(keyword in k.lower() for keyword in
-                   ("dockerfile", "docker-compose", "main.py", "app.py", "requirements", "config"))
-        }
-        if not deploy_snippets:
-            deploy_snippets = dict(list(files.items())[:6])
-
+        deploy_snippets = self._select_deploy_files(files)
         code_section = "\n\n".join(
             f"### FILE: {path}\n```\n{content}\n```" for path, content in deploy_snippets.items()
         )
-
-        prompt = (
-            f"You are writing deployment smoke tests for the project '{project_name}'.\n\n"
-            f"**PRD:**\n---\n{prd}\n---\n\n"
-            f"**Key project files:**\n\n{code_section}\n\n"
-            f"Generate the deployment test artefacts following your role instructions:\n"
-            f"1. docker-compose.test.yml\n"
-            f"2. tests/test_deployment.py\n"
-            f"3. scripts/deploy_test.sh\n"
-            f"4. Deployment Test Plan"
-        )
-
+        prompt = self._build_deploy_prompt(project_name, prd, code_section)
         response = self.call(prompt)
         deploy_files = self._parse_files(response)
         deploy_plan = self._extract_deploy_plan(response)
@@ -77,6 +60,28 @@ class DeploymentTesterAgent(BaseAgent):
             "deploy_plan": deploy_plan,
             "raw_response": response,
         }
+
+    def _select_deploy_files(self, files: dict[str, str]) -> dict[str, str]:
+        """Select deployment-relevant files from the full set."""
+        deploy_snippets = {
+            k: v for k, v in files.items()
+            if any(keyword in k.lower() for keyword in
+                   ("dockerfile", "docker-compose", "main.py", "app.py", "requirements", "config"))
+        }
+        return deploy_snippets if deploy_snippets else dict(list(files.items())[:6])
+
+    def _build_deploy_prompt(self, project_name: str, prd: str, code_section: str) -> str:
+        """Build the deployment test generation prompt."""
+        return (
+            f"You are writing deployment smoke tests for the project '{project_name}'.\n\n"
+            f"**PRD:**\n---\n{prd}\n---\n\n"
+            f"**Key project files:**\n\n{code_section}\n\n"
+            f"Generate the deployment test artefacts following your role instructions:\n"
+            f"1. docker-compose.test.yml\n"
+            f"2. tests/test_deployment.py\n"
+            f"3. scripts/deploy_test.sh\n"
+            f"4. Deployment Test Plan"
+        )
 
     def run_with_github(
         self,
@@ -155,26 +160,23 @@ class DeploymentTesterAgent(BaseAgent):
 
         try:
             run(["docker", "compose", "-f", str(compose_file), "up", "-d", "--build"])
-
-            # Wait up to 60s for healthy
-            healthy = False
-            for _ in range(12):
-                time.sleep(5)
-                ps = run(["docker", "compose", "-f", str(compose_file), "ps"])
-                if "healthy" in ps.stdout or "running" in ps.stdout:
-                    healthy = True
-                    break
-
-            if not healthy:
-                output_lines.append("⚠️  Container did not become healthy within 60s")
-
-            # Run smoke tests
+            healthy = self._wait_for_healthy(compose_file, run, output_lines)
             result = run(["python", "-m", "pytest", str(test_file), "-v", "--tb=short"])
             passed = result.returncode == 0
         finally:
             run(["docker", "compose", "-f", str(compose_file), "down", "-v"])
 
         return {"passed": passed, "output": "\n".join(output_lines), "skipped": False}
+
+    def _wait_for_healthy(self, compose_file: Path, run, output_lines: list) -> bool:
+        """Wait up to 60s for container to become healthy."""
+        for _ in range(12):
+            time.sleep(5)
+            ps = run(["docker", "compose", "-f", str(compose_file), "ps"])
+            if "healthy" in ps.stdout or "running" in ps.stdout:
+                return True
+        output_lines.append("⚠️  Container did not become healthy within 60s")
+        return False
 
     @staticmethod
     def _parse_files(response: str) -> dict[str, str]:

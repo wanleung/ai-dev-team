@@ -49,13 +49,22 @@ class MemoryBankUpdaterAgent(BaseAgent):
             Dict mapping filename → new full content for every file that needs
             updating.  Files not present in the return value are unchanged.
         """
-        bank_section = "\n\n".join(
+        bank_section = self._build_bank_section(current_bank)
+        prompt = self._build_update_prompt(bank_section, run_summary)
+        raw = self.call(prompt)
+        return self._parse_output(raw)
+
+    def _build_bank_section(self, current_bank: dict[str, str]) -> str:
+        """Build the bank section showing current files."""
+        return "\n\n".join(
             f"### CURRENT: memory-bank/{filename}\n{content}"
             for filename, content in current_bank.items()
             if filename in BANK_FILES
         )
 
-        prompt = f"""Below are the current memory bank files followed by a summary of the pipeline run that just completed.
+    def _build_update_prompt(self, bank_section: str, run_summary: str) -> str:
+        """Build the prompt for updating memory bank files."""
+        return f"""Below are the current memory bank files followed by a summary of the pipeline run that just completed.
 
 Update the memory bank files according to your instructions.
 
@@ -69,8 +78,6 @@ Update the memory bank files according to your instructions.
 
 {run_summary}
 """
-        raw = self.call(prompt)
-        return self._parse_output(raw)
 
     def _parse_output(self, raw: str) -> dict[str, str]:
         """Parse the agent's raw output into a filename → content mapping.

@@ -9,7 +9,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from agents.base_agent import BaseAgent
 
@@ -47,44 +47,26 @@ class PRAnalystAgent(BaseAgent):
         """Execute the PR Analyst pipeline stage.
 
         Args:
-            context: Pipeline context dictionary containing at minimum:
-                - issue_body: Raw markdown body of the GitHub issue
-                - issue_number: Integer issue number (for error reporting)
+            context: Must contain 'issue_body' (markdown) and 'issue_number' (int).
 
         Returns:
-            Updated context dictionary with 'pr_analyst' key containing:
-                - Opportunity: str
-                - Audience: str
-                - Angle: str
-                - Channels: list[str]
-                - Risks: list[str]
+            Updated context with 'pr_analyst' dict (Opportunity, Audience, Angle, Channels, Risks).
 
         Raises:
-            ValueError: If issue_body is missing or required fields are absent
-            ParseError: If LLM output cannot be parsed into valid JSON
-            TimeoutError: If LLM calls fail after maximum retries
+            ValueError: If issue_body missing or required brief fields incomplete.
+            ParseError: If LLM output cannot be parsed or validated.
+            TimeoutError: If LLM call times out after retries.
         """
-        # Step 1: Extract issue_body from context
         issue_body = context.get("issue_body", "")
         if not issue_body:
             raise ValueError("Missing issue_body in context")
 
-        # Step 2: Parse structured fields from the markdown brief
         parsed_brief = self._parse_brief(issue_body)
-
-        # Step 3: Validate required fields are present
         self._validate_brief(parsed_brief, context.get("issue_number"))
-
-        # Step 4: Construct user prompt with parsed brief data
         user_prompt = self._construct_user_prompt(parsed_brief)
-
-        # Step 5: Call LLM with retry logic for timeouts (BaseAgent.call uses role system prompt)
         llm_response = self._call_llm_with_retry(user_prompt)
-
-        # Step 7: Parse and validate JSON output
         validated_output = self._parse_and_validate_json(llm_response)
 
-        # Step 8: Store result in context and return
         context["pr_analyst"] = validated_output
         logger.info("PR Analyst stage completed successfully")
         return context
@@ -104,23 +86,12 @@ class PRAnalystAgent(BaseAgent):
             Dictionary mapping field names to their values (stripped of whitespace)
         """
         parsed = {}
-
-        # Define field mappings: template heading -> internal key
-        field_patterns = {
-            "client_product": r"### Client/Product\s*\*?\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
-            "goal": r"### Goal\s*\*?\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
-            "target_audience": r"### Target Audience\s*\*?\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
-            "key_message": r"### Key Message\s*\*?\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
-            "channels": r"### Channels\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
-            "tone": r"### Tone\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
-            "deadline_timing": r"### Deadline/Timing\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
-        }
+        field_patterns = self._get_field_patterns()
 
         for key, pattern in field_patterns.items():
             match = re.search(pattern, issue_body, re.DOTALL | re.IGNORECASE)
             if match:
                 value = match.group(1).strip()
-                # Remove any trailing comment artifacts or whitespace
                 value = re.sub(r"<!--.*?-->", "", value).strip()
                 if value:
                     parsed[key] = value
@@ -168,27 +139,13 @@ class PRAnalystAgent(BaseAgent):
             "",
             "### Campaign Brief",
             "",
-            f"**Client/Product**: {parsed_brief.get('client_product', 'N/A')}",
-            f"**Goal**: {parsed_brief.get('goal', 'N/A')}",
-            f"**Target Audience**: {parsed_brief.get('target_audience', 'N/A')}",
-            f"**Key Message**: {parsed_brief.get('key_message', 'N/A')}",
         ]
-
-        # Add optional fields if present
-        if parsed_brief.get("channels"):
-            prompt_parts.append(f"**Channels**: {parsed_brief['channels']}")
-        if parsed_brief.get("tone"):
-            prompt_parts.append(f"**Tone**: {parsed_brief['tone']}")
-        if parsed_brief.get("deadline_timing"):
-            prompt_parts.append(f"**Deadline/Timing**: {parsed_brief['deadline_timing']}")
-
-        prompt_parts.extend(
-            [
-                "",
-                "Analyze this brief carefully and return ONLY a valid JSON object matching the schema defined in your system instructions.",
-            ]
-        )
-
+        prompt_parts.extend(self._format_required_fields(parsed_brief))
+        prompt_parts.extend(self._format_optional_fields(parsed_brief))
+        prompt_parts.extend([
+            "",
+            "Analyze this brief carefully and return ONLY a valid JSON object matching the schema defined in your system instructions.",
+        ])
         return "\n".join(prompt_parts)
 
     def _call_llm_with_retry(self, user_prompt: str) -> str:
@@ -239,31 +196,17 @@ class PRAnalystAgent(BaseAgent):
             ParseError: If response cannot be parsed or validated
         """
         try:
-            # Strip markdown code blocks if present
             cleaned_response = self._strip_markdown_code_blocks(llm_response)
-
-            # Parse JSON
             parsed = json.loads(cleaned_response)
-
-            # Validate required keys
-            missing_keys = [
-                key for key in REQUIRED_OUTPUT_KEYS if key not in parsed
-            ]
-            if missing_keys:
-                raise ValueError(f"Missing required keys: {', '.join(missing_keys)}")
-
-            # Validate types
+            self._check_required_keys(parsed)
             self._validate_output_types(parsed)
-
             return parsed
 
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Initial JSON parse failed: {e}")
-            # Retry once with a stricter prompt
             retry_response = self._retry_with_fallback_prompt(llm_response)
             if retry_response:
                 return retry_response
-
             raise ParseError(f"Agent output malformed: {e}") from e
 
     def _strip_markdown_code_blocks(self, text: str) -> str:
@@ -291,30 +234,9 @@ class PRAnalystAgent(BaseAgent):
         Raises:
             ValueError: If types or constraints are violated
         """
-        # String fields
-        for key in ["Opportunity", "Audience", "Angle"]:
-            if not isinstance(parsed[key], str):
-                raise ValueError(f"'{key}' must be a string")
-            if not parsed[key].strip():
-                raise ValueError(f"'{key}' must not be empty")
-
-        # Channels: must be list of strings, max 10 items
-        if not isinstance(parsed["Channels"], list):
-            raise ValueError("'Channels' must be a list")
-        if len(parsed["Channels"]) > 10:
-            raise ValueError("'Channels' must have at most 10 items")
-        for channel in parsed["Channels"]:
-            if not isinstance(channel, str):
-                raise ValueError("Each channel must be a string")
-
-        # Risks: must be list of strings, max 5 items
-        if not isinstance(parsed["Risks"], list):
-            raise ValueError("'Risks' must be a list")
-        if len(parsed["Risks"]) > 5:
-            raise ValueError("'Risks' must have at most 5 items")
-        for risk in parsed["Risks"]:
-            if not isinstance(risk, str):
-                raise ValueError("Each risk must be a string")
+        self._validate_string_fields(parsed)
+        self._validate_channels_field(parsed)
+        self._validate_risks_field(parsed)
 
     def _retry_with_fallback_prompt(
         self, original_response: str
@@ -328,7 +250,6 @@ class PRAnalystAgent(BaseAgent):
             Validated dictionary if retry succeeds, None otherwise
         """
         logger.info("Retrying with fallback prompt for JSON validation")
-
         try:
             retry_response = self._call(
                 f"Your previous response could not be parsed. "
@@ -339,19 +260,80 @@ class PRAnalystAgent(BaseAgent):
             )
             cleaned = self._strip_markdown_code_blocks(retry_response)
             parsed = json.loads(cleaned)
-
-            missing_keys = [
-                key for key in REQUIRED_OUTPUT_KEYS if key not in parsed
-            ]
-            if missing_keys:
-                return None
-
+            self._check_required_keys(parsed)
             self._validate_output_types(parsed)
             return parsed
 
         except Exception as e:
             logger.error(f"Fallback retry failed: {e}")
             return None
+
+
+    def _get_field_patterns(self) -> Dict[str, str]:
+        """Return field patterns for parsing brief markdown."""
+        return {
+            "client_product": r"### Client/Product\s*\*?\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
+            "goal": r"### Goal\s*\*?\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
+            "target_audience": r"### Target Audience\s*\*?\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
+            "key_message": r"### Key Message\s*\*?\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
+            "channels": r"### Channels\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
+            "tone": r"### Tone\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
+            "deadline_timing": r"### Deadline/Timing\s*\n<!--.*?-->\s*\n(.*?)(?=\n###|$)",
+        }
+
+    def _format_required_fields(self, parsed_brief: Dict[str, str]) -> List[str]:
+        """Format required brief fields."""
+        return [
+            f"**Client/Product**: {parsed_brief.get('client_product', 'N/A')}",
+            f"**Goal**: {parsed_brief.get('goal', 'N/A')}",
+            f"**Target Audience**: {parsed_brief.get('target_audience', 'N/A')}",
+            f"**Key Message**: {parsed_brief.get('key_message', 'N/A')}",
+        ]
+
+    def _format_optional_fields(self, parsed_brief: Dict[str, str]) -> List[str]:
+        """Format optional brief fields if present."""
+        lines = []
+        if parsed_brief.get("channels"):
+            lines.append(f"**Channels**: {parsed_brief['channels']}")
+        if parsed_brief.get("tone"):
+            lines.append(f"**Tone**: {parsed_brief['tone']}")
+        if parsed_brief.get("deadline_timing"):
+            lines.append(f"**Deadline/Timing**: {parsed_brief['deadline_timing']}")
+        return lines
+
+    def _check_required_keys(self, parsed: Dict[str, Any]) -> None:
+        """Check that all required keys are present."""
+        missing_keys = [key for key in REQUIRED_OUTPUT_KEYS if key not in parsed]
+        if missing_keys:
+            raise ValueError(f"Missing required keys: {', '.join(missing_keys)}")
+
+    def _validate_string_fields(self, parsed: Dict[str, Any]) -> None:
+        """Validate string fields are strings and non-empty."""
+        for key in ["Opportunity", "Audience", "Angle"]:
+            if not isinstance(parsed[key], str):
+                raise ValueError(f"'{key}' must be a string")
+            if not parsed[key].strip():
+                raise ValueError(f"'{key}' must not be empty")
+
+    def _validate_channels_field(self, parsed: Dict[str, Any]) -> None:
+        """Validate Channels field is a list of strings with max 10 items."""
+        if not isinstance(parsed["Channels"], list):
+            raise ValueError("'Channels' must be a list")
+        if len(parsed["Channels"]) > 10:
+            raise ValueError("'Channels' must have at most 10 items")
+        for channel in parsed["Channels"]:
+            if not isinstance(channel, str):
+                raise ValueError("Each channel must be a string")
+
+    def _validate_risks_field(self, parsed: Dict[str, Any]) -> None:
+        """Validate Risks field is a list of strings with max 5 items."""
+        if not isinstance(parsed["Risks"], list):
+            raise ValueError("'Risks' must be a list")
+        if len(parsed["Risks"]) > 5:
+            raise ValueError("'Risks' must have at most 5 items")
+        for risk in parsed["Risks"]:
+            if not isinstance(risk, str):
+                raise ValueError("Each risk must be a string")
 
 
 class ParseError(Exception):

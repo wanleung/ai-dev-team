@@ -37,38 +37,17 @@ class QAPlannerAgent(BaseAgent):
         """Produce a test plan from PRD + design + code.
 
         Args:
-            prd:          PRD markdown (from PM / PM Reviewer).
-            design:       System design markdown (from Architect / Arch Reviewer).
-            files:        Dict of {filename: content} from Engineers.
-            project_name: Project name for context.
-            repo:         Optional 'owner/repo' — enables search_github_issues tool.
+            prd: PRD markdown
+            design: System design markdown
+            files: Implementation files dict
+            project_name: Human-readable project name
+            repo: GitHub repo identifier for issue search
 
         Returns:
-            dict with keys:
-                - test_plan (str): Full Test Plan markdown
-                - acceptance_criteria (list[str]): extracted AC IDs for quick reference
-                - success (bool): True when agent produced a complete plan
+            dict with 'test_plan' (str), 'acceptance_criteria' (list), 'success' (bool)
         """
-        truncated = self.truncate_files(files, max_chars=8_000)
-        files_summary = "\n".join(
-            f"### {fname}\n```\n{content[:500]}{'…' if len(content) > 500 else ''}\n```"
-            for fname, content in list(truncated.items())[:10]
-        )
-
-        repo_hint = (
-            f"\nYou can use the search_github_issues tool to search repo '{repo}' "
-            f"for related existing issues or acceptance criteria.\n"
-            if repo else ""
-        )
-
-        prompt = (
-            f"Project: **{project_name}**\n{repo_hint}\n"
-            f"## PRD\n{prd}\n\n"
-            f"## System Design\n{design}\n\n"
-            f"## Implemented Code (summary)\n{files_summary}\n\n"
-            "Please produce the full Test Plan following your role instructions."
-        )
-
+        files_summary = self._build_files_summary(files)
+        prompt = self._build_planner_prompt(project_name, repo, prd, design, files_summary)
         response = self.call_with_tools(prompt, tools=self._tool_registry)
         acceptance_criteria = self._extract_ac_ids(response)
 
@@ -77,6 +56,31 @@ class QAPlannerAgent(BaseAgent):
             "acceptance_criteria": acceptance_criteria,
             "success": "TEST PLAN COMPLETE" in response.upper(),
         }
+
+    def _build_files_summary(self, files: dict[str, str]) -> str:
+        """Build a truncated summary of implementation files."""
+        truncated = self.truncate_files(files, max_chars=8_000)
+        return "\n".join(
+            f"### {fname}\n```\n{content[:500]}{'…' if len(content) > 500 else ''}\n```"
+            for fname, content in list(truncated.items())[:10]
+        )
+
+    def _build_planner_prompt(
+        self, project_name: str, repo: str, prd: str, design: str, files_summary: str
+    ) -> str:
+        """Build the test planning prompt."""
+        repo_hint = (
+            f"\nYou can use the search_github_issues tool to search repo '{repo}' "
+            f"for related existing issues or acceptance criteria.\n"
+            if repo else ""
+        )
+        return (
+            f"Project: **{project_name}**\n{repo_hint}\n"
+            f"## PRD\n{prd}\n\n"
+            f"## System Design\n{design}\n\n"
+            f"## Implemented Code (summary)\n{files_summary}\n\n"
+            "Please produce the full Test Plan following your role instructions."
+        )
 
     def run_with_github(
         self,

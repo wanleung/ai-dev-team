@@ -93,13 +93,25 @@ class PRCreativeAgent(BaseAgent):
 
     def _parse_and_validate_concepts(self, response: str) -> List[Dict[str, Any]]:
         """Parses LLM response, cleans markdown, and validates concept schema."""
+        cleaned = self._clean_json_fences(response)
+        concepts = self._parse_json_array(cleaned)
+        concepts = self._enforce_count_constraints(concepts)
+        self._validate_concept_fields(concepts)
+        self._ensure_platform_tactics(concepts)
+        return concepts
+
+
+    def _clean_json_fences(self, response: str) -> str:
+        """Remove markdown JSON code block fences from response."""
         cleaned = response.strip()
         if cleaned.startswith("```json"):
             cleaned = cleaned.split("```json", 1)[1]
         if cleaned.endswith("```"):
             cleaned = cleaned.rsplit("```", 1)[0]
-        cleaned = cleaned.strip()
+        return cleaned.strip()
 
+    def _parse_json_array(self, cleaned: str) -> List[Dict[str, Any]]:
+        """Parse cleaned string as JSON and validate it's a list."""
         try:
             concepts = json.loads(cleaned)
         except json.JSONDecodeError as e:
@@ -107,14 +119,19 @@ class PRCreativeAgent(BaseAgent):
 
         if not isinstance(concepts, list):
             raise ValueError("LLM response is not a JSON array")
+        return concepts
 
-        # Handle count constraints per spec
+    def _enforce_count_constraints(self, concepts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Enforce concept count constraints: at least 3, at most 5."""
         if len(concepts) < 3:
             raise ValueError(f"LLM returned only {len(concepts)} concepts; need at least 3. Retrying.")
         elif len(concepts) > 5:
             logger.warning(f"LLM returned {len(concepts)} concepts. Truncating to 5.")
-            concepts = concepts[:5]
+            return concepts[:5]
+        return concepts
 
+    def _validate_concept_fields(self, concepts: List[Dict[str, Any]]) -> None:
+        """Validate that each concept has all required fields."""
         required_fields = [
             "big_idea", "how_it_works", "why_it_works", "headline_hook",
             "platform_tactics", "press_release_angle", "social_copy_example"
@@ -126,7 +143,8 @@ class PRCreativeAgent(BaseAgent):
             if not isinstance(concept.get("platform_tactics"), dict):
                 raise ValueError(f"Concept {i} 'platform_tactics' must be a dictionary")
 
-        # Ensure all required platforms are present in every concept's platform_tactics
+    def _ensure_platform_tactics(self, concepts: List[Dict[str, Any]]) -> None:
+        """Ensure all required platforms are present in each concept's platform_tactics."""
         for concept in concepts:
             tactics = concept.get("platform_tactics", {})
             if not isinstance(tactics, dict):
@@ -135,5 +153,3 @@ class PRCreativeAgent(BaseAgent):
                 if platform not in tactics:
                     tactics[platform] = ""
             concept["platform_tactics"] = tactics
-
-        return concepts

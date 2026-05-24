@@ -115,36 +115,8 @@ class TokenLedger:
         total_completion = sum(e.completion_tokens for e in events)
         total_cost = sum(e.cost_usd for e in events)
 
-        # Aggregate by stage
-        by_stage: dict[str, dict] = {}
-        for e in events:
-            s = by_stage.setdefault(
-                e.stage,
-                {
-                    "stage": e.stage,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "cost_usd": 0.0,
-                    "models": set(),
-                },
-            )
-            s["prompt_tokens"] += e.prompt_tokens
-            s["completion_tokens"] += e.completion_tokens
-            s["cost_usd"] += e.cost_usd
-            s["models"].add(e.model)
-        for s in by_stage.values():
-            s["models"] = sorted(s["models"])
-
-        # Aggregate by model
-        by_model: dict[str, dict] = {}
-        for e in events:
-            m = by_model.setdefault(
-                e.model,
-                {"model": e.model, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0},
-            )
-            m["prompt_tokens"] += e.prompt_tokens
-            m["completion_tokens"] += e.completion_tokens
-            m["cost_usd"] += e.cost_usd
+        by_stage = self._aggregate_by_stage(events)
+        by_model = self._aggregate_by_model(events)
 
         return {
             "run_id": run_id,
@@ -188,67 +160,114 @@ class TokenLedger:
         INSERT OR IGNORE so re-flushing is safe.
         """
         with sqlite3.connect(db_path) as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS runs (
-                    run_id TEXT PRIMARY KEY,
-                    project_name TEXT,
-                    github_repo TEXT,
-                    started_at TEXT,
-                    finished_at TEXT,
-                    total_prompt_tokens INTEGER,
-                    total_completion_tokens INTEGER,
-                    total_cost_usd REAL
-                );
-                CREATE TABLE IF NOT EXISTS usage_events (
-                    event_id TEXT PRIMARY KEY,
-                    run_id TEXT,
-                    stage TEXT,
-                    model TEXT,
-                    prompt_tokens INTEGER,
-                    completion_tokens INTEGER,
-                    cost_usd REAL,
-                    timestamp TEXT
-                );
-            """)
+            self._create_tables(conn)
             for run_id, meta in self._runs.items():
-                s = self.summary(run_id)
-                conn.execute(
-                    """INSERT OR REPLACE INTO runs
-                       (run_id, project_name, github_repo, started_at, finished_at,
-                        total_prompt_tokens, total_completion_tokens, total_cost_usd)
-                       VALUES (?,?,?,?,?,?,?,?)""",
-                    (
-                        run_id,
-                        meta["project_name"],
-                        meta["repo"],
-                        meta["started_at"],
-                        meta["finished_at"],
-                        s["total_prompt_tokens"],
-                        s["total_completion_tokens"],
-                        s["total_cost_usd"],
-                    ),
-                )
-                for e in self._events.get(run_id, []):
-                    ts = e.timestamp.isoformat()
-                    event_id = f"{e.run_id}:{e.stage}:{e.model}:{ts}"
-                    conn.execute(
-                        """INSERT OR IGNORE INTO usage_events
-                           (event_id, run_id, stage, model, prompt_tokens,
-                            completion_tokens, cost_usd, timestamp)
-                           VALUES (?,?,?,?,?,?,?,?)""",
-                        (
-                            event_id,
-                            e.run_id,
-                            e.stage,
-                            e.model,
-                            e.prompt_tokens,
-                            e.completion_tokens,
-                            e.cost_usd,
-                            ts,
-                        ),
-                    )
+                self._insert_run_record(conn, run_id, meta)
+                self._insert_usage_events(conn, run_id)
 
     # ── Internal ────────────────────────────────────────────────────────────
+
+    def _aggregate_by_stage(self, events: list[UsageRecord]) -> dict[str, dict]:
+        """Aggregate events by stage, accumulating tokens and cost."""
+        by_stage: dict[str, dict] = {}
+        for e in events:
+            s = by_stage.setdefault(
+                e.stage,
+                {
+                    "stage": e.stage,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "cost_usd": 0.0,
+                    "models": set(),
+                },
+            )
+            s["prompt_tokens"] += e.prompt_tokens
+            s["completion_tokens"] += e.completion_tokens
+            s["cost_usd"] += e.cost_usd
+            s["models"].add(e.model)
+        for s in by_stage.values():
+            s["models"] = sorted(s["models"])
+        return by_stage
+
+    def _aggregate_by_model(self, events: list[UsageRecord]) -> dict[str, dict]:
+        """Aggregate events by model, accumulating tokens and cost."""
+        by_model: dict[str, dict] = {}
+        for e in events:
+            m = by_model.setdefault(
+                e.model,
+                {"model": e.model, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0},
+            )
+            m["prompt_tokens"] += e.prompt_tokens
+            m["completion_tokens"] += e.completion_tokens
+            m["cost_usd"] += e.cost_usd
+        return by_model
+
+    def _create_tables(self, conn: sqlite3.Connection) -> None:
+        """Create database tables if they don't exist."""
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS runs (
+                run_id TEXT PRIMARY KEY,
+                project_name TEXT,
+                github_repo TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                total_prompt_tokens INTEGER,
+                total_completion_tokens INTEGER,
+                total_cost_usd REAL
+            );
+            CREATE TABLE IF NOT EXISTS usage_events (
+                event_id TEXT PRIMARY KEY,
+                run_id TEXT,
+                stage TEXT,
+                model TEXT,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                cost_usd REAL,
+                timestamp TEXT
+            );
+        """)
+
+    def _insert_run_record(self, conn: sqlite3.Connection, run_id: str, meta: dict) -> None:
+        """Insert or replace a run record in the database."""
+        s = self.summary(run_id)
+        conn.execute(
+            """INSERT OR REPLACE INTO runs
+               (run_id, project_name, github_repo, started_at, finished_at,
+                total_prompt_tokens, total_completion_tokens, total_cost_usd)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                run_id,
+                meta["project_name"],
+                meta["repo"],
+                meta["started_at"],
+                meta["finished_at"],
+                s["total_prompt_tokens"],
+                s["total_completion_tokens"],
+                s["total_cost_usd"],
+            ),
+        )
+
+    def _insert_usage_events(self, conn: sqlite3.Connection, run_id: str) -> None:
+        """Insert usage event records for a run, skipping duplicates."""
+        for e in self._events.get(run_id, []):
+            ts = e.timestamp.isoformat()
+            event_id = f"{e.run_id}:{e.stage}:{e.model}:{ts}"
+            conn.execute(
+                """INSERT OR IGNORE INTO usage_events
+                   (event_id, run_id, stage, model, prompt_tokens,
+                    completion_tokens, cost_usd, timestamp)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    event_id,
+                    e.run_id,
+                    e.stage,
+                    e.model,
+                    e.prompt_tokens,
+                    e.completion_tokens,
+                    e.cost_usd,
+                    ts,
+                ),
+            )
 
     def _calculate_cost(self, model: str, prompt_tokens: int, completion_tokens: int) -> float:
         """Compute cost in USD using pricing table with exact, prefix, and default fallback."""
@@ -289,31 +308,38 @@ def estimate_tokens(
                tiktoken path when empty (backward compatible).
     """
     model_lower = model.lower()
+    prompt_text = _extract_prompt_text(messages)
 
-    # OpenAI models (or no model specified): use tiktoken for precise counts
+    # Try OpenAI tiktoken path first
     if not model_lower or any(model_lower.startswith(p) for p in ("gpt-", "text-", "o1", "o3")):
-        try:
-            import tiktoken
-            enc = tiktoken.get_encoding("cl100k_base")
-            prompt_text = " ".join(
-                m.get("content", "") or "" for m in messages if isinstance(m.get("content"), str)
-            )
-            return len(enc.encode(prompt_text)), len(enc.encode(reply))
-        except Exception:
-            pass  # fall through to char-based fallback
+        result = _estimate_with_tiktoken(prompt_text, reply)
+        if result:
+            return result
 
-    # Extract prompt text for char-based estimation
-    prompt_text = " ".join(
+    # Fall back to character-based estimation
+    return _estimate_char_based(prompt_text, reply, model_lower)
+
+
+def _extract_prompt_text(messages: list[dict]) -> str:
+    """Extract concatenated prompt text from message list."""
+    return " ".join(
         m.get("content", "") or "" for m in messages if isinstance(m.get("content"), str)
     )
 
-    # Anthropic Claude: ~3.5 chars per token
-    if "claude" in model_lower:
-        divisor = 3.5
-    else:
-        # Gemini, Ollama, and all other unknown models: ~4 chars per token (conservative)
-        divisor = 4.0
 
+def _estimate_with_tiktoken(prompt_text: str, reply: str) -> tuple[int, int] | None:
+    """Estimate tokens using tiktoken for OpenAI models. Returns None on failure."""
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(prompt_text)), len(enc.encode(reply))
+    except Exception:
+        return None
+
+
+def _estimate_char_based(prompt_text: str, reply: str, model_lower: str) -> tuple[int, int]:
+    """Estimate tokens using character-based heuristics."""
+    divisor = 3.5 if "claude" in model_lower else 4.0
     return (
         max(1, round(len(prompt_text) / divisor)) if prompt_text.strip() else 0,
         max(1, round(len(reply) / divisor)) if reply.strip() else 0,

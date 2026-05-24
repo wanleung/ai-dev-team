@@ -113,33 +113,16 @@ class NewsReviewerAgent(BaseAgent):
         """Review article quality and translation character correctness.
 
         Args:
-            article: Final English article (markdown + frontmatter).
-            article_zh_tw: Traditional Chinese (Hong Kong) translation.
-            source_url: Original source URL for fact-checking (may be empty).
+            article: English article markdown
+            article_zh_tw: Traditional Chinese translation
+            source_url: Source URL for fact-checking
 
         Returns:
-            dict with keys:
-                - verdict (str): "PASS" or "NEEDS_REVISION"
-                - issues (list[str]): annotated issue lines e.g. "[FACT] Wrong version…"
-                - confidence (str): "high" | "medium" | "low"
+            dict with 'verdict' (PASS|NEEDS_REVISION), 'issues' (list), 'confidence' (str)
         """
         source_content = _fetch_source(source_url)
         source_fetched = bool(source_content)
-
-        if source_content:
-            source_section = f"<SOURCE_CONTENT>\n{source_content[:8000]}\n</SOURCE_CONTENT>\n\n"
-        elif source_url and self._tool_registry is not None:
-            # Source URL was blocked (e.g. 403). Instruct the LLM to use google_search /
-            # google_fetch_page tools to find corroborating sources for fact-checking.
-            _log.info("news_reviewer: source fetch failed for %r — will use web search tools", source_url)
-            source_section = (
-                f"<SOURCE_CONTENT>Direct fetch of {source_url!r} was blocked (HTTP 403 or similar). "
-                "Use the google_fetch_page tool to retrieve it, or use google_search to find "
-                "corroborating sources for the article's key claims. Perform fact-checking based "
-                "on what you find.</SOURCE_CONTENT>\n\n"
-            )
-        else:
-            source_section = "<SOURCE_CONTENT>Not available — skip fact check, still check wording and characters.</SOURCE_CONTENT>\n\n"
+        source_section = self._build_source_section(source_url, source_content, source_fetched)
 
         prompt = (
             f"{source_section}"
@@ -149,10 +132,26 @@ class NewsReviewerAgent(BaseAgent):
             "Output ONLY the structured verdict in the exact format specified."
         )
 
-        # Use tool-calling path when web search tools are available and source was not
-        # directly fetched (blocked URL or no URL).
-        if not source_fetched and self._tool_registry is not None:
-            output = self.call_with_tools(prompt, self._tool_registry)
-        else:
-            output = self.call(prompt)
+        output = self._call_reviewer(prompt, source_fetched)
         return _parse_verdict(output)
+
+    def _build_source_section(self, source_url: str, source_content: str, source_fetched: bool) -> str:
+        """Build the source content section of the prompt."""
+        if source_content:
+            return f"<SOURCE_CONTENT>\n{source_content[:8000]}\n</SOURCE_CONTENT>\n\n"
+        elif source_url and self._tool_registry is not None:
+            _log.info("news_reviewer: source fetch failed for %r — will use web search tools", source_url)
+            return (
+                f"<SOURCE_CONTENT>Direct fetch of {source_url!r} was blocked (HTTP 403 or similar). "
+                "Use the google_fetch_page tool to retrieve it, or use google_search to find "
+                "corroborating sources for the article's key claims. Perform fact-checking based "
+                "on what you find.</SOURCE_CONTENT>\n\n"
+            )
+        else:
+            return "<SOURCE_CONTENT>Not available — skip fact check, still check wording and characters.</SOURCE_CONTENT>\n\n"
+
+    def _call_reviewer(self, prompt: str, source_fetched: bool) -> str:
+        """Call the LLM with or without tools depending on source availability."""
+        if not source_fetched and self._tool_registry is not None:
+            return self.call_with_tools(prompt, self._tool_registry)
+        return self.call(prompt)

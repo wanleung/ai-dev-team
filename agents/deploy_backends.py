@@ -111,6 +111,23 @@ class DockerBackend(DeployBackend):
         return DeployResult(passed=proc.returncode == 0, output=output, skipped=False,
                             duration_s=time.time() - start)
 
+    def _wait_for_compose_healthy(self, compose_file: Path, project_dir: Path,
+                                   output_lines: list[str]) -> bool:
+        """Wait for docker-compose services to become healthy. Returns True if healthy."""
+        for _ in range(12):
+            time.sleep(5)
+            proc = subprocess.run(
+                ["docker", "compose", "-f", str(compose_file), "ps"],
+                capture_output=True, text=True, cwd=str(project_dir)
+            )
+            output_lines.append(f"$ docker compose -f {compose_file} ps")
+            output_lines.append(proc.stdout)
+            if proc.stderr:
+                output_lines.append(proc.stderr)
+            if "healthy" in proc.stdout or "running" in proc.stdout:
+                return True
+        return False
+
     def _run_via_compose(self, compose_file: Path, test_file: Path,
                          project_dir: Path, timeout: int = 300) -> DeployResult:
         """Bring up docker-compose services, run pytest, then tear down."""
@@ -129,13 +146,7 @@ class DockerBackend(DeployBackend):
         start = time.time()
         try:
             _run(["docker", "compose", "-f", str(compose_file), "up", "-d", "--build"])
-            healthy = False
-            for _ in range(12):
-                time.sleep(5)
-                ps = _run(["docker", "compose", "-f", str(compose_file), "ps"])
-                if "healthy" in ps.stdout or "running" in ps.stdout:
-                    healthy = True
-                    break
+            healthy = self._wait_for_compose_healthy(compose_file, project_dir, output_lines)
             if not healthy:
                 output_lines.append("⚠️  Container did not become healthy within 60s")
             result = _run(["python3", "-m", "pytest", str(test_file), "-v", "--tb=short"],
@@ -154,75 +165,98 @@ class LibvirtBackend(DeployBackend):
     def __init__(self, config: dict) -> None:
         self._cfg = config
 
+    # ── Orchestration helpers ──────────────────────────────────────────────────
+
+    def _prepare_vm_config(self, project_dir: Path, config: dict) -> dict:
+        """Extract and validate VM configuration parameters."""
+        cfg = {**self._cfg, **config}
+        repo_name = project_dir.name
+        issue = cfg.get("_issue", "0")
+        
+        return {
+            "base_image": _safe_id(cfg["base_image"], "base_image"),
+            "vm_user": _safe_id(cfg.get("vm_user", "ubuntu"), "vm_user"),
+            "vm_name": _safe_id(self._resolve_vm_name(repo_name, str(issue)), "vm_name"),
+            "virt_host": _safe_id(cfg["virt_host"], "virt_host", extra_chars="@:"),
+            "ssh_key": os.path.expanduser(cfg["ssh_key"]) if cfg.get("ssh_key") else None,
+            "teardown_mode": cfg.get("teardown", "always"),
+            "vcpus": cfg.get("vcpus", 2),
+            "ram_mb": cfg.get("ram_mb", 2048),
+        }
+
+    def _setup_vm_infrastructure(self, vm_cfg: dict, output_lines: list[str]) -> tuple[str, str]:
+        """Setup VM infrastructure: preflight, pub key, overlay, provision. Returns (pub_key, overlay_path)."""
+        # 1. Preflight
+        self._preflight(vm_cfg["virt_host"], vm_cfg["ssh_key"], output_lines)
+
+        # 2. Derive public key for cloud-init
+        pub_key = self._derive_public_key(vm_cfg["ssh_key"])
+
+        # 3. CoW overlay
+        overlay_path = f"/tmp/aisw-overlay-{vm_cfg['vm_name']}.qcow2"
+        self._create_cow_overlay(vm_cfg["virt_host"], vm_cfg["ssh_key"],
+                                 vm_cfg["base_image"], overlay_path, output_lines)
+        return pub_key, overlay_path
+
+    def _provision_and_deploy(self, project_dir: Path, vm_cfg: dict,
+                             output_lines: list[str]) -> tuple[bool, Optional[str]]:
+        """Provision VM, wait for SSH, rsync code, and run tests. Returns (passed, vm_ip)."""
+        # Setup infrastructure and provision VM
+        pub_key, overlay_path = self._setup_vm_infrastructure(vm_cfg, output_lines)
+        with tempfile.TemporaryDirectory() as seed_dir:
+            self._provision_vm(vm_cfg["virt_host"], vm_cfg["ssh_key"], vm_cfg["vm_name"],
+                              overlay_path, seed_dir, pub_key, vm_cfg["vm_user"],
+                              vm_cfg["vcpus"], vm_cfg["ram_mb"], output_lines)
+
+        # Wait for SSH and deploy
+        vm_ip = self._wait_for_ssh(vm_cfg["virt_host"], vm_cfg["ssh_key"],
+                                   vm_cfg["vm_name"], vm_cfg["vm_user"], output_lines)
+        self._rsync_to_vm(project_dir, vm_cfg["virt_host"], vm_ip,
+                         vm_cfg["ssh_key"], vm_cfg["vm_user"], output_lines)
+
+        # Run tests
+        passed, test_output = self._run_tests_on_vm(vm_cfg["virt_host"], vm_ip,
+                                                    vm_cfg["ssh_key"], vm_cfg["vm_user"],
+                                                    output_lines)
+        output_lines.append(test_output)
+        return passed, vm_ip
+
+    def _handle_teardown(self, vm_cfg: dict, passed: bool, vm_ip: Optional[str],
+                        output_lines: list[str]) -> tuple[str, Optional[str]]:
+        """Handle VM teardown based on policy. Returns (vm_name_final, vm_ip_final)."""
+        should_teardown = (
+            vm_cfg["teardown_mode"] == "always" or
+            (vm_cfg["teardown_mode"] == "on_pass" and passed)
+        )
+        if should_teardown:
+            try:
+                self._teardown_vm(vm_cfg["virt_host"], vm_cfg["ssh_key"],
+                                 vm_cfg["vm_name"], output_lines)
+                return f"{vm_cfg['vm_name']} (destroyed)", None
+            except Exception as exc:
+                output_lines.append(f"⚠️  Teardown failed: {exc} — VM {vm_cfg['vm_name']} may need manual cleanup")
+                return vm_cfg["vm_name"], vm_ip
+        else:
+            return vm_cfg["vm_name"], vm_ip
+
     # ── Public entry point ────────────────────────────────────────────────────
 
     def run(self, project_dir: Path, config: dict) -> DeployResult:
         """Provision a VM, rsync code, run tests, and optionally tear down."""
         start = time.time()
-        cfg = {**self._cfg, **config}  # allow per-call overrides
-
-        repo_name = project_dir.name
-        issue = cfg.get("_issue", "0")
-        base_image = _safe_id(cfg["base_image"], "base_image")
-        vm_user = _safe_id(cfg.get("vm_user", "ubuntu"), "vm_user")
-        vm_name = _safe_id(self._resolve_vm_name(repo_name, str(issue)), "vm_name")
-        virt_host = _safe_id(cfg["virt_host"], "virt_host", extra_chars="@:")
-        ssh_key = os.path.expanduser(cfg["ssh_key"]) if cfg.get("ssh_key") else None
-        teardown_mode = cfg.get("teardown", "always")
-        vcpus = cfg.get("vcpus", 2)
-        ram_mb = cfg.get("ram_mb", 2048)
-
+        vm_cfg = self._prepare_vm_config(project_dir, config)
+        
         output_lines: list[str] = []
         vm_ip: Optional[str] = None
         passed = False
 
         try:
-            # 1. Preflight
-            self._preflight(virt_host, ssh_key, output_lines)
-
-            # 2. Derive public key for cloud-init
-            pub_key = self._derive_public_key(ssh_key)
-
-            # 3. CoW overlay
-            overlay_path = f"/tmp/aisw-overlay-{vm_name}.qcow2"
-            self._create_cow_overlay(virt_host, ssh_key, base_image, overlay_path, output_lines)
-
-            # 4. Cloud-init seed + virt-install
-            with tempfile.TemporaryDirectory() as seed_dir:
-                self._provision_vm(virt_host, ssh_key, vm_name, overlay_path,
-                                   seed_dir, pub_key, vm_user, vcpus, ram_mb, output_lines)
-
-            # 5. Wait for SSH
-            vm_ip = self._wait_for_ssh(virt_host, ssh_key, vm_name, vm_user, output_lines)
-
-            # 6. Rsync code
-            self._rsync_to_vm(project_dir, virt_host, vm_ip, ssh_key, vm_user, output_lines)
-
-            # 7. Run tests
-            passed, test_output = self._run_tests_on_vm(virt_host, vm_ip, ssh_key, vm_user, output_lines)
-            output_lines.append(test_output)
-
+            passed, vm_ip = self._provision_and_deploy(project_dir, vm_cfg, output_lines)
         except Exception as exc:
             output_lines.append(f"❌ Deploy backend error: {exc}")
             passed = False
-
         finally:
-            should_teardown = (
-                teardown_mode == "always" or
-                (teardown_mode == "on_pass" and passed)
-            )
-            if should_teardown:
-                try:
-                    self._teardown_vm(virt_host, ssh_key, vm_name, output_lines)
-                    vm_name_final = f"{vm_name} (destroyed)"
-                    vm_ip_final = None
-                except Exception as exc:
-                    output_lines.append(f"⚠️  Teardown failed: {exc} — VM {vm_name} may need manual cleanup")
-                    vm_name_final = vm_name
-                    vm_ip_final = vm_ip
-            else:
-                vm_name_final = vm_name
-                vm_ip_final = vm_ip
+            vm_name_final, vm_ip_final = self._handle_teardown(vm_cfg, passed, vm_ip, output_lines)
 
         duration = time.time() - start
         return DeployResult(
@@ -312,13 +346,9 @@ class LibvirtBackend(DeployBackend):
         )
         output_lines.append(f"[overlay] ✅ {overlay_path}")
 
-    def _provision_vm(self, virt_host: str, ssh_key: Optional[str],
-                      vm_name: str, overlay_path: str, seed_dir: str,
-                      pub_key: str, vm_user: str, vcpus: int, ram_mb: int,
-                      output_lines: list[str]) -> None:
-        """Create cloud-init seed ISO and start VM via virt-install."""
-        seed_local = Path(seed_dir)
-
+    def _create_cloud_init_seed(self, vm_name: str, pub_key: str, vm_user: str,
+                                seed_local: Path) -> tuple[str, str]:
+        """Create cloud-init user-data and meta-data. Returns (user_data, meta_data)."""
         user_data = textwrap.dedent(f"""\
             #cloud-config
             users:
@@ -330,11 +360,14 @@ class LibvirtBackend(DeployBackend):
             package_update: true
         """)
         meta_data = f"instance-id: {vm_name}\nlocal-hostname: {vm_name}\n"
-
+        
         (seed_local / "user-data").write_text(user_data)
         (seed_local / "meta-data").write_text(meta_data)
+        return user_data, meta_data
 
-        # Build iso on host
+    def _upload_and_build_seed_iso(self, virt_host: str, ssh_key: Optional[str],
+                                    vm_name: str, seed_local: Path) -> str:
+        """Upload cloud-init files and build seed ISO on virt host. Returns remote seed path."""
         seed_remote = f"/tmp/aisw-seed-{vm_name}"
         self._ssh_host(virt_host, f"mkdir -p {seed_remote}", ssh_key=ssh_key)
         self._scp_to_host(str(seed_local / "user-data"),
@@ -346,6 +379,16 @@ class LibvirtBackend(DeployBackend):
             f"cloud-localds {seed_remote}/seed.iso {seed_remote}/user-data {seed_remote}/meta-data",
             ssh_key=ssh_key,
         )
+        return seed_remote
+
+    def _provision_vm(self, virt_host: str, ssh_key: Optional[str],
+                      vm_name: str, overlay_path: str, seed_dir: str,
+                      pub_key: str, vm_user: str, vcpus: int, ram_mb: int,
+                      output_lines: list[str]) -> None:
+        """Create cloud-init seed ISO and start VM via virt-install."""
+        seed_local = Path(seed_dir)
+        self._create_cloud_init_seed(vm_name, pub_key, vm_user, seed_local)
+        seed_remote = self._upload_and_build_seed_iso(virt_host, ssh_key, vm_name, seed_local)
 
         virt_cmd = (
             f"virt-install --name {vm_name} --memory {ram_mb} --vcpus {vcpus} "
@@ -357,14 +400,10 @@ class LibvirtBackend(DeployBackend):
         self._ssh_host(virt_host, virt_cmd, ssh_key=ssh_key)
         output_lines.append(f"[provision] ✅ VM {vm_name} started")
 
-    def _wait_for_ssh(self, virt_host: str, ssh_key: Optional[str],
-                      vm_name: str, vm_user: str,
-                      output_lines: list[str], max_wait: int = 180) -> str:
-        """Poll virsh domifaddr and wait until SSH is reachable; return VM IP."""
-        output_lines.append(f"[wait] waiting for {vm_name} IP (max {max_wait}s)…")
+    def _poll_vm_ip(self, virt_host: str, ssh_key: Optional[str],
+                    vm_name: str, deadline: float) -> Optional[str]:
+        """Poll virsh domifaddr until IP appears. Returns IP or None if timeout."""
         ip: Optional[str] = None
-        deadline = time.time() + max_wait
-
         while time.time() < deadline:
             try:
                 out = self._ssh_host(virt_host, f"virsh domifaddr {vm_name}", ssh_key=ssh_key)
@@ -379,15 +418,11 @@ class LibvirtBackend(DeployBackend):
             except subprocess.CalledProcessError:
                 pass
             time.sleep(10)
+        return ip
 
-        if not ip:
-            raise RuntimeError(f"VM {vm_name} did not get an IP within {max_wait}s")
-
-        output_lines.append(f"[wait] ✅ {vm_name} IP: {ip}")
-
-        # Wait for SSH
-        output_lines.append(f"[wait] waiting for SSH on {ip}…")
-        ssh_ready = False
+    def _test_ssh_connection(self, virt_host: str, ssh_key: Optional[str],
+                            vm_user: str, ip: str, deadline: float) -> bool:
+        """Poll SSH connection until ready or timeout. Returns True if ready."""
         while time.time() < deadline:
             try:
                 key_args = ["-i", ssh_key] if ssh_key else []
@@ -398,11 +433,26 @@ class LibvirtBackend(DeployBackend):
                      f"{vm_user}@{ip}", "true"],
                     check=True, capture_output=True, timeout=10,
                 )
-                ssh_ready = True
-                break
+                return True
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 time.sleep(10)
+        return False
 
+    def _wait_for_ssh(self, virt_host: str, ssh_key: Optional[str],
+                      vm_name: str, vm_user: str,
+                      output_lines: list[str], max_wait: int = 180) -> str:
+        """Poll virsh domifaddr and wait until SSH is reachable; return VM IP."""
+        output_lines.append(f"[wait] waiting for {vm_name} IP (max {max_wait}s)…")
+        deadline = time.time() + max_wait
+
+        ip = self._poll_vm_ip(virt_host, ssh_key, vm_name, deadline)
+        if not ip:
+            raise RuntimeError(f"VM {vm_name} did not get an IP within {max_wait}s")
+        output_lines.append(f"[wait] ✅ {vm_name} IP: {ip}")
+
+        # Wait for SSH
+        output_lines.append(f"[wait] waiting for SSH on {ip}…")
+        ssh_ready = self._test_ssh_connection(virt_host, ssh_key, vm_user, ip, deadline)
         if not ssh_ready:
             raise RuntimeError(f"SSH on {vm_name} ({ip}) not reachable within {max_wait}s")
 

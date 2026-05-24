@@ -39,14 +39,15 @@ class DocumentationAgent(BaseAgent):
     def _build_file_context(
         self, gh: GitHubClient, doc_targets: list[str], ref: str
     ) -> str:
-        """Pre-fetch file content and return as a formatted context block.
-
-        If doc_targets are specified, read those files.
-        Otherwise, discover .md files plus repo root listing and read up to 5 files.
-        """
+        """Pre-fetch file content and return as a formatted context block."""
         sections: list[str] = []
+        self._add_root_listing(gh, ref, sections)
+        paths_to_read = doc_targets or self._discover_markdown_files(gh, ref)
+        self._read_files(gh, ref, paths_to_read, sections)
+        return "\n\n".join(sections) if sections else "No existing files found."
 
-        # Always include root listing
+    def _add_root_listing(self, gh: GitHubClient, ref: str, sections: list[str]) -> None:
+        """Append repository root listing to sections."""
         try:
             entries = gh.list_files("", ref=ref)
             listing = "\n".join(f"[{e['type']}] {e['path']}" for e in entries)
@@ -54,19 +55,19 @@ class DocumentationAgent(BaseAgent):
         except Exception as exc:
             logger.warning("Failed to list repository root files", error=str(exc))
 
-        # Determine which files to read
-        if doc_targets:
-            paths_to_read = doc_targets
-        else:
-            # Auto-discover markdown files (cap at 5)
-            try:
-                paths_to_read = gh.search_files("**/*.md", ref=ref)[:5]
-            except Exception as exc:
-                logger.warning("Failed to auto-discover markdown files", error=str(exc))
-                paths_to_read = []
+    def _discover_markdown_files(self, gh: GitHubClient, ref: str) -> list[str]:
+        """Auto-discover up to 5 markdown files in the repo."""
+        try:
+            return gh.search_files("**/*.md", ref=ref)[:5]
+        except Exception as exc:
+            logger.warning("Failed to auto-discover markdown files", error=str(exc))
+            return []
 
-        # Read each file and include content
-        for path in paths_to_read:
+    def _read_files(
+        self, gh: GitHubClient, ref: str, paths: list[str], sections: list[str]
+    ) -> None:
+        """Read each file and append to sections."""
+        for path in paths:
             try:
                 content = gh.get_file_content(path, ref=ref)
                 if content is not None:
@@ -76,10 +77,6 @@ class DocumentationAgent(BaseAgent):
             except Exception as exc:
                 logger.warning("Failed to read file", path=path, error=str(exc))
 
-        if not sections:
-            return "No existing files found."
-        return "\n\n".join(sections)
-
     def run(
         self,
         issue_title: str,
@@ -87,26 +84,10 @@ class DocumentationAgent(BaseAgent):
         github_client: GitHubClient,
         ref: Optional[str] = None,
     ) -> list[dict]:
-        """Run the documentation agent.
-
-        Args:
-            issue_title: Title of the GitHub issue.
-            issue_body: Body text of the GitHub issue.
-            github_client: Pre-built GitHubClient for the target repo.
-            ref: Git ref to read files from. Auto-detected from repo if None.
-
-        Returns a list of {"path", "content", "action"} dicts to commit.
-        Raises ValueError if the agent produces no file writes.
-        """
+        """Run agent on issue. Returns list of {"path", "content", "action"} dicts."""
         gh = github_client
-
-        # Auto-detect the default branch (handles repos using master, main, etc.)
-        if ref is None:
-            ref = self._detect_ref(gh)
-
+        ref = ref or self._detect_ref(gh)
         doc_targets = self._parse_doc_targets(issue_body)
-
-        # Pre-fetch file content and inject directly into the prompt
         file_context = self._build_file_context(gh, doc_targets, ref)
 
         user_message = (
@@ -115,25 +96,34 @@ class DocumentationAgent(BaseAgent):
             "Now produce the documentation updates as a JSON array."
         )
 
-        # Use plain call() — file content is already in the prompt, no tools needed
         raw = self.call(user_message=user_message)
+        file_writes = self._parse_json_response(raw)
 
-        # Parse JSON array from response
-        try:
-            file_writes = json.loads(raw)
-        except json.JSONDecodeError:
-            m = re.search(r"\[.*?\]", raw, re.DOTALL)
-            if m:
-                try:
-                    file_writes = json.loads(m.group(0))
-                except json.JSONDecodeError:
-                    return []
-            else:
-                return []
-
-        if not isinstance(file_writes, list) or len(file_writes) == 0:
+        # ValueError is raised only if parsing succeeded but returned empty list
+        if file_writes is None:
+            return []  # Parsing failed - return empty list
+        if len(file_writes) == 0:
             raise ValueError(
                 f"DocumentationAgent produced no file writes for issue: {issue_title!r}"
             )
 
         return file_writes
+
+    def _parse_json_response(self, raw: str) -> list | None:
+        """Parse JSON array from LLM response, with fallback extraction.
+        
+        Returns:
+            list on successful parse, None if unparseable.
+        """
+        try:
+            result = json.loads(raw)
+            return result if isinstance(result, list) else None
+        except json.JSONDecodeError:
+            m = re.search(r"\[.*?\]", raw, re.DOTALL)
+            if m:
+                try:
+                    result = json.loads(m.group(0))
+                    return result if isinstance(result, list) else None
+                except json.JSONDecodeError:
+                    return None
+            return None

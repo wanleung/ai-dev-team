@@ -35,13 +35,7 @@ class ArchitectReviewerAgent(BaseAgent):
                 - revised_design (str | None): Updated design if revision was produced
                 - revised_modules (list[dict]): Re-parsed modules from revised design (or [])
         """
-        prompt = (
-            f"Please review the following system design for the project '{project_name}'.\n\n"
-            f"**PRD (acceptance criteria to validate coverage against):**\n---\n{prd}\n---\n\n"
-            f"**System Design to review:**\n---\n{design}\n---\n\n"
-            f"Provide a thorough design review following your role instructions."
-        )
-
+        prompt = self._build_review_prompt(design, prd, project_name)
         response = self.call(prompt)
         verdict = self._extract_verdict(response)
         revised_design = self._extract_revised_design(response)
@@ -54,6 +48,15 @@ class ArchitectReviewerAgent(BaseAgent):
             "revised_design": revised_design,
             "revised_modules": revised_modules,
         }
+
+    def _build_review_prompt(self, design: str, prd: str, project_name: str) -> str:
+        """Build the prompt for reviewing a system design."""
+        return (
+            f"Please review the following system design for the project '{project_name}'.\n\n"
+            f"**PRD (acceptance criteria to validate coverage against):**\n---\n{prd}\n---\n\n"
+            f"**System Design to review:**\n---\n{design}\n---\n\n"
+            f"Provide a thorough design review following your role instructions."
+        )
 
     def run_with_github(
         self,

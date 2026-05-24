@@ -25,14 +25,12 @@ class ArchitectAgent(BaseAgent):
         """Produce a system design document from a PRD.
 
         Args:
-            prd: The PRD markdown from the PM agent.
-            project_name: Human-readable project name for context.
+            prd: PRD markdown from the PM agent
+            project_name: Human-readable project name for context
 
         Returns:
-            dict with keys:
-                - design (str): Full system design markdown
-                - modules (list[dict]): Parsed list of modules to implement
-                  Each module: {name: str, description: str, tier: str}
+            dict with 'design' (str) and 'modules' (list[dict])
+            Each module: {name: str, description: str, tier: str}
         """
         prompt = (
             f"You have received the following PRD for the project '{project_name}':\n\n"
@@ -81,18 +79,28 @@ class ArchitectAgent(BaseAgent):
         """Rewrite the system design incorporating reviewer feedback and the reviewer's draft.
 
         Args:
-            original_design: The system design that was reviewed.
-            review: Reviewer's feedback text.
-            draft_revision: Reviewer's suggested rewrite (use as direction, not copy-paste).
-            prd: Current PRD (for context).
-            project_name: Current project name.
+            original_design, review, draft_revision, prd, project_name
 
         Returns:
-            dict with keys:
-                - design (str): Improved system design markdown
-                - modules (list[dict]): Re-parsed implementation modules
+            dict with 'design' (str) and 'modules' (list[dict])
         """
-        prompt = (
+        prompt = self._build_revision_prompt(
+            project_name, prd, original_design, review, draft_revision
+        )
+        design = self._call_with_tools_or_fallback(prompt)
+        modules = self._parse_modules(design)
+        return {"design": design, "modules": modules}
+
+    def _build_revision_prompt(
+        self,
+        project_name: str,
+        prd: str,
+        original_design: str,
+        review: str,
+        draft_revision: str,
+    ) -> str:
+        """Build the revision prompt from all input sections."""
+        return (
             f"You previously wrote a System Design for the project '{project_name}' that was "
             f"reviewed and needs improvement.\n\n"
             f"## PRD (unchanged)\n---\n{prd}\n---\n\n"
@@ -104,13 +112,6 @@ class ArchitectAgent(BaseAgent):
             f"decisions. Output a complete, improved System Design following your role instructions. "
             f"Make sure to include an 'Implementation Modules' section."
         )
-
-        design = self._call_with_tools_or_fallback(prompt)
-        modules = self._parse_modules(design)
-        return {
-            "design": design,
-            "modules": modules,
-        }
 
     def _call_with_tools_or_fallback(self, prompt: str) -> str:
         """Call LLM with optional RAG tool registry support, falling back to plain call.
@@ -149,44 +150,42 @@ class ArchitectAgent(BaseAgent):
             if in_modules_section and stripped.startswith("## ") and "module" not in stripped.lower():
                 break
 
-            # Parse numbered list items: "1. **module_name**: description" or "1. **module_name** [tier:X]: description"
+            # Parse numbered list items
             if in_modules_section and stripped and stripped[0].isdigit():
-                # Remove leading "1. " etc.
-                content = stripped.split(". ", 1)[-1] if ". " in stripped else stripped
-                # Split on last ":" for name/description (to handle [tier:X] tags)
-                if ":" in content:
-                    # Find the last colon for splitting name and description
-                    last_colon_idx = content.rfind(":")
-                    name_part = content[:last_colon_idx].strip()
-                    desc = content[last_colon_idx + 1:].strip()
-                    
-                    # Extract tier tag BEFORE extracting name from bold markers
-                    tier = "senior"
-                    tier_match = re.search(r'\[tier:(junior|senior)\]', name_part + " " + desc)
-                    if tier_match:
-                        tier = tier_match.group(1)
-                    
-                    # Extract name from **name** if present
-                    bold_match = re.search(r'\*\*(.*?)\*\*', name_part)
-                    if bold_match:
-                        name = bold_match.group(1)
-                    else:
-                        # Fallback: strip * characters from name
-                        name = name_part.strip("* ").strip()
-                    
-                    # Remove tier tag from both name and desc
-                    name = re.sub(r'\s*\[tier:(?:junior|senior)\]', '', name).strip()
-                    desc = re.sub(r'\s*\[tier:(?:junior|senior)\]', '', desc).strip()
-                else:
-                    name = content.strip("* ").strip()
-                    desc = ""
-                    tier = "senior"
-
-                if name:
-                    modules.append({"name": name, "description": desc, "tier": tier})
+                module = ArchitectAgent._parse_module_line(stripped)
+                if module:
+                    modules.append(module)
 
         # Fallback: return a generic single module if parsing fails
         if not modules:
             modules = [{"name": "main", "description": "Main application module", "tier": "senior"}]
 
         return modules
+
+    @staticmethod
+    def _parse_module_line(stripped: str) -> dict | None:
+        """Parse a single numbered module line into a dict."""
+        content = stripped.split(". ", 1)[-1] if ". " in stripped else stripped
+        if ":" not in content:
+            name = content.strip("* ").strip()
+            return {"name": name, "description": "", "tier": "senior"} if name else None
+
+        last_colon_idx = content.rfind(":")
+        name_part = content[:last_colon_idx].strip()
+        desc = content[last_colon_idx + 1:].strip()
+
+        # Extract tier tag
+        tier = "senior"
+        tier_match = re.search(r'\[tier:(junior|senior)\]', name_part + " " + desc)
+        if tier_match:
+            tier = tier_match.group(1)
+
+        # Extract name from **name** if present
+        bold_match = re.search(r'\*\*(.*?)\*\*', name_part)
+        name = bold_match.group(1) if bold_match else name_part.strip("* ").strip()
+
+        # Remove tier tag from both name and desc
+        name = re.sub(r'\s*\[tier:(?:junior|senior)\]', '', name).strip()
+        desc = re.sub(r'\s*\[tier:(?:junior|senior)\]', '', desc).strip()
+
+        return {"name": name, "description": desc, "tier": tier} if name else None

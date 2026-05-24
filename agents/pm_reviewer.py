@@ -35,13 +35,7 @@ class PMReviewerAgent(BaseAgent):
                 - revised_prd (str | None): Updated PRD if revision was produced
                 - revised_project_name (str): Re-extracted project name (or original)
         """
-        prompt = (
-            f"Please review the following PRD for the project '{project_name}'.\n\n"
-            f"**Original client requirement:**\n---\n{requirement}\n---\n\n"
-            f"**PRD to review:**\n---\n{prd}\n---\n\n"
-            f"Provide a thorough PRD review following your role instructions."
-        )
-
+        prompt = self._build_review_prompt(prd, requirement, project_name)
         response = self.call(prompt)
         verdict = self._extract_verdict(response)
         revised_prd = self._extract_revised_prd(response)
@@ -54,6 +48,15 @@ class PMReviewerAgent(BaseAgent):
             "revised_prd": revised_prd,
             "revised_project_name": revised_project_name,
         }
+
+    def _build_review_prompt(self, prd: str, requirement: str, project_name: str) -> str:
+        """Build the prompt for reviewing a PRD."""
+        return (
+            f"Please review the following PRD for the project '{project_name}'.\n\n"
+            f"**Original client requirement:**\n---\n{requirement}\n---\n\n"
+            f"**PRD to review:**\n---\n{prd}\n---\n\n"
+            f"Provide a thorough PRD review following your role instructions."
+        )
 
     def run_with_github(
         self,

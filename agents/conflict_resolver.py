@@ -84,52 +84,45 @@ class ConflictResolverAgent(BaseAgent):
         """Remove the GitHub token from *text* so it is safe to log or surface."""
         return _sanitise_utils(text, getattr(self, "_token", None))
 
-    def _resolve(
-        self,
-        tmpdir: str,
-        repo_url: str,
-        head_branch: str,
-        base_branch: str,
-        pr_context: PRContext,
-    ) -> ResolveResult:
-        """Core resolution logic executed inside the temp directory."""
-        # 1. Clone
+    def _clone_and_setup(self, tmpdir: str, repo_url: str, head_branch: str) -> Optional[str]:
+        """Clone repo and setup git config. Returns error reason if failed, None on success."""
         r = self._run(["git", "clone", "--filter=blob:none", repo_url, tmpdir])
         if r.returncode != 0:
-            safe_reason = self._sanitise(r.stderr.strip())
-            return ResolveResult(status="failed", reason=f"clone failed: {safe_reason}")
+            return f"clone failed: {self._sanitise(r.stderr.strip())}"
 
         self._run(["git", "config", "user.email", "conflict-resolver@bot"], cwd=tmpdir)
         self._run(["git", "config", "user.name", "Conflict Resolver Bot"], cwd=tmpdir)
 
-        # 2. Checkout head branch
         r = self._run(["git", "checkout", head_branch], cwd=tmpdir)
         if r.returncode != 0:
-            safe_reason = self._sanitise(r.stderr.strip())
-            return ResolveResult(status="failed", reason=f"checkout failed: {safe_reason}")
+            return f"checkout failed: {self._sanitise(r.stderr.strip())}"
+        return None
 
-        # 3. Fetch base and attempt merge
+    def _fetch_and_merge(self, tmpdir: str, base_branch: str) -> tuple[bool, Optional[str]]:
+        """Fetch base branch and attempt merge.
+        
+        Returns:
+            (success, error_reason): success=True if clean merge, False if conflicts, 
+                                     error_reason set only if git operation failed
+        """
         r = self._run(["git", "fetch", "origin", base_branch], cwd=tmpdir)
         if r.returncode != 0:
-            safe_reason = self._sanitise(r.stderr.strip())
-            return ResolveResult(status="failed", reason=f"fetch failed: {safe_reason}")
+            return False, f"fetch failed: {self._sanitise(r.stderr.strip())}"
+        
         merge_r = self._run(["git", "merge", f"origin/{base_branch}"], cwd=tmpdir)
+        return merge_r.returncode == 0, None
 
-        if merge_r.returncode == 0:
-            # No conflicts — already up to date or clean merge
-            return ResolveResult(status="resolved", resolved_files=[])
-
-        # 4. Find conflicting files
+    def _get_conflict_files(self, tmpdir: str) -> list[str]:
+        """Get list of files with merge conflicts."""
         diff_r = self._run(
             ["git", "diff", "--name-only", "--diff-filter=U"],
             cwd=tmpdir,
         )
-        conflict_files = [f for f in diff_r.stdout.strip().splitlines() if f]
+        return [f for f in diff_r.stdout.strip().splitlines() if f]
 
-        if not conflict_files:
-            return ResolveResult(status="resolved", resolved_files=[])
-
-        # 5. Resolve each file with LLM
+    def _resolve_conflicts(self, tmpdir: str, conflict_files: list[str],
+                          pr_context: PRContext) -> tuple[list[str], list[str]]:
+        """Resolve each conflicting file with LLM. Returns (resolved, failed) file lists."""
         resolved_files: list[str] = []
         failed_files: list[str] = []
 
@@ -144,30 +137,58 @@ class ConflictResolverAgent(BaseAgent):
             except Exception:
                 failed_files.append(path)
 
-        if failed_files:
-            return ResolveResult(
-                status="failed",
-                resolved_files=resolved_files,
-                failed_files=failed_files,
-                reason=f"LLM resolution failed for: {', '.join(failed_files)}",
-            )
+        return resolved_files, failed_files
 
-        # 6. Commit
+    def _commit_and_push(self, tmpdir: str, head_branch: str,
+                        base_branch: str) -> Optional[str]:
+        """Commit resolved conflicts and push. Returns error reason if failed, None on success."""
         self._run(
             ["git", "commit", "-m", f"chore: resolve merge conflicts with {base_branch}"],
             cwd=tmpdir,
         )
 
-        # 7. Push
         push_r = self._run(["git", "push", "origin", head_branch], cwd=tmpdir)
         if push_r.returncode != 0:
-            safe_reason = self._sanitise(push_r.stderr.strip())
-            return ResolveResult(
-                status="failed",
-                resolved_files=resolved_files,
-                reason=f"push failed: {safe_reason}",
-            )
+            return f"push failed: {self._sanitise(push_r.stderr.strip())}"
+        return None
 
+    def _resolve(
+        self,
+        tmpdir: str,
+        repo_url: str,
+        head_branch: str,
+        base_branch: str,
+        pr_context: PRContext,
+    ) -> ResolveResult:
+        """Core resolution logic executed inside the temp directory."""
+        # 1. Clone and setup
+        err = self._clone_and_setup(tmpdir, repo_url, head_branch)
+        if err:
+            return ResolveResult(status="failed", reason=err)
+
+        # 2. Fetch and merge
+        clean_merge, err = self._fetch_and_merge(tmpdir, base_branch)
+        if err:
+            return ResolveResult(status="failed", reason=err)
+        if clean_merge:
+            return ResolveResult(status="resolved", resolved_files=[])
+
+        # 3. Find conflicting files
+        conflict_files = self._get_conflict_files(tmpdir)
+        if not conflict_files:
+            return ResolveResult(status="resolved", resolved_files=[])
+
+        # 4. Resolve with LLM
+        resolved_files, failed_files = self._resolve_conflicts(tmpdir, conflict_files, pr_context)
+        if failed_files:
+            return ResolveResult(status="failed", resolved_files=resolved_files,
+                                failed_files=failed_files,
+                                reason=f"LLM resolution failed for: {', '.join(failed_files)}")
+
+        # 5. Commit and push
+        err = self._commit_and_push(tmpdir, head_branch, base_branch)
+        if err:
+            return ResolveResult(status="failed", resolved_files=resolved_files, reason=err)
         return ResolveResult(status="resolved", resolved_files=resolved_files)
 
     def _resolve_file(self, path: str, content: str, ctx: PRContext) -> str:

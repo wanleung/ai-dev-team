@@ -33,20 +33,7 @@ class ProductManagerAgent(BaseAgent):
                 - issue_number (int | None): GitHub issue number if created
                 - issue_url (str | None): GitHub issue URL if created
         """
-        synthesis_section = (
-            f"A multi-perspective pre-analysis of this requirement has already been conducted.\n"
-            f"Use the key insights below to inform your PRD — do not copy them verbatim.\n\n"
-            f"---\n{discussion_synthesis}\n---\n\n"
-            if discussion_synthesis.strip()
-            else ""
-        )
-        prompt = (
-            f"{synthesis_section}"
-            f"A client has submitted the following software requirement:\n\n"
-            f"---\n{requirement}\n---\n\n"
-            f"Please analyze this requirement and produce a detailed PRD following your role instructions."
-        )
-
+        prompt = self._build_prd_prompt(requirement, discussion_synthesis)
         prd = self.call(prompt)
         project_name = self._extract_project_name(prd)
 
@@ -56,6 +43,22 @@ class ProductManagerAgent(BaseAgent):
             "issue_number": None,
             "issue_url": None,
         }
+
+    def _build_prd_prompt(self, requirement: str, discussion_synthesis: str) -> str:
+        """Build the prompt for generating a PRD."""
+        synthesis_section = (
+            f"A multi-perspective pre-analysis of this requirement has already been conducted.\n"
+            f"Use the key insights below to inform your PRD — do not copy them verbatim.\n\n"
+            f"---\n{discussion_synthesis}\n---\n\n"
+            if discussion_synthesis.strip()
+            else ""
+        )
+        return (
+            f"{synthesis_section}"
+            f"A client has submitted the following software requirement:\n\n"
+            f"---\n{requirement}\n---\n\n"
+            f"Please analyze this requirement and produce a detailed PRD following your role instructions."
+        )
 
     def run_with_github(self, requirement: str, github_client, discussion_synthesis: str = "") -> dict:
         """Run and also create a GitHub Issue with the PRD.
@@ -103,7 +106,29 @@ class ProductManagerAgent(BaseAgent):
                 - issue_number (None): Unchanged — GitHub issue was already created
                 - issue_url (None): Unchanged
         """
-        prompt = (
+        prompt = self._build_revision_prompt(
+            original_prd, review, draft_revision, requirement, project_name
+        )
+        prd = self.call(prompt)
+        new_project_name = self._extract_project_name(prd) or project_name
+
+        return {
+            "prd": prd,
+            "project_name": new_project_name,
+            "issue_number": None,
+            "issue_url": None,
+        }
+
+    def _build_revision_prompt(
+        self,
+        original_prd: str,
+        review: str,
+        draft_revision: str,
+        requirement: str,
+        project_name: str,
+    ) -> str:
+        """Build the prompt for revising a PRD based on review feedback."""
+        return (
             f"You previously wrote a PRD for the project '{project_name}' that was reviewed "
             f"and needs improvement.\n\n"
             f"## Original Client Requirement\n---\n{requirement}\n---\n\n"
@@ -114,16 +139,6 @@ class ProductManagerAgent(BaseAgent):
             f"Rewrite the PRD addressing the reviewer's concerns. Preserve all requirements "
             f"that were already correct. Output a complete, improved PRD following your role instructions."
         )
-
-        prd = self.call(prompt)
-        new_project_name = self._extract_project_name(prd) or project_name
-
-        return {
-            "prd": prd,
-            "project_name": new_project_name,
-            "issue_number": None,
-            "issue_url": None,
-        }
 
     @staticmethod
     def _extract_project_name(prd: str) -> str:
