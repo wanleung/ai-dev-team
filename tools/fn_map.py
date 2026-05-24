@@ -90,7 +90,10 @@ def resolve_paths(
     result = []
     for p in collected:
         rel = str(p.relative_to(root))
-        excluded = any(rel.startswith(ex.rstrip("/") + "/") for ex in exclude)
+        excluded = any(
+            (rel.startswith(ex) if ex.endswith("/") else rel == ex)
+            for ex in exclude
+        )
         if not excluded:
             result.append(p)
     return sorted(set(result))
@@ -151,6 +154,8 @@ def build_distribution(
     funcs: list[FunctionInfo], buckets: list[int]
 ) -> list[tuple[str, int]]:
     """Return (label, count) pairs for each size bucket (exclusive per-range counts)."""
+    if not buckets:
+        raise ValueError("buckets must not be empty")
     sorted_buckets = sorted(buckets)
     result: list[tuple[str, int]] = []
     prev = 0
@@ -249,14 +254,13 @@ def _fn_css_class(fn: FunctionInfo, limit: int) -> str:
 
 def _render_function_card(fn: FunctionInfo, limit: int) -> str:
     css = _fn_css_class(fn, limit)
-    file_safe = html.escape(fn.file)
     name_safe = html.escape(fn.name)
-    key = f"{file_safe}::{name_safe}::{fn.lineno}"
-    key_safe = key.replace("'", "\\'")
+    key = f"{fn.file}::{fn.name}::{fn.lineno}"
+    key_attr = html.escape(json.dumps(key))
     calls_n = len(fn.calls)
     return (
         f'<div class="fn-card {css}" '
-        f'onclick="showDetail(\'{key_safe}\')" '
+        f'onclick="showDetail({key_attr})" '
         f'data-violation="{1 if fn.line_count > limit else 0}" '
         f'data-big="{1 if fn.line_count > 50 else 0}">'
         f'<div class="fn-name">{name_safe}</div>'
@@ -287,9 +291,7 @@ def _build_fn_data_json(funcs: list[FunctionInfo], calledby: dict[str, list[str]
     """Build a JSON object mapping key → {name, file, lineno, lines, calls, calledBy}."""
     data: dict[str, dict] = {}
     for fn in funcs:
-        file_safe = html.escape(fn.file)
-        name_safe = html.escape(fn.name)
-        key = f"{file_safe}::{name_safe}::{fn.lineno}"
+        key = f"{fn.file}::{fn.name}::{fn.lineno}"
         data[key] = {
             "name": fn.name, "file": fn.file, "lineno": fn.lineno,
             "lines": fn.line_count, "calls": sorted(fn.calls),
@@ -347,8 +349,9 @@ def _html_sidebar(by_file: dict[str, list[FunctionInfo]], limit: int) -> str:
         v = sum(1 for f in funcs if f.line_count > limit)
         badge = f'<span class="badge-{"bad" if v else "ok"}">{v}</span>'
         file_safe = html.escape(file)
+        file_attr = html.escape(json.dumps(file))
         items.append(
-            f'<div class="s-file" onclick="scrollToFile(\'{file_safe}\')">'
+            f'<div class="s-file" onclick="scrollToFile({file_attr})">'
             f'{file_safe}{badge}</div>'
         )
     return f'<div id="sidebar">{"".join(items)}</div>'

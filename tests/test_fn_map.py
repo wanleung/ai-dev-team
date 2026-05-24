@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 from tools.fn_map import FunctionInfo, FnMapConfig, load_config, resolve_paths, _extract_calls, _parse_file, collect_functions, detect_violations, build_distribution, build_call_index, build_calledby_index, print_terminal_report
 
+REPO_ROOT = Path(__file__).parent.parent
+
 # ── Task 1: Data model + config loader ──────────────────────────────────────
 
 def test_function_info_defaults():
@@ -92,6 +94,13 @@ def test_resolve_paths_ignores_missing_include(tmp_path):
     result = resolve_paths(["nonexistent.py"], [], root=tmp_path)
     assert result == []
 
+def test_resolve_paths_excludes_exact_file(tmp_path):
+    f = tmp_path / "tools" / "fn_map.py"
+    (tmp_path / "tools").mkdir()
+    f.write_text("x = 1")
+    result = resolve_paths(["tools/fn_map.py"], ["tools/fn_map.py"], root=tmp_path)
+    assert f not in result  # exact file exclude must work
+
 # ── Task 3: AST analysis ────────────────────────────────────────────────────
 
 def _make_py(tmp_path, name, code):
@@ -174,6 +183,10 @@ def test_build_distribution_buckets():
     assert counts["≤100 lines"] == 1  # d
     assert counts[">100 lines"] == 0
 
+def test_build_distribution_empty_buckets_raises():
+    with pytest.raises(ValueError, match="buckets"):
+        build_distribution([_make_fn("a", 10)], [])
+
 def test_build_call_index():
     fn_a = _make_fn("alpha", 10)
     fn_b = _make_fn("beta", 20)
@@ -230,6 +243,15 @@ def test_render_function_card_escapes_html():
     card = _render_function_card(fn, 30)
     assert "<script>" not in card
     assert "&lt;script&gt;" in card
+
+def test_render_function_card_onclick_uses_json_not_html_entities():
+    """onclick uses json.dumps() so the arg is double-quoted; a ' in the path stays safe."""
+    fn = FunctionInfo(name="func", file="it's&tricky.py", lineno=1, line_count=10, calls=set())
+    card = _render_function_card(fn, 30)
+    # Argument must be a JSON double-quoted string (not a single-quoted JS string)
+    assert 'onclick="showDetail(&quot;' in card  # &quot; = double-quote opening the JSON string
+    # No single-quoted JS string containing HTML entities (the old broken pattern)
+    assert "onclick=\"showDetail('it" not in card
 
 def test_fn_css_class_ok():
     fn = _make_fn("ok", 20)
@@ -290,7 +312,7 @@ def test_cli_runs_without_error(tmp_path):
     result = subprocess.run(
         [sys.executable, "tools/fn_map.py", "--config", str(cfg), "--root", str(tmp_path)],
         capture_output=True, text=True,
-        cwd="/home/wanleung/Projects/ai-software-house",
+        cwd=str(REPO_ROOT),
     )
     assert result.returncode == 0, result.stderr
     assert "Function Size Report" in result.stdout
@@ -304,7 +326,7 @@ def test_cli_writes_html(tmp_path):
     result = subprocess.run(
         [sys.executable, "tools/fn_map.py", "--config", str(cfg), "--root", str(tmp_path)],
         capture_output=True, text=True,
-        cwd="/home/wanleung/Projects/ai-software-house",
+        cwd=str(REPO_ROOT),
     )
     assert result.returncode == 0, result.stderr
     assert out_html.exists()
