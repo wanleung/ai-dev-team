@@ -232,10 +232,31 @@ class IntakeTriageConfig(BaseModel):
     )
 
 
+class WatcherSettings(BaseModel):
+    """Global watcher settings (config.yaml `settings:` block)."""
+    model_config = {"extra": "allow"}   # forward-compatibility: unknown keys are warnings, not errors
+
+    log_dir: str = "logs/watcher"
+    max_parallel: int = 3
+    model: str = "gpt-4.1"
+    num_engineers: int = 2
+    pipeline_timeout_s: int = 3600
+    metrics_url: Optional[str] = None
+    # PR-watching defaults
+    watch_prs: bool = False
+    pr_fix_label: str = "ai-fix"
+    update_branch: bool = False
+    pr_failure_pattern: str = r"❌|FAILED|tests? failed|test suite failed"
+    max_pr_retries: int = 3
+    watch_draft_prs: bool = False
+    conflict_resolver_model: Optional[str] = None
+
+
 class AppConfig(BaseModel):
     model_config = {"extra": "forbid"}   # unknown top-level keys are errors
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    settings: WatcherSettings = Field(default_factory=WatcherSettings)
     github: Optional[GithubConfig] = None
     pipeline: Optional[PipelineConfig] = None
     ollama: Optional[OllamaConfig] = None
