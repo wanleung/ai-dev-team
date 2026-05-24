@@ -172,3 +172,65 @@ def build_calledby_index(funcs: list[FunctionInfo]) -> dict[str, list[str]]:
         for called in fn.calls:
             idx.setdefault(called, []).append(fn.name)
     return idx
+
+
+def _colour(text: str, code: str) -> str:
+    """Return text wrapped in ANSI colour code."""
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _fn_colour_code(line_count: int, limit: int) -> str:
+    """Return ANSI colour code based on line_count vs limit."""
+    if line_count <= limit:
+        return "32"   # green
+    if line_count <= 50:
+        return "33"   # orange/yellow
+    return "31"       # red
+
+
+def _print_violations_table(violations: list[FunctionInfo], limit: int) -> None:
+    """Print table of functions exceeding the limit, colour-coded."""
+    print(_colour(f"\nFunction Size Report  (limit: {limit} lines)", "1;34"))
+    print("─" * 62)
+    print(f"  {'Lines':>6}  {'Function':<32}  File")
+    print("─" * 62)
+    for fn in violations[:50]:
+        code = _fn_colour_code(fn.line_count, limit)
+        loc = f"{fn.file}:{fn.lineno}"
+        print(f"  {_colour(f'{fn.line_count:>6}', code)}  {fn.name:<32}  {loc}")
+    if len(violations) > 50:
+        print(f"  ... ({len(violations) - 50} more violations)")
+    print("─" * 62)
+
+
+def _print_summary(funcs: list[FunctionInfo], violations: list[FunctionInfo]) -> None:
+    """Print compliance summary line."""
+    total = len(funcs)
+    compliant = total - len(violations)
+    pct = compliant / total * 100 if total else 0
+    v_str = _colour(f"{len(violations)} violation{'s' if len(violations) != 1 else ''}", "31")
+    c_str = _colour(f"{compliant} compliant ({pct:.0f}%)", "32")
+    print(f"\n{v_str}  |  {c_str}  |  {total} total\n")
+
+
+def _print_distribution(funcs: list[FunctionInfo]) -> None:
+    """Print histogram of function size distribution."""
+    buckets = [10, 20, 30, 50, 100]
+    dist = build_distribution(funcs, buckets)
+    total = len(funcs)
+    max_count = max((c for _, c in dist), default=1)
+    bar_width = 24
+    print(_colour("Distribution:", "1"))
+    for label, count in dist:
+        pct = count / total * 100 if total else 0
+        bar_len = int(count / max_count * bar_width) if max_count else 0
+        bar = "█" * bar_len + " " * (bar_width - bar_len)
+        print(f"  {label}   {bar}  {count:>5}  {pct:.0f}%")
+
+
+def print_terminal_report(funcs: list[FunctionInfo], limit: int) -> None:
+    """Print violation table, summary, and distribution histogram to stdout."""
+    violations = detect_violations(funcs, limit)
+    _print_violations_table(violations, limit)
+    _print_summary(funcs, violations)
+    _print_distribution(funcs)

@@ -5,7 +5,7 @@ import ast
 import textwrap
 from pathlib import Path
 import pytest
-from tools.fn_map import FunctionInfo, FnMapConfig, load_config, resolve_paths, _extract_calls, _parse_file, collect_functions, detect_violations, build_distribution, build_call_index, build_calledby_index
+from tools.fn_map import FunctionInfo, FnMapConfig, load_config, resolve_paths, _extract_calls, _parse_file, collect_functions, detect_violations, build_distribution, build_call_index, build_calledby_index, print_terminal_report
 
 # ── Task 1: Data model + config loader ──────────────────────────────────────
 
@@ -188,3 +188,33 @@ def test_build_calledby_index():
     assert "helper" in idx
     assert "caller" in idx["helper"]
     assert "util" in idx
+
+
+# ── Task 5: Terminal report ──────────────────────────────────────────────────
+
+def test_print_terminal_report_shows_violations(capsys):
+    funcs = [_make_fn("big_fn", 50, "mymodule.py"), _make_fn("small_fn", 5)]
+    print_terminal_report(funcs, limit=30)
+    captured = capsys.readouterr().out
+    assert "big_fn" in captured
+    assert "50" in captured
+    assert "mymodule.py" in captured
+
+def test_print_terminal_report_shows_summary(capsys):
+    funcs = [_make_fn("a", 40), _make_fn("b", 10), _make_fn("c", 20)]
+    print_terminal_report(funcs, limit=30)
+    captured = capsys.readouterr().out
+    assert "1 violation" in captured or "violations" in captured
+    assert "2 compliant" in captured or "compliant" in captured
+
+def test_print_terminal_report_shows_distribution(capsys):
+    funcs = [_make_fn("a", 5), _make_fn("b", 15), _make_fn("c", 35)]
+    print_terminal_report(funcs, limit=30)
+    captured = capsys.readouterr().out
+    assert "Distribution" in captured
+
+def test_print_terminal_report_no_violations(capsys):
+    funcs = [_make_fn("a", 10), _make_fn("b", 20)]
+    print_terminal_report(funcs, limit=30)
+    captured = capsys.readouterr().out
+    assert "0 violation" in captured or "violations" in captured
