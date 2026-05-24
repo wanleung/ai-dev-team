@@ -5,7 +5,7 @@ import ast
 import textwrap
 from pathlib import Path
 import pytest
-from tools.fn_map import FunctionInfo, FnMapConfig, load_config, resolve_paths, _extract_calls, _parse_file, collect_functions
+from tools.fn_map import FunctionInfo, FnMapConfig, load_config, resolve_paths, _extract_calls, _parse_file, collect_functions, detect_violations, build_distribution, build_call_index, build_calledby_index
 
 # ── Task 1: Data model + config loader ──────────────────────────────────────
 
@@ -145,3 +145,46 @@ def test_collect_functions_aggregates(tmp_path):
     assert len(funcs) == 3
     assert {f.name for f in funcs} == {"f1", "f2", "f3"}
 
+# ── Task 4: Analysis logic ───────────────────────────────────────────────────
+
+def _make_fn(name, line_count, file="a.py", calls=None):
+    return FunctionInfo(name=name, file=file, lineno=1,
+                        line_count=line_count, calls=calls or set())
+
+def test_detect_violations_filters_over_limit():
+    funcs = [_make_fn("short", 10), _make_fn("long", 40), _make_fn("huge", 100)]
+    violations = detect_violations(funcs, limit=30)
+    assert len(violations) == 2
+    assert violations[0].line_count == 100   # sorted descending
+    assert violations[1].line_count == 40
+
+def test_detect_violations_none_over_limit():
+    funcs = [_make_fn("a", 5), _make_fn("b", 30)]
+    assert detect_violations(funcs, limit=30) == []
+
+def test_build_distribution_buckets():
+    funcs = [_make_fn("a", 5), _make_fn("b", 15), _make_fn("c", 25), _make_fn("d", 60)]
+    dist = build_distribution(funcs, [10, 20, 30, 50, 100])
+    labels = [label for label, _ in dist]
+    counts = {label: count for label, count in dist}
+    assert counts["≤10 lines"] == 1   # a
+    assert counts["≤20 lines"] == 1   # b
+    assert counts["≤30 lines"] == 1   # c
+    assert counts["≤50 lines"] == 0
+    assert counts["≤100 lines"] == 1  # d
+    assert counts[">100 lines"] == 0
+
+def test_build_call_index():
+    fn_a = _make_fn("alpha", 10)
+    fn_b = _make_fn("beta", 20)
+    idx = build_call_index([fn_a, fn_b])
+    assert "alpha" in idx
+    assert idx["beta"] is fn_b
+
+def test_build_calledby_index():
+    fn_a = _make_fn("caller", 10, calls={"helper", "util"})
+    fn_b = _make_fn("helper", 5)
+    idx = build_calledby_index([fn_a, fn_b])
+    assert "helper" in idx
+    assert "caller" in idx["helper"]
+    assert "util" in idx

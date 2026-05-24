@@ -134,3 +134,40 @@ def collect_functions(paths: list[Path], root: Path) -> list[FunctionInfo]:
         funcs.extend(_parse_file(p, root))
     return funcs
 
+
+def detect_violations(funcs: list[FunctionInfo], limit: int) -> list[FunctionInfo]:
+    """Return functions exceeding limit, sorted by line_count descending."""
+    return sorted(
+        [f for f in funcs if f.line_count > limit],
+        key=lambda f: f.line_count,
+        reverse=True,
+    )
+
+
+def build_distribution(
+    funcs: list[FunctionInfo], buckets: list[int]
+) -> list[tuple[str, int]]:
+    """Return (label, count) pairs for each size bucket (exclusive per-range counts)."""
+    result: list[tuple[str, int]] = []
+    prev = 0
+    for b in sorted(buckets):
+        count = sum(1 for f in funcs if prev < f.line_count <= b)
+        result.append((f"≤{b} lines", count))
+        prev = b
+    over = sum(1 for f in funcs if f.line_count > sorted(buckets)[-1])
+    result.append((f">{sorted(buckets)[-1]} lines", over))
+    return result
+
+
+def build_call_index(funcs: list[FunctionInfo]) -> dict[str, FunctionInfo]:
+    """Map function name → FunctionInfo (last wins on duplicates)."""
+    return {f.name: f for f in funcs}
+
+
+def build_calledby_index(funcs: list[FunctionInfo]) -> dict[str, list[str]]:
+    """Map function name → list of caller names."""
+    idx: dict[str, list[str]] = {}
+    for fn in funcs:
+        for called in fn.calls:
+            idx.setdefault(called, []).append(fn.name)
+    return idx
