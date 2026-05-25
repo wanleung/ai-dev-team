@@ -65,21 +65,21 @@ def test_stage_news_writer_sets_article_draft():
     from orchestrator import PipelineResult, Orchestrator
     orch = Orchestrator.__new__(Orchestrator)
     mock_agent = MagicMock()
-    mock_agent.run.return_value = {"article_draft": "---\ntitle: My Draft\n---\n\nContent."}
+    mock_agent.run.return_value = {"article_draft": "---\ntitle: My Draft\ndate: 2026-05-25\n---\n\nContent."}
     orch.news_writer = mock_agent
 
     result = PipelineResult(requirement="Test article")
     result.issue_body = "https://example.com"
     result.discussion_synthesis = "Key point: important"
     orch._stage_news_writer(result)
-    assert result.article_draft == "---\ntitle: My Draft\n---\n\nContent."
+    assert result.article_draft == "---\ntitle: My Draft\ndate: 2026-05-25\n---\n\nContent."
 
 
 def test_stage_news_editor_sets_article():
     from orchestrator import PipelineResult, Orchestrator
     orch = Orchestrator.__new__(Orchestrator)
     mock_agent = MagicMock()
-    mock_agent.run.return_value = {"article": "---\ntitle: Final\n---\n\nBody."}
+    mock_agent.run.return_value = {"article": "---\ntitle: Final\ndate: 2026-05-25\n---\n\nBody."}
     orch.news_editor = mock_agent
 
     result = PipelineResult(requirement="Test article")
@@ -87,7 +87,7 @@ def test_stage_news_editor_sets_article():
     result.issue_body = "Brief"
     result.discussion_synthesis = ""
     orch._stage_news_editor(result)
-    assert result.article == "---\ntitle: Final\n---\n\nBody."
+    assert result.article == "---\ntitle: Final\ndate: 2026-05-25\n---\n\nBody."
 
 
 def test_stage_news_article_pr_sets_all_files():
@@ -550,7 +550,7 @@ def test_stage_news_writer_prepends_editorial_notes():
 
     orch = _make_triage_orch()
     orch.news_writer = MagicMock()
-    orch.news_writer.run.return_value = {"article_draft": "---\ntitle: Draft\n---\n\nBody."}
+    orch.news_writer.run.return_value = {"article_draft": "---\ntitle: Draft\ndate: 2026-05-25\n---\n\nBody."}
 
     orch._stage_news_writer(result)
 
@@ -673,3 +673,123 @@ class TestStripArticleCodeFencePreamble:
         result = self._call(raw)
         assert result.startswith("---")
         assert "thinking" not in result
+
+
+class TestValidateArticleFrontmatter:
+    """Tests for _validate_article_frontmatter helper."""
+
+    def _call(self, text, label="article", *, require_date=True):
+        from orchestrator import Orchestrator as _Orch
+        return _Orch._validate_article_frontmatter(text, label, require_date=require_date)
+
+    def test_valid_article_returns_none(self):
+        article = "---\ntitle: My Title\ndate: 2026-05-25\n---\n\nBody."
+        assert self._call(article) is None
+
+    def test_bare_opening_dash_no_closing_returns_error(self):
+        """Bare '---' with no closing delimiter — the bug we saw in article 374."""
+        article = "---\n\nThe Linux kernel is preparing..."
+        err = self._call(article)
+        assert err is not None
+        assert "---" in err
+
+    def test_missing_title_returns_error(self):
+        article = "---\ndate: 2026-05-25\n---\n\nBody."
+        err = self._call(article)
+        assert err is not None
+        assert "title" in err
+
+    def test_empty_title_returns_error(self):
+        article = "---\ntitle: \ndate: 2026-05-25\n---\n\nBody."
+        err = self._call(article)
+        assert err is not None
+        assert "title" in err
+
+    def test_missing_date_with_require_date_true_returns_error(self):
+        article = "---\ntitle: My Title\n---\n\nBody."
+        err = self._call(article, require_date=True)
+        assert err is not None
+        assert "date" in err
+
+    def test_missing_date_with_require_date_false_returns_none(self):
+        """Translations don't always carry a date field."""
+        article = "---\ntitle: 我的標題\n---\n\nBody."
+        assert self._call(article, require_date=False) is None
+
+    def test_agent_commentary_returns_error(self):
+        """The bug we saw in article 198 — agent wrote its reasoning, not the article."""
+        commentary = "The file already contains a Traditional Chinese translation.\nLet me fetch..."
+        err = self._call(commentary)
+        assert err is not None
+
+
+def test_stage_news_writer_rejects_bare_frontmatter():
+    """NewsWriter bare '---' with no YAML fields must raise RuntimeError."""
+    from orchestrator import PipelineResult, Orchestrator
+    orch = Orchestrator.__new__(Orchestrator)
+    mock_agent = MagicMock()
+    mock_agent.run.return_value = {"article_draft": "---\n\nThe Linux kernel..."}
+    orch.news_writer = mock_agent
+
+    result = PipelineResult(requirement="test")
+    result.issue_body = "https://example.com"
+    result.discussion_synthesis = ""
+    with pytest.raises(RuntimeError, match="---"):
+        orch._stage_news_writer(result)
+
+
+def test_stage_news_editor_rejects_bare_frontmatter():
+    """NewsEditor bare '---' with no YAML fields must raise RuntimeError."""
+    from orchestrator import PipelineResult, Orchestrator
+    orch = Orchestrator.__new__(Orchestrator)
+    mock_agent = MagicMock()
+    mock_agent.run.return_value = {"article": "---\n\nThe Linux kernel..."}
+    orch.news_editor = mock_agent
+
+    result = PipelineResult(requirement="test")
+    result.article_draft = "---\ntitle: Draft\ndate: 2026-05-25\n---\n\nContent."
+    result.issue_body = "Brief"
+    result.discussion_synthesis = ""
+    with pytest.raises(RuntimeError, match="---"):
+        orch._stage_news_editor(result)
+
+
+def test_stage_translate_rejects_bare_frontmatter():
+    """Translator bare '---' with no YAML fields must raise RuntimeError."""
+    from orchestrator import PipelineResult, Orchestrator
+    orch = Orchestrator.__new__(Orchestrator)
+    mock_agent = MagicMock()
+    mock_agent.run.return_value = {"translated_article": "---\n\n體中文..."}
+    orch.translator = mock_agent
+
+    result = PipelineResult(requirement="test")
+    result.article = "---\ntitle: Title\ndate: 2026-05-25\n---\n\nContent."
+    with pytest.raises(RuntimeError, match="---"):
+        orch._stage_translate(result, "traditional_chinese", "article_zh_tw")
+
+
+def test_news_article_pr_rejects_bare_frontmatter_en():
+    """_stage_news_article_pr must reject EN article with bare '---'."""
+    from orchestrator import PipelineResult, Orchestrator
+    orch = Orchestrator.__new__(Orchestrator)
+
+    result = PipelineResult(requirement="test")
+    result.article = "---\n\nThe Linux kernel is preparing..."
+    result.issue_number = 374
+    orch._stage_news_article_pr(result)
+    assert result.errors, "Expected an error for bare frontmatter"
+    assert any("frontmatter" in e.message.lower() or "---" in e.message for e in result.errors)
+
+
+def test_news_article_pr_rejects_invalid_zh_tw_sidecar():
+    """_stage_news_article_pr must reject zh-tw sidecar with agent commentary instead of article."""
+    from orchestrator import PipelineResult, Orchestrator
+    orch = Orchestrator.__new__(Orchestrator)
+
+    result = PipelineResult(requirement="test")
+    result.article = "---\ntitle: My Title\ndate: 2026-05-25\nauthor: AI\nsource_url: https://example.com\ntags: []\n---\n\nBody."
+    result.article_zh_tw = "The file already contains a Traditional Chinese translation.\nLet me fix it..."
+    result.issue_number = 198
+    orch._stage_news_article_pr(result)
+    assert result.errors, "Expected an error for invalid zh-tw sidecar"
+    assert any("zh_tw" in e.message or "zh-tw" in e.message or "frontmatter" in e.message.lower() for e in result.errors)

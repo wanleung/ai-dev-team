@@ -4938,6 +4938,49 @@ class Orchestrator(TestFixLoopMixin):
             console.print(f"  ✅ [green]Editorial triage: PUBLISH[/green] — {parsed['notes']}")
 
     @staticmethod
+    def _validate_article_frontmatter(
+        text: str,
+        label: str = "article",
+        *,
+        require_date: bool = True,
+    ) -> str | None:
+        """Validate that *text* contains a complete YAML frontmatter block.
+
+        Returns an error string describing the problem, or ``None`` if the
+        frontmatter is valid.  Checks:
+
+        - Two ``---`` delimiters enclosing a YAML block (not just a bare opening)
+        - ``title`` field present and non-empty
+        - ``date`` field present and non-empty (when *require_date* is True)
+
+        Args:
+            text: Full article markdown text.
+            label: Human-readable label used in error messages (e.g. "NewsEditor").
+            require_date: When True, also checks that ``date`` is present. Set to
+                False for translated sidecars that inherit the date from the EN article.
+        """
+        import re as _re
+        import yaml as _yaml
+
+        stripped = text.strip()
+        m = _re.match(r"^---\s*\n(.*?)\n---", stripped, _re.DOTALL)
+        if not m:
+            return (
+                f"{label}: YAML frontmatter block not found "
+                f"(opening '---' exists but closing '---' is missing). "
+                f"Preview: {stripped[:120]!r}"
+            )
+        try:
+            fm = _yaml.safe_load(m.group(1)) or {}
+        except Exception as exc:  # noqa: BLE001
+            return f"{label}: YAML frontmatter parse error: {exc}"
+        if not str(fm.get("title") or "").strip():
+            return f"{label}: frontmatter missing required field 'title'"
+        if require_date and not str(fm.get("date") or "").strip():
+            return f"{label}: frontmatter missing required field 'date'"
+        return None
+
+    @staticmethod
     def _strip_article_code_fence(text: str) -> str:
         """Strip code fences and thinking preamble from LLM article output.
 
@@ -4975,11 +5018,9 @@ class Orchestrator(TestFixLoopMixin):
         draft = self._strip_article_code_fence(wr.get("article_draft", "") or "")
         if not draft:
             raise RuntimeError("NewsWriter produced an empty draft — LLM may have returned no content.")
-        if not draft.startswith("---"):
-            raise RuntimeError(
-                f"NewsWriter output is not a valid article (missing YAML frontmatter). "
-                f"Got: {draft[:120]!r}"
-            )
+        fm_err = self._validate_article_frontmatter(draft, "NewsWriter")
+        if fm_err:
+            raise RuntimeError(fm_err)
         result.article_draft = draft
         # Do NOT clear discussion_synthesis here — if discuss_news_draft runs next it
         # will overwrite it; if it doesn't run the editor should still see the
@@ -5000,11 +5041,9 @@ class Orchestrator(TestFixLoopMixin):
         if not ed.get("article", "").strip():
             raise RuntimeError("NewsEditor produced an empty article — LLM may have returned no content.")
         edited = self._strip_article_code_fence(ed["article"] or "")
-        if not edited.startswith("---"):
-            raise RuntimeError(
-                f"NewsEditor output is not a valid article (missing YAML frontmatter). "
-                f"Got: {edited[:120]!r}"
-            )
+        fm_err = self._validate_article_frontmatter(edited, "NewsEditor")
+        if fm_err:
+            raise RuntimeError(fm_err)
         result.article = edited
 
     _TRANSLATE_VALID_LANGUAGES = frozenset({"cantonese", "traditional_chinese"})
@@ -5032,11 +5071,9 @@ class Orchestrator(TestFixLoopMixin):
         translated = self._strip_article_code_fence(out.get("translated_article", "") or "")
         if not translated:
             raise RuntimeError(f"translate ({target_language}): empty output from translator")
-        if not translated.startswith("---"):
-            raise RuntimeError(
-                f"translate ({target_language}): output is not a valid article (missing YAML frontmatter). "
-                f"Got: {translated[:120]!r}"
-            )
+        fm_err = self._validate_article_frontmatter(translated, f"translate ({target_language})", require_date=False)
+        if fm_err:
+            raise RuntimeError(fm_err)
         setattr(result, result_field, translated)
 
     def _stage_news_reviewer(self, result: PipelineResult) -> None:
@@ -5112,12 +5149,26 @@ class Orchestrator(TestFixLoopMixin):
         if not article.strip():
             result.add_error("news_article_pr: no article content to commit.")
             return
-        if not article.strip().startswith("---"):
-            result.add_error(
-                f"news_article_pr: article is missing YAML frontmatter — refusing to commit garbage content. "
-                f"Content preview: {article.strip()[:120]!r}"
-            )
+        fm_err = self._validate_article_frontmatter(article, "news_article_pr")
+        if fm_err:
+            result.add_error(fm_err)
             return
+
+        # Validate sidecar translations before committing (catches agent commentary leaking in)
+        if result.article_zh_hk.strip():
+            sidecar_err = self._validate_article_frontmatter(
+                result.article_zh_hk, "news_article_pr: zh_hk sidecar", require_date=False
+            )
+            if sidecar_err:
+                result.add_error(sidecar_err)
+                return
+        if result.article_zh_tw.strip():
+            sidecar_err = self._validate_article_frontmatter(
+                result.article_zh_tw, "news_article_pr: zh_tw sidecar", require_date=False
+            )
+            if sidecar_err:
+                result.add_error(sidecar_err)
+                return
 
         # Parse frontmatter for date and title
         date_str = ""
