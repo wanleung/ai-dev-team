@@ -15,15 +15,21 @@ early_exit: CONSENSUS_REACHED
 participants:
   - role: editorial_director
     persona_file: roles/editorial_director.md
-    homework_llm: "dashscope/qwen3-plus"  # research round: fetch/search source URLs
+    llm: "mimo/mimo-v2.5-pro"
+    homework_llm: "mimo/mimo-v2.5-pro"
+    #homework_llm: "dashscope/qwen3-plus"  # research round: fetch/search source URLs
 
   - role: audience_specialist
     persona_file: roles/audience_specialist.md
-    homework_llm: "dashscope/qwen3-plus"
+    llm: "mimo/mimo-v2.5-pro"
+    homework_llm: "mimo/mimo-v2.5-pro"
+    #homework_llm: "dashscope/qwen3-plus"
 
   - role: news_editor
     persona_file: roles/news_editor.md
-    homework_llm: "dashscope/qwen3-plus"
+    llm: "mimo/mimo-v2.5-pro"
+    homework_llm: "mimo/mimo-v2.5-pro"
+    #homework_llm: "dashscope/qwen3-plus"
 
 homework_round: true
 
@@ -34,7 +40,7 @@ output_mode: synthesis
 
 verdict_format: |
   At the end of your final synthesis, include a verdict block for EVERY item,
-  using exactly this format (one block per item, in order):
+  using EXACTLY this plain-text format (no markdown, no bold, no headers):
 
   ITEM 1: PUBLISH
   SCORES: relevance=N news_value=N audience_fit=N urgency=N originality=N
@@ -46,4 +52,5 @@ verdict_format: |
 
   Where N is an integer from 0 to 10 for each dimension. SCORES must appear
   for every item. Only PUBLISH and SKIP are valid verdicts. Every item must
-  have a verdict.
+  have a verdict. Do not use markdown formatting (no **, no ##, no -) in
+  the verdict block.

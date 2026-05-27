@@ -124,6 +124,38 @@ def test_item_reference_in_notes_does_not_corrupt_scores():
     assert result[1]["relevance"] == 3  # ITEM 2's own score
 
 
+def test_parse_markdown_bold_scores():
+    """MiMo thinking models often wrap output in **bold** markdown."""
+    synthesis = (
+        "**ITEM 1: PUBLISH**\n"
+        "**SCORES:** relevance=8 news_value=9 audience_fit=7 urgency=6 originality=5\n"
+        "**NOTES:** Strong tech angle.\n\n"
+        "**ITEM 2: SKIP**\n"
+        "**SCORES:** relevance=3 news_value=4 audience_fit=5 urgency=2 originality=3\n"
+        "**NOTES:** Duplicate story.\n"
+    )
+    parser = ScoreParser(dimensions=DIMENSIONS, score_scale=SCALE)
+    result = parser.parse_batch(synthesis, item_count=2)
+    assert result[0] == {"relevance": 8, "news_value": 9, "audience_fit": 7, "urgency": 6, "originality": 5}
+    assert result[1] == {"relevance": 3, "news_value": 4, "audience_fit": 5, "urgency": 2, "originality": 3}
+
+
+def test_parse_markdown_header_scores():
+    """Models may use ### markdown headers for ITEM lines."""
+    synthesis = (
+        "### ITEM 1: PUBLISH\n"
+        "SCORES: relevance=8 news_value=9 audience_fit=7 urgency=6 originality=5\n"
+        "NOTES: Strong tech angle.\n\n"
+        "### ITEM 2: SKIP\n"
+        "SCORES: relevance=3 news_value=4 audience_fit=5 urgency=2 originality=3\n"
+        "NOTES: Duplicate story.\n"
+    )
+    parser = ScoreParser(dimensions=DIMENSIONS, score_scale=SCALE)
+    result = parser.parse_batch(synthesis, item_count=2)
+    assert result[0]["relevance"] == 8
+    assert result[1]["relevance"] == 3
+
+
 # ---------------------------------------------------------------------------
 # ScoringEngine tests
 # ---------------------------------------------------------------------------

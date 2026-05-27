@@ -13,6 +13,33 @@ from typing import NamedTuple
 log = logging.getLogger("intake_scoring")
 
 # ---------------------------------------------------------------------------
+# Synthesis normalisation
+# ---------------------------------------------------------------------------
+
+_MD_BOLD_RE = re.compile(r"\*\*([^*\n]+?)\*\*:?")
+_MD_HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_MD_BULLET_ITEM_RE = re.compile(r"^[-*]\s+(?=ITEM\s+\d)", re.MULTILINE | re.IGNORECASE)
+
+
+def _normalize_synthesis(text: str) -> str:
+    """Strip common markdown formatting that breaks verdict-block parsing.
+
+    Thinking models (e.g. MiMo) sometimes wrap structured output in markdown
+    bold (``**ITEM 1:**``) or heading markers (``### ITEM 1``).  This function
+    removes those decorations so the plain-text regexes match reliably.
+
+    Transformations applied (in order):
+    - ``**text**`` or ``**text:**`` → ``text`` or ``text:``
+    - ``## text`` → ``text`` (markdown headings stripped)
+    - ``- ITEM N`` → ``ITEM N`` (bullet prefixes before ITEM lines)
+    """
+    text = _MD_BOLD_RE.sub(lambda m: m.group(1), text)
+    text = _MD_HEADER_RE.sub("", text)
+    text = _MD_BULLET_ITEM_RE.sub("", text)
+    return text
+
+
+# ---------------------------------------------------------------------------
 # ScoreParser
 # ---------------------------------------------------------------------------
 
@@ -64,6 +91,7 @@ class ScoreParser:
         if item_count < 1:
             raise ValueError(f"item_count must be >= 1, got {item_count!r}")
 
+        synthesis = _normalize_synthesis(synthesis)
         raw: dict[int, dict[str, int]] = {}
         for m in _SCORES_LINE_RE.finditer(synthesis):
             idx = int(m.group(1))
@@ -85,6 +113,15 @@ class ScoreParser:
         results = []
         for i in range(1, item_count + 1):
             results.append(raw.get(i, self._neutral_scores()))
+
+        if not raw:
+            log.warning(
+                "ScoreParser: no SCORES blocks found in synthesis "
+                "(all %d items will get neutral score). "
+                "First 500 chars of synthesis: %.500s",
+                item_count, synthesis,
+            )
+
         return results
 
 
@@ -264,9 +301,12 @@ class VerdictRouter:
         """
         all_scores = self._parser.parse_batch(synthesis, item_count)
 
+        # Normalise once for NOTES extraction (parse_batch normalises its own copy)
+        normalised = _normalize_synthesis(synthesis)
+
         # Extract notes per item
         notes_map: dict[int, str] = {}
-        for m in _ITEM_NOTES_RE.finditer(synthesis):
+        for m in _ITEM_NOTES_RE.finditer(normalised):
             idx = int(m.group(1))
             notes_map[idx] = m.group(2).strip()
 
