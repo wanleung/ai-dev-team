@@ -21,6 +21,8 @@ def orch(tmp_path):
     o.engineer = MagicMock()
     o.reviewer = MagicMock()
     o.qa = MagicMock()
+    o.tdd_reviewer = MagicMock()
+    o.tdd_reviewer.run.return_value = ({"tests/test_foo.py": "# fixed"}, "Fixed 1 issue")
     o.skill_loader = None
     o._update_branch_enabled = False
     o.model = "gpt-4.1"
@@ -711,3 +713,62 @@ def test_update_branch_posts_marker_on_conflict(orch):
     comment_body = orch.target_github.add_pr_comment.call_args[0][1]
     assert "<!-- auto-update-branch -->" in comment_body
     assert "⚠️" in comment_body or "conflict" in comment_body.lower()
+
+
+class TestRevisionRunReviewerAndQA:
+    """TDDReviewerAgent must be called in revise mode after QA generates tests."""
+
+    def test_tdd_reviewer_called_with_qa_test_files(self, orch):
+        orch.reviewer.run.return_value = {"verdict": "approved"}
+        orch.qa.run.return_value = {"test_files": {"tests/test_foo.py": "# original"}}
+        orch.tdd_reviewer.run.return_value = ({"tests/test_foo.py": "# fixed"}, "Fixed 1 issue")
+
+        rev_result, test_files = orch._revision_run_reviewer_and_qa(
+            revised_files={"app/main.py": "# code"},
+            design="# Design doc",
+            project_name="TestProject",
+            head_branch="feature/test",
+            new_revision=1,
+        )
+
+        orch.tdd_reviewer.run.assert_called_once_with(
+            {"tests/test_foo.py": "# original"},
+            prd="# Design doc",
+            project_name="TestProject",
+        )
+        committed_paths = [
+            call.kwargs.get("path") or call.args[0]
+            for call in orch.target_github.commit_file.call_args_list
+        ]
+        assert "tests/test_foo.py" in committed_paths
+        assert test_files == {"tests/test_foo.py": "# fixed"}
+
+    def test_tdd_reviewer_skipped_when_no_test_files(self, orch):
+        orch.reviewer.run.return_value = {"verdict": "approved"}
+        orch.qa.run.return_value = {"test_files": {}}
+
+        orch._revision_run_reviewer_and_qa(
+            revised_files={"app/main.py": "# code"},
+            design="# Design doc",
+            project_name="TestProject",
+            head_branch="feature/test",
+            new_revision=1,
+        )
+
+        orch.tdd_reviewer.run.assert_not_called()
+
+    def test_tdd_reviewer_original_used_when_revised_empty(self, orch):
+        """If TDDReviewer returns empty dict, fall back to QA-generated files."""
+        orch.reviewer.run.return_value = {"verdict": "approved"}
+        orch.qa.run.return_value = {"test_files": {"tests/test_foo.py": "# original"}}
+        orch.tdd_reviewer.run.return_value = ({}, "No changes needed")
+
+        _, test_files = orch._revision_run_reviewer_and_qa(
+            revised_files={"app/main.py": "# code"},
+            design="# Design doc",
+            project_name="TestProject",
+            head_branch="feature/test",
+            new_revision=1,
+        )
+
+        assert test_files == {"tests/test_foo.py": "# original"}

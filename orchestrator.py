@@ -3177,6 +3177,15 @@ class Orchestrator(TestFixLoopMixin):
         # QA Engineer
         qa_result = self.qa.run(revised_files, design or "N/A", project_name)
         test_files: dict[str, str] = qa_result.get("test_files", {})
+        # TDD Reviewer — catches broken conftest patterns, bad imports, syntax errors
+        if test_files:
+            revised_tests, tdd_summary = self.tdd_reviewer.run(
+                test_files, prd=design or "N/A", project_name=project_name
+            )
+            if revised_tests:
+                test_files = revised_tests
+            if tdd_summary:
+                console.print(f"  🔎 TDD review: {tdd_summary[:120]}")
         for filepath, content in test_files.items():
             self.target_github.commit_file(
                 path=filepath,
