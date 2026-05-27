@@ -46,6 +46,7 @@ class QAEngineerAgent(BaseAgent):
         prompt = self._build_qa_prompt(prd, project_name, test_plan, write_only, files)
         response = self._call_llm_with_tools(prompt, write_only)
         test_files = self._parse_test_files(response)
+        test_files = self._fix_syntax_errors(prompt, test_files)
         test_files = self._enforce_30line_rule(prompt, test_files)
         extracted_plan = self._extract_test_plan(response)
         return {
@@ -100,18 +101,24 @@ class QAEngineerAgent(BaseAgent):
         """
         files, current_path, current_lines = {}, None, []
         in_code_block = False
+        saw_fence = False
         for line in response.splitlines():
             if line.strip().startswith("### FILE:"):
                 if current_path and current_lines:
                     files[current_path] = "\n".join(current_lines).strip()
                 current_path = line.strip().removeprefix("### FILE:").strip()
-                current_lines, in_code_block = [], False
+                current_lines, in_code_block, saw_fence = [], False, False
                 continue
             if current_path is not None:
                 if line.strip().startswith("```"):
+                    if not in_code_block:
+                        saw_fence = True
                     in_code_block = not in_code_block
                     continue
-                current_lines.append(line)
+                # Only collect lines inside a code fence (once a fence has been seen).
+                # If no fence has been encountered yet, collect all lines (unfenced files).
+                if not saw_fence or in_code_block:
+                    current_lines.append(line)
         if current_path and current_lines:
             files[current_path] = "\n".join(current_lines).strip()
         return QAEngineerAgent._normalize_test_paths(files)
@@ -162,6 +169,57 @@ class QAEngineerAgent(BaseAgent):
             f"Write comprehensive pytest tests following your role instructions. "
             f"Use '### FILE: tests/test_xxx.py' format for each test file."
         )
+
+    def _fix_syntax_errors(self, original_prompt: str, files: dict[str, str]) -> dict[str, str]:
+        """Check generated test files for syntax errors and retry once if any are found.
+
+        Returns the (possibly revised) files dict. Never raises.
+        """
+        syntax_errors = self._collect_syntax_errors(files)
+        if not syntax_errors:
+            return files
+        _log.info("Syntax errors in test files, requesting fix: %s", syntax_errors)
+        try:
+            revised = self._request_syntax_fix(original_prompt, files, syntax_errors)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("Syntax fix retry failed: %s — keeping original test output", exc)
+            return files
+        remaining = self._collect_syntax_errors(revised)
+        if remaining:
+            _log.warning("Syntax errors persist in test files after retry: %s", remaining)
+        return revised
+
+    @staticmethod
+    def _collect_syntax_errors(files: dict[str, str]) -> list[str]:
+        """Return list of 'filename.py: SyntaxError message (line N)' for any invalid files."""
+        import ast
+        errors = []
+        for filename, source in files.items():
+            if not filename.endswith(".py"):
+                continue
+            try:
+                ast.parse(source)
+            except SyntaxError as exc:
+                errors.append(f"{filename}: {exc.msg} (line {exc.lineno})")
+        return errors
+
+    def _request_syntax_fix(
+        self, original_prompt: str, files: dict[str, str], errors: list[str]
+    ) -> dict[str, str]:
+        """Ask the LLM to fix syntax errors in the generated test files."""
+        error_list = "\n".join(f"  - {e}" for e in errors)
+        fix_prompt = (
+            f"{original_prompt}\n\n"
+            f"---\n"
+            f"The following test files have Python syntax errors:\n"
+            f"{error_list}\n\n"
+            f"Please fix the syntax errors and output ALL test files again "
+            f"using the '### FILE: tests/...' format. "
+            f"Ensure every file is valid Python — no markdown, no prose outside code."
+        )
+        revised_response = self.call(fix_prompt)
+        revised = self._parse_test_files(revised_response)
+        return revised or files
 
     def _call_llm_with_tools(self, prompt: str, write_only: bool) -> str:
         """Call LLM with optional tool registry support."""

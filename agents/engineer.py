@@ -166,19 +166,25 @@ class EngineerAgent(BaseAgent):
         """Parse '### FILE: path' sections from the LLM response into a dict."""
         files, current_path, current_lines = {}, None, []
         in_code_block = False
+        saw_fence = False
         for line in response.splitlines():
             if line.strip().startswith("### FILE:"):
                 if current_path and current_lines:
                     files[current_path] = "\n".join(current_lines).strip()
                 current_path = line.strip().removeprefix("### FILE:").strip()
-                current_lines, in_code_block = [], False
+                current_lines, in_code_block, saw_fence = [], False, False
                 continue
             if current_path is not None:
                 stripped = line.strip()
                 if stripped.startswith("```"):
+                    if not in_code_block:
+                        saw_fence = True
                     in_code_block = not in_code_block
                     continue
-                current_lines.append(line)
+                # Only collect lines inside a code fence (once a fence has been seen).
+                # If no fence has been encountered yet, collect all lines (unfenced files).
+                if not saw_fence or in_code_block:
+                    current_lines.append(line)
         if current_path and current_lines:
             files[current_path] = "\n".join(current_lines).strip()
         if not files and response.strip():
