@@ -775,3 +775,19 @@ class TestRevisionRunReviewerAndQA:
         )
 
         assert test_files == {"tests/test_foo.py": "# original"}
+
+    def test_tdd_reviewer_none_return_uses_original(self, orch):
+        """If TDDReviewer returns (None, None), fall back to QA-generated files."""
+        orch.reviewer.run.return_value = {"verdict": "approved"}
+        orch.qa.run.return_value = {"test_files": {"tests/test_foo.py": "# original"}}
+        orch.tdd_reviewer.run.return_value = (None, None)
+
+        _, test_files = orch._revision_run_reviewer_and_qa(
+            revised_files={"app/main.py": "# code"},
+            design="# Design doc",
+            project_name="TestProject",
+            head_branch="feature/test",
+            new_revision=1,
+        )
+
+        assert test_files == {"tests/test_foo.py": "# original"}
