@@ -736,11 +736,14 @@ class TestRevisionRunReviewerAndQA:
             prd="# Design doc",
             project_name="TestProject",
         )
-        committed_paths = [
-            call.kwargs.get("path") or call.args[0]
+        committed_calls = {
+            (call.kwargs.get("path") or call.args[0]): (call.kwargs.get("content") or call.args[1])
             for call in orch.target_github.commit_file.call_args_list
-        ]
-        assert "tests/test_foo.py" in committed_paths
+        }
+        assert "tests/test_foo.py" in committed_calls
+        assert committed_calls["tests/test_foo.py"] == "# fixed", (
+            "commit_file must use the TDD reviewer's revised content, not the original QA content"
+        )
         assert test_files == {"tests/test_foo.py": "# fixed"}
 
     def test_tdd_reviewer_skipped_when_no_test_files(self, orch):
