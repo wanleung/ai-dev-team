@@ -17,7 +17,7 @@ def _make_single_backend(cfg: dict, github_token: str | None = None) -> "LLMBack
         "dashscope_api_key", "dashscope_url",
         "think", "preserve_thinking",
     }
-    _MIMO_ONLY = {"mimo_api_key", "mimo_url"}
+    _MIMO_ONLY = {"mimo_api_key", "mimo_url", "mimo_think"}
     _ALL_PROVIDER_SPECIFIC = _OLLAMA_ONLY | _DASHSCOPE_ONLY | _MIMO_ONLY
 
     if model.startswith("ollama/"):
@@ -72,6 +72,9 @@ def _make_single_backend(cfg: dict, github_token: str | None = None) -> "LLMBack
     if model.startswith("mimo/"):
         from agents.backends.mimo import MiMoBackend
         ck = {k: v for k, v in kwargs.items() if k not in (_OLLAMA_ONLY | _DASHSCOPE_ONLY)}
+        # Rename mimo_think → think for MiMoBackend
+        if "mimo_think" in ck:
+            ck["think"] = ck.pop("mimo_think")
         return MiMoBackend(model=model, **ck)
 
     if model.startswith("openai/"):

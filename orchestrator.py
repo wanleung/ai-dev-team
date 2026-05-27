@@ -1246,6 +1246,8 @@ class Orchestrator(TestFixLoopMixin):
             if cfg.get("mimo_url"):
                 factory_cfg["mimo_url"] = cfg["mimo_url"]
             factory_cfg["stream"] = cfg.get("mimo_stream", True)
+            if "mimo_think" in cfg:
+                factory_cfg["mimo_think"] = cfg["mimo_think"]
         elif model.startswith("opencode-go/") or model.startswith("opencode-zen/"):
             factory_cfg["stream"] = cfg.get("opencode_stream", True)
         # opencode/ (bare prefix) is a subprocess CLI backend that has no stream parameter; no translation needed.

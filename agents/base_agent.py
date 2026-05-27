@@ -165,6 +165,7 @@ class BaseAgent:
         mimo_api_key: Optional[str] = None,
         mimo_url: Optional[str] = None,
         mimo_stream: bool = True,
+        mimo_think: Optional[bool] = None,
         retry_delay: int = 15,
         max_api_retries: int = 5,
         inter_call_delay: int = 0,
@@ -191,6 +192,7 @@ class BaseAgent:
                 dashscope_url=dashscope_url, dashscope_think=dashscope_think,
                 dashscope_preserve_thinking=dashscope_preserve_thinking, dashscope_stream=dashscope_stream,
                 mimo_api_key=mimo_api_key, mimo_url=mimo_url, mimo_stream=mimo_stream,
+                mimo_think=mimo_think,
                 retry_delay=retry_delay, max_api_retries=max_api_retries, inter_call_delay=inter_call_delay,
             )
         self._backend: str = self._detect_backend_name()
@@ -302,6 +304,7 @@ class BaseAgent:
         mimo_api_key: Optional[str],
         mimo_url: Optional[str],
         mimo_stream: bool,
+        mimo_think: Optional[bool],
         retry_delay: int,
         max_api_retries: int,
         inter_call_delay: int,
@@ -323,6 +326,7 @@ class BaseAgent:
             dashscope_url=dashscope_url, dashscope_think=dashscope_think,
             dashscope_preserve_thinking=dashscope_preserve_thinking, dashscope_stream=dashscope_stream,
             mimo_api_key=mimo_api_key, mimo_url=mimo_url, mimo_stream=mimo_stream,
+            mimo_think=mimo_think,
         )
         return self._instantiate_backend(flags, model, github_token, common, kw)
 
@@ -401,7 +405,8 @@ class BaseAgent:
         if flags["use_mimo"]:
             from agents.backends.mimo import MiMoBackend
             return MiMoBackend(model=model, mimo_api_key=kw["mimo_api_key"],
-                mimo_url=kw["mimo_url"], stream=kw["mimo_stream"], **common)
+                mimo_url=kw["mimo_url"], think=kw["mimo_think"],
+                stream=kw["mimo_stream"], **common)
         return None
 
     def _try_local_backends(self, flags: dict[str, bool], model: str, common: dict, kw: dict) -> Optional[_LLMBackend]:
