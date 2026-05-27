@@ -566,6 +566,19 @@ class BaseAgent:
             _log.warning("_after_write: validation error: %s", exc, exc_info=True)
             return []
 
+    def _validate_code_strings(self, files: dict[str, str]) -> list[str]:
+        """Validate function sizes in generated code strings (no disk I/O).
+
+        Returns a list of violation strings (empty if all functions are ≤30 lines).
+        Never raises — validation failures are logged and return an empty list.
+        """
+        from tools.fn_map import validate_code_content
+        try:
+            return validate_code_content(files)
+        except Exception as exc:  # noqa: BLE001 — validation must never break the pipeline
+            _log.warning("_validate_code_strings: validation error: %s", exc, exc_info=True)
+            return []
+
     def _build_messages(self, full_message: str) -> list[dict]:
         """Assemble the full messages list with system prompt + history + user turn."""
         messages: list[dict] = []

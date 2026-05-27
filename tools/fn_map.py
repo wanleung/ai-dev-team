@@ -154,6 +154,36 @@ def detect_violations(funcs: list[FunctionInfo], limit: int) -> list[FunctionInf
     )
 
 
+def validate_code_content(
+    files: dict[str, str],
+    limit: int = 30,
+) -> list[str]:
+    """Validate function sizes from in-memory code strings (no disk I/O).
+
+    Args:
+        files: Mapping of filename → source code string.
+        limit: Maximum allowed function body lines (inclusive).
+
+    Returns:
+        List of violation strings: "filename.py::function_name (N lines)".
+        Returns an empty list if all functions are within the limit.
+    """
+    violations = []
+    for filename, source in files.items():
+        if not filename.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                line_count = node.end_lineno - node.lineno + 1
+                if line_count > limit:
+                    violations.append(f"{filename}::{node.name} ({line_count} lines)")
+    return violations
+
+
 def validate_function_sizes(
     files: list[Path],
     limit: int = 30,
