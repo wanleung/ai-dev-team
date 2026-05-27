@@ -33,7 +33,7 @@ from agents.backends.base import (
     _DEFAULT_MAX_RETRIES,
 )
 
-_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1"
+_MIMO_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1"
 
 
 class MiMoBackend(OpenAICompatibleBackend):

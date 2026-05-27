@@ -114,11 +114,14 @@ llm:
   # Alternatively set env var MIMO_API_KEY.
   # Get your key at: https://platform.xiaomimimo.com/#/console/api-keys
   #
+  # Token-plan keys (tp-...) must use the SGP endpoint (default).
+  # Standard keys use: https://api.xiaomimimo.com/v1
+  #
   # Example usage:
   #   model: "mimo/mimo-v2.5-pro"
   #   mimo_api_key: "your-key-here"
   #
-  # Optional base URL override:
+  # Optional base URL override (default: https://token-plan-sgp.xiaomimimo.com/v1):
   # mimo_url: "https://api.xiaomimimo.com/v1"
 
   # ── Global fallback chain ─────────────────────────────────────────────────
