@@ -12,7 +12,23 @@ Fix anything that would prevent pytest from collecting or running the tests:
 
 2. **Import paths**: Test files should not hardcode app import paths that assume a specific project structure not guaranteed by the PRD (e.g. `from app.main import app` when the PRD doesn't specify that path). Use flexible import patterns or fixture injection.
 
-3. **Syntax errors**: Fix any Python syntax errors.
+3. **FastAPI dependency injection — never use `patch()` for `Depends()`**: The correct pattern is `app.dependency_overrides`. Using `unittest.mock.patch()` on a FastAPI dependency causes the router to capture the `MagicMock` at import time; FastAPI then inspects `(*args, **kwargs)` and injects them as required query parameters, causing every test to return 422. The `conftest.py` `client` fixture must look like this:
+
+   ```python
+   from app.main import app         # import app BEFORE any patching
+   from app.dependencies import get_db
+
+   async def override_get_db():
+       yield mock_db                # must YIELD, not return — get_db is an async generator
+
+   app.dependency_overrides[get_db] = override_get_db
+   yield TestClient(app)
+   app.dependency_overrides.pop(get_db, None)  # cleanup after test
+   ```
+
+4. **Mock user objects must include all required fields**: A mock user must include at minimum: `id`, `email`, `display_name`, `status`, `role`, `firebase_uid`. The `status` field must use a valid enum value (e.g. `"active"`, `"suspended"`, `"deleted"`); `role` must also use a valid enum value (e.g. `"player"`, `"venue_owner"`, `"admin"` — **not** `"user"`). Missing or wrong-valued fields cause `AttributeError` or validation failures deep in route handlers.
+
+5. **Syntax errors**: Fix any Python syntax errors.
 
 ### Pass 2 — Quality
 
