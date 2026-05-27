@@ -1,6 +1,5 @@
 """Tests for TDDReviewerAgent."""
 from unittest.mock import MagicMock
-import pytest
 
 
 def _make_agent(response: str = ""):
@@ -9,7 +8,6 @@ def _make_agent(response: str = ""):
     agent = TDDReviewerAgent.__new__(TDDReviewerAgent)
     agent.model = "gpt-4.1"
     agent._history = []
-    agent._backend = "github_models"
     agent.call = MagicMock(return_value=response)
     return agent
 
@@ -120,3 +118,24 @@ def mock_db():
         revised, summary = agent.run(original, prd="PRD", project_name="proj")
         assert revised == original
         assert "All good" in summary
+
+    def test_run_retries_on_syntax_error_and_returns_fixed_files(self):
+        syntax_broken = "### FILE: tests/test_foo.py\n```python\ndef test_x(\n    assert 1\n```"
+        fixed = (
+            "### FILE: tests/test_foo.py\n```python\ndef test_x():\n    assert 1 == 1\n```\n"
+            "### REVIEW SUMMARY:\n- Correctness fixes: fixed syntax error\n"
+        )
+        agent = _make_agent()
+        agent.call.side_effect = [syntax_broken, fixed]
+        original = {"tests/test_foo.py": "def test_x():\n    assert 1 == 1\n"}
+        revised, summary = agent.run(original, prd="PRD", project_name="proj")
+        assert "assert 1 == 1" in revised.get("tests/test_foo.py", "")
+
+    def test_run_returns_original_when_retry_raises(self):
+        syntax_broken = "### FILE: tests/test_foo.py\n```python\ndef test_x(\n    assert 1\n```"
+        agent = _make_agent()
+        agent.call.side_effect = [syntax_broken, RuntimeError("retry failed")]
+        original = {"tests/test_foo.py": "def test_x():\n    assert 1 == 1\n"}
+        revised, summary = agent.run(original, prd="PRD", project_name="proj")
+        assert revised == original
+        assert summary == ""

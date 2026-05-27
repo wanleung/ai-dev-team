@@ -112,7 +112,7 @@ class TDDReviewerAgent(BaseAgent):
             f"- `from conftest import X` patterns: if X is a plain class or helper "
             f"(not decorated with @pytest.fixture), it must live in the ROOT conftest.py "
             f"so `from conftest import X` resolves correctly when pytest runs from the "
-            f"project root. Move such helpers there.\n"
+            f"project root. Move such helpers to the root conftest.py (project root level).\n"
             f"- Import paths that assume an app structure not guaranteed by the PRD "
             f"(e.g. `from app.main import app` when the PRD does not specify that path).\n"
             f"- Any syntax errors.\n\n"
