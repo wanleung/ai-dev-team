@@ -36,6 +36,7 @@ from agents import (
     ProductManagerAgent,
     QAEngineerAgent,
     QAPlannerAgent,
+    TDDReviewerAgent,
 )
 from agents.junior_engineer import JuniorEngineerAgent
 from agents.senior_engineer import SeniorEngineerAgent
@@ -997,6 +998,7 @@ class Orchestrator(TestFixLoopMixin):
         self.reviewer = CodeReviewerAgent(tool_registry=tools, **{**agent_kwargs, **mk("code_reviewer")})
         self.qa_planner = QAPlannerAgent(tool_registry=tools, **{**agent_kwargs, **mk("qa_planner")})
         self.qa = QAEngineerAgent(tool_registry=rag, **{**agent_kwargs, **mk("qa_engineer")})
+        self.tdd_reviewer = TDDReviewerAgent(**{**agent_kwargs, **mk("tdd_reviewer")})
         _deploy_cfg = deploy_cfg or {"mode": "docker"}
         self._deploy_cfg = _deploy_cfg
         _deploy_backend = build_deploy_backend(_deploy_cfg)
@@ -1047,7 +1049,7 @@ class Orchestrator(TestFixLoopMixin):
                 self.pm_reviewer, self.architect, self.architect_reviewer,
                 self.engineer, self.junior_engineer, self.senior_engineer,
                 self.tier_reviewer,
-                self.reviewer, self.qa_planner, self.qa, self.deployment_tester,
+                self.reviewer, self.qa_planner, self.qa, self.tdd_reviewer, self.deployment_tester,
             )
             if agent is not None
         }
@@ -2103,6 +2105,14 @@ class Orchestrator(TestFixLoopMixin):
             description="Writing tests before implementation...",
             checkpoint_key="qa_write",
             fn=lambda r: self._stage_qa_write(r),
+        )
+        stages["tdd_review"] = PipelineStage(
+            name="tdd_review",
+            label="🔎 TDD Review",
+            description="Reviewing and auto-fixing TDD test files...",
+            checkpoint_key="tdd_review",
+            fn=lambda r: self._stage_tdd_review(r),
+            skip_if=lambda r: not r.test_files,
         )
         stages["test_fix"] = PipelineStage(
             name="test_fix",
@@ -4463,6 +4473,25 @@ class Orchestrator(TestFixLoopMixin):
             console.print(f"[green]✅ Tests committed — PR: {result.pr_url}[/green]")
         elif result.branch:
             console.print(f"[green]✅ Tests committed to branch: {result.branch}[/green]")
+
+    def _stage_tdd_review(self, result: PipelineResult) -> None:
+        """Review and auto-fix TDD test files before execution."""
+        test_files = result.test_files
+        if not test_files:
+            _log.info("TDD review: no test files to review, skipping")
+            return
+        prd = getattr(result, "prd", "") or ""
+        project_name = result.project_name or "Project"
+        _log.info("TDD review: reviewing %d test files", len(test_files))
+        console.print(f"\n[bold cyan]🔎 TDD Reviewer[/bold cyan]")
+        revised, summary = self.tdd_reviewer.run(
+            test_files, prd=prd, project_name=project_name
+        )
+        result.tdd_review_summary = summary
+        result.test_files = revised
+        if summary:
+            _log.info("TDD review summary: %s", summary[:200])
+            console.print(f"[green]✅ TDD review complete ({len(revised)} file(s))[/green]")
 
     def _stage_qa(self, result: PipelineResult) -> None:
         cross_repo = self.target_github is not self.github and self.target_github is not None
