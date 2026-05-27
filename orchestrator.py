@@ -1190,7 +1190,7 @@ class Orchestrator(TestFixLoopMixin):
         _FACTORY_PREFIXES = (
             "ollama/", "copilot/", "nvidia-nim/",
             "opencode/", "opencode-zen/", "opencode-go/",
-            "claude-", "dashscope/",
+            "claude-", "dashscope/", "mimo/",
         )
         # Route to GitHub Models for bare names OR unknown-prefix names
         # (e.g. "openai/gpt-4.1", "meta/llama-3.1-405b-instruct").
@@ -1240,6 +1240,12 @@ class Orchestrator(TestFixLoopMixin):
             factory_cfg["think"] = cfg.get("dashscope_think", False)
             factory_cfg["preserve_thinking"] = cfg.get("dashscope_preserve_thinking", False)
             factory_cfg["stream"] = cfg.get("dashscope_stream", True)
+        elif model.startswith("mimo/"):
+            if cfg.get("mimo_api_key"):
+                factory_cfg["mimo_api_key"] = cfg["mimo_api_key"]
+            if cfg.get("mimo_url"):
+                factory_cfg["mimo_url"] = cfg["mimo_url"]
+            factory_cfg["stream"] = cfg.get("mimo_stream", True)
         elif model.startswith("opencode-go/") or model.startswith("opencode-zen/"):
             factory_cfg["stream"] = cfg.get("opencode_stream", True)
         # opencode/ (bare prefix) is a subprocess CLI backend that has no stream parameter; no translation needed.

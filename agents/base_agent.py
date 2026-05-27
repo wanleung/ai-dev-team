@@ -82,6 +82,11 @@ def _is_dashscope_model(model: str) -> bool:
     return model.startswith("dashscope/")
 
 
+def _is_mimo_model(model: str) -> bool:
+    """Return True if the model should use the Xiaomi MiMo API."""
+    return model.startswith("mimo/")
+
+
 # ── Module-level helpers for truncate_files ────────────────────────────────
 
 def _sort_files_by_priority(files: dict[str, str]) -> list[str]:
@@ -157,6 +162,9 @@ class BaseAgent:
         dashscope_think: bool = False,
         dashscope_preserve_thinking: bool = False,
         dashscope_stream: bool = True,
+        mimo_api_key: Optional[str] = None,
+        mimo_url: Optional[str] = None,
+        mimo_stream: bool = True,
         retry_delay: int = 15,
         max_api_retries: int = 5,
         inter_call_delay: int = 0,
@@ -182,6 +190,7 @@ class BaseAgent:
                 nvidia_nim_base_url=nvidia_nim_base_url, dashscope_api_key=dashscope_api_key,
                 dashscope_url=dashscope_url, dashscope_think=dashscope_think,
                 dashscope_preserve_thinking=dashscope_preserve_thinking, dashscope_stream=dashscope_stream,
+                mimo_api_key=mimo_api_key, mimo_url=mimo_url, mimo_stream=mimo_stream,
                 retry_delay=retry_delay, max_api_retries=max_api_retries, inter_call_delay=inter_call_delay,
             )
         self._backend: str = self._detect_backend_name()
@@ -255,6 +264,7 @@ class BaseAgent:
         from agents.backends.opencode_zen import OpenCodeZenBackend
         from agents.backends.opencode_go import OpenCodeGoBackend
         from agents.backends.nvidia_nim import NvidiaNimBackend
+        from agents.backends.mimo import MiMoBackend
 
         b = self._llm
         if isinstance(b, OllamaBackend):      return "ollama"
@@ -264,6 +274,7 @@ class BaseAgent:
         if isinstance(b, OpenCodeZenBackend): return "opencode_zen"
         if isinstance(b, OpenCodeGoBackend):  return "opencode_go"
         if isinstance(b, NvidiaNimBackend):   return "nvidia_nim"
+        if isinstance(b, MiMoBackend):        return "mimo"
         if isinstance(b, GitHubModelsBackend):return "github_models"
         return "custom"
 
@@ -288,6 +299,9 @@ class BaseAgent:
         dashscope_think: bool,
         dashscope_preserve_thinking: bool,
         dashscope_stream: bool,
+        mimo_api_key: Optional[str],
+        mimo_url: Optional[str],
+        mimo_stream: bool,
         retry_delay: int,
         max_api_retries: int,
         inter_call_delay: int,
@@ -308,6 +322,7 @@ class BaseAgent:
             nvidia_nim_base_url=nvidia_nim_base_url, dashscope_api_key=dashscope_api_key,
             dashscope_url=dashscope_url, dashscope_think=dashscope_think,
             dashscope_preserve_thinking=dashscope_preserve_thinking, dashscope_stream=dashscope_stream,
+            mimo_api_key=mimo_api_key, mimo_url=mimo_url, mimo_stream=mimo_stream,
         )
         return self._instantiate_backend(flags, model, github_token, common, kw)
 
@@ -318,7 +333,8 @@ class BaseAgent:
         use_nvidia_nim = (backend == "nvidia_nim") or (backend is None and _is_nvidia_nim_model(model))
         use_copilot = (backend == "copilot") or (backend is None and _is_copilot_model(model))
         use_dashscope = (backend == "dashscope") or (backend is None and _is_dashscope_model(model))
-        no_special = not any([use_opencode_zen, use_opencode_go, use_nvidia_nim, use_copilot, use_dashscope])
+        use_mimo = (backend == "mimo") or (backend is None and _is_mimo_model(model))
+        no_special = not any([use_opencode_zen, use_opencode_go, use_nvidia_nim, use_copilot, use_dashscope, use_mimo])
         use_anthropic = (backend == "anthropic") or (backend is None and no_special and _is_anthropic_model(model))
         return {
             "use_copilot": use_copilot,
@@ -329,6 +345,7 @@ class BaseAgent:
             "use_anthropic": use_anthropic,
             "use_ollama": (backend == "ollama") or (backend is None and _is_ollama_model(model)),
             "use_dashscope": use_dashscope,
+            "use_mimo": use_mimo,
         }
 
     def _instantiate_backend(
@@ -381,6 +398,10 @@ class BaseAgent:
             return DashScopeBackend(model=model, dashscope_api_key=kw["dashscope_api_key"],
                 dashscope_url=kw["dashscope_url"], think=kw["dashscope_think"],
                 preserve_thinking=kw["dashscope_preserve_thinking"], stream=kw["dashscope_stream"], **common)
+        if flags["use_mimo"]:
+            from agents.backends.mimo import MiMoBackend
+            return MiMoBackend(model=model, mimo_api_key=kw["mimo_api_key"],
+                mimo_url=kw["mimo_url"], stream=kw["mimo_stream"], **common)
         return None
 
     def _try_local_backends(self, flags: dict[str, bool], model: str, common: dict, kw: dict) -> Optional[_LLMBackend]:
