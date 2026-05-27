@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 
 from openai import OpenAI
+from openai import Timeout as OpenAITimeout
 
 from agents.backends.base import (
     OpenAICompatibleBackend,
@@ -67,7 +68,12 @@ class MiMoBackend(OpenAICompatibleBackend):
                 "Get your key at https://platform.xiaomimimo.com/#/console/api-keys"
             )
         base_url = (mimo_url or _MIMO_BASE_URL).rstrip("/")
-        client = OpenAI(base_url=base_url, api_key=key)
+        # MiMo thinking models can take a while; 5 min connect + 10 min read.
+        client = OpenAI(
+            base_url=base_url,
+            api_key=key,
+            timeout=OpenAITimeout(connect=30.0, read=600.0, write=30.0, pool=10.0),
+        )
         self._think = think
         super().__init__(
             model=model.removeprefix("mimo/"),
