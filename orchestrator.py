@@ -5765,6 +5765,7 @@ class Orchestrator(TestFixLoopMixin):
                     content,
                     f"memory: update {name} after pipeline run",
                     target_branch,
+                    max_retries=1,  # Non-critical write — don't hang on transient 5xx errors
                 )
                 console.print(f"  🧠 [dim]Memory bank updated: {name}[/dim]")
             except Exception as exc:

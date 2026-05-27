@@ -86,14 +86,14 @@ class GitHubClient:
     _MAX_RETRIES = 4
     _RETRY_BASE = 5.0   # seconds; doubles each attempt
 
-    def _request(self, method: str, path: str, **kwargs) -> dict:
+    def _request(self, method: str, path: str, *, max_retries: int | None = None, **kwargs) -> dict:
         url = f"{self.API_BASE}{path}"
-        last_exc: Exception | None = None
-        for attempt in range(self._MAX_RETRIES):
+        retries = self._MAX_RETRIES if max_retries is None else max_retries
+        for attempt in range(retries):
             response = self._session.request(method, url, **kwargs)
             if response.ok:
                 return response.json() if response.text else {}
-            if response.status_code not in self._RETRYABLE or attempt == self._MAX_RETRIES - 1:
+            if response.status_code not in self._RETRYABLE or attempt == retries - 1:
                 raise RuntimeError(sanitise(
                     f"GitHub API {method} {url} failed [{response.status_code}]: {response.text[:500]}",
                     self.token,
@@ -101,11 +101,11 @@ class GitHubClient:
             wait = self._RETRY_BASE * (2 ** attempt)
             log.warning(
                 "GitHub API %s %s returned %s (attempt %d/%d) — retrying in %.0fs",
-                method, url, response.status_code, attempt + 1, self._MAX_RETRIES, wait,
+                method, url, response.status_code, attempt + 1, retries, wait,
             )
             time.sleep(wait)
         raise RuntimeError(sanitise(
-            f"GitHub API {method} {url} failed after {self._MAX_RETRIES} attempts",
+            f"GitHub API {method} {url} failed after {retries} attempts",
             self.token,
         ))
 
@@ -235,6 +235,7 @@ class GitHubClient:
         message: str,
         branch: str,
         encoding: str = "utf-8",
+        max_retries: int | None = None,
     ) -> dict:
         """Create or update a file in the repo on the given branch.
 
@@ -244,6 +245,7 @@ class GitHubClient:
             message: Git commit message.
             branch: Branch to commit to.
             encoding: Text encoding (default 'utf-8').
+            max_retries: Override the default retry count (useful for non-critical writes).
 
         Returns:
             GitHub API response with commit and content data.
@@ -253,12 +255,12 @@ class GitHubClient:
         # Check if file already exists (for update vs create)
         payload: dict = {"message": message, "content": encoded, "branch": branch}
         try:
-            existing = self._request("GET", f"/repos/{self.repo}/contents/{path}", params={"ref": branch})
+            existing = self._request("GET", f"/repos/{self.repo}/contents/{path}", params={"ref": branch}, max_retries=max_retries)
             payload["sha"] = existing["sha"]
         except RuntimeError:
             pass  # File doesn't exist yet — create it
 
-        return self._request("PUT", f"/repos/{self.repo}/contents/{path}", json=payload)
+        return self._request("PUT", f"/repos/{self.repo}/contents/{path}", json=payload, max_retries=max_retries)
 
     # ── Pull Requests ────────────────────────────────────────────────────────
 
