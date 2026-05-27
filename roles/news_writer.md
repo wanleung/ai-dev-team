@@ -34,7 +34,7 @@ Always output a complete markdown article with YAML frontmatter:
 ---
 title: "Exact descriptive headline"
 date: YYYY-MM-DDTHH:MM:00
-author: AI Press Team
+author: HKLUG Team
 source_url: https://original-source-url
 tags: [tag1, tag2, tag3]
 ---

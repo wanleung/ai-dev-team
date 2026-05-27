@@ -97,7 +97,7 @@ def test_stage_news_article_pr_sets_all_files():
     orch.target_github = None
 
     result = PipelineResult(requirement="Test article")
-    result.article = "---\ntitle: Test Article\ndate: 2026-01-15T10:30:00\nauthor: AI Press Team\n---\n\nBody."
+    result.article = "---\ntitle: Test Article\ndate: 2026-01-15T10:30:00\nauthor: HKLUG Team\n---\n\nBody."
     result.issue_number = 42
 
     orch._stage_news_article_pr(result)
@@ -223,9 +223,9 @@ def test_news_article_pr_includes_translations_when_present():
 
     result = PipelineResult(requirement="test")
     result.issue_number = 42
-    result.article = "---\ntitle: Test Article\ndate: 2026-05-19T10:00:00\nauthor: AI Press Team\nsource_url: https://example.com\ntags: [ai]\n---\n\nEnglish body."
-    result.article_zh_hk = "---\ntitle: 測試文章\ndate: 2026-05-19T10:00:00\nauthor: AI Press Team\nsource_url: https://example.com\ntags: [人工智能]\n---\n\n粵語內容。"
-    result.article_zh_tw = "---\ntitle: 測試文章\ndate: 2026-05-19T10:00:00\nauthor: AI Press Team\nsource_url: https://example.com\ntags: [人工智慧]\n---\n\n繁體中文內容。"
+    result.article = "---\ntitle: Test Article\ndate: 2026-05-19T10:00:00\nauthor: HKLUG Team\nsource_url: https://example.com\ntags: [ai]\n---\n\nEnglish body."
+    result.article_zh_hk = "---\ntitle: 測試文章\ndate: 2026-05-19T10:00:00\nauthor: HKLUG Team\nsource_url: https://example.com\ntags: [人工智能]\n---\n\n粵語內容。"
+    result.article_zh_tw = "---\ntitle: 測試文章\ndate: 2026-05-19T10:00:00\nauthor: HKLUG Team\nsource_url: https://example.com\ntags: [人工智慧]\n---\n\n繁體中文內容。"
 
     with patch.object(orch, "_commit_and_open_pr"):
         orch._stage_news_article_pr(result)
@@ -252,7 +252,7 @@ def test_news_article_pr_only_english_when_no_translations():
 
     result = PipelineResult(requirement="test")
     result.issue_number = 1
-    result.article = "---\ntitle: English Only\ndate: 2026-05-19T10:00:00\nauthor: AI Press Team\nsource_url: https://example.com\ntags: [ai]\n---\n\nBody."
+    result.article = "---\ntitle: English Only\ndate: 2026-05-19T10:00:00\nauthor: HKLUG Team\nsource_url: https://example.com\ntags: [ai]\n---\n\nBody."
     result.article_zh_hk = ""
     result.article_zh_tw = ""
 
