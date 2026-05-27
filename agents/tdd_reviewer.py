@@ -30,26 +30,6 @@ class TDDReviewerAgent(BaseAgent):
 
     role_name = "tdd_reviewer"
 
-    def call(self, user_message: str, context: str | None = None) -> str:
-        """Delegate to BaseAgent.call, with a direct _llm fallback for tests.
-
-        When the agent is constructed via ``__new__`` in tests (bypassing
-        ``__init__``), ``_backend`` is not set. In that case, call ``_llm``
-        directly so unit tests can inject a mock without standing up the full
-        backend machinery.
-
-        Args:
-            user_message: The prompt to send.
-            context: Optional context prepended to ``user_message``.
-
-        Returns:
-            The LLM response string.
-        """
-        if not hasattr(self, "_backend"):
-            full_message = f"{context}\n\n{user_message}" if context else user_message
-            return self._llm.call(full_message)
-        return super().call(user_message, context)
-
     def run(
         self,
         test_files: dict[str, str],
@@ -88,9 +68,15 @@ class TDDReviewerAgent(BaseAgent):
         if errors:
             _log.info("TDDReviewer: syntax errors after review, retrying: %s", errors)
             try:
-                revised, summary = self._retry_syntax_fix(prompt, revised, errors)
+                retry_result, retry_summary = self._retry_syntax_fix(prompt, revised, errors)
+                if retry_result is not None:
+                    revised, summary = retry_result, retry_summary
+                else:
+                    _log.warning("TDDReviewer syntax-fix retry returned no files — returning original files")
+                    return test_files, ""
             except Exception as exc:  # noqa: BLE001
-                _log.warning("TDDReviewer syntax-fix retry failed: %s — keeping pre-retry files", exc)
+                _log.warning("TDDReviewer syntax-fix retry failed: %s — returning original files", exc)
+                return test_files, ""
 
         return revised, summary
 
@@ -225,7 +211,7 @@ class TDDReviewerAgent(BaseAgent):
         original_prompt: str,
         files: dict[str, str],
         errors: list[str],
-    ) -> tuple[dict[str, str], str]:
+    ) -> tuple[dict[str, str] | None, str]:
         """Ask LLM to fix syntax errors; return (revised_files, summary).
 
         Args:
@@ -234,8 +220,9 @@ class TDDReviewerAgent(BaseAgent):
             errors: List of syntax error strings from _collect_syntax_errors.
 
         Returns:
-            (revised_files, summary) from the retry response, or original
-            files if the retry returns no file blocks.
+            (revised_files, summary) from the retry response, or (None, summary)
+            if the retry returns no file blocks (caller should fall back to
+            original test_files).
         """
         error_list = "\n".join(f"  - {e}" for e in errors)
         retry_prompt = (
@@ -245,4 +232,4 @@ class TDDReviewerAgent(BaseAgent):
         )
         response = self.call(retry_prompt)
         revised, summary = TDDReviewerAgent._parse_review_response(response)
-        return revised or files, summary
+        return revised if revised else None, summary

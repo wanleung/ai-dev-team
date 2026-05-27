@@ -1,18 +1,16 @@
 """Tests for TDDReviewerAgent."""
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import pytest
 
 
 def _make_agent(response: str = ""):
-    """Helper: create TDDReviewerAgent with a mocked LLM backend."""
+    """Helper: create TDDReviewerAgent with a mocked call() method."""
     from agents.tdd_reviewer import TDDReviewerAgent
     agent = TDDReviewerAgent.__new__(TDDReviewerAgent)
     agent.model = "gpt-4.1"
     agent._history = []
-    mock_llm = MagicMock()
-    mock_llm.model = "gpt-4.1"
-    mock_llm.call.return_value = response
-    agent._llm = mock_llm
+    agent._backend = "github_models"
+    agent.call = MagicMock(return_value=response)
     return agent
 
 
@@ -109,14 +107,8 @@ def mock_db():
         assert "Correctness fixes" in summary
 
     def test_run_returns_original_on_llm_failure(self):
-        from agents.tdd_reviewer import TDDReviewerAgent
-        agent = TDDReviewerAgent.__new__(TDDReviewerAgent)
-        agent.model = "gpt-4.1"
-        agent._history = []
-        mock_llm = MagicMock()
-        mock_llm.model = "gpt-4.1"
-        mock_llm.call.side_effect = RuntimeError("LLM unavailable")
-        agent._llm = mock_llm
+        agent = _make_agent()
+        agent.call.side_effect = RuntimeError("LLM unavailable")
         original = {"tests/test_foo.py": "def test_x():\n    assert True\n"}
         revised, summary = agent.run(original, prd="Build something", project_name="proj")
         assert revised == original
