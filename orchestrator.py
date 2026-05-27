@@ -403,6 +403,7 @@ class PipelineResult:
     test_fix_history: list[str] = field(default_factory=list)
     deploy_retry_count: int = 0
     deploy_fix_history: list[str] = field(default_factory=list)
+    tdd_review_summary: str = ""
     # Validation gate fields (Accuracy M2)
     pipeline_label: str = "unknown"
     validation_attempts: int = 0
@@ -481,6 +482,7 @@ class PipelineResult:
             "test_fix_history": self.test_fix_history,
             "deploy_retry_count": self.deploy_retry_count,
             "deploy_fix_history": self.deploy_fix_history,
+            "tdd_review_summary": self.tdd_review_summary,
             "prd_revision_count": self.prd_revision_count,
             "design_revision_count": self.design_revision_count,
             "prd_reviewer_draft": self.prd_reviewer_draft,
@@ -528,7 +530,7 @@ class PipelineResult:
 
     @classmethod
     def from_dict(cls, data: dict) -> "PipelineResult":
-        r = cls(requirement=data["requirement"])
+        r = cls(requirement=data.get("requirement", ""))
         for key in ["project_name", "prd", "prd_review", "prd_verdict", "design", "design_review", "design_verdict",
                     "modules", "all_files", "junior_files", "tier_classifications", "test_files",
                     "deploy_files", "review", "verdict", "qa_plan", "qa_acceptance_criteria",
@@ -539,6 +541,7 @@ class PipelineResult:
                     "pending_clarification", "clarification_history",
                     "test_retry_count", "test_fix_history",
                     "deploy_retry_count", "deploy_fix_history",
+                    "tdd_review_summary",
                     "prd_revision_count", "design_revision_count",
                     "prd_reviewer_draft", "design_reviewer_draft",
                     "design_output", "last_verdict", "next_label",
