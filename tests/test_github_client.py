@@ -218,3 +218,42 @@ class TestCommitFileShaRetry:
                                        put_fail2, put_fail2, put_fail2]):
             with pytest.raises(RuntimeError, match="409"):
                 gc.commit_file("src/foo.py", "content", "feat: add foo", "main")
+
+
+def test_commit_file_bytes_encodes_and_posts():
+    """commit_file_bytes should base64-encode bytes and PUT to GitHub API."""
+    import base64
+    from github_client import GitHubClient
+
+    gh = GitHubClient.__new__(GitHubClient)
+    gh.repo = "owner/repo"
+    gh._max_retries = 1
+    gh._retry_delay = 0
+    gh._inter_call_delay = 0
+    gh._session = MagicMock()
+
+    captured = {}
+
+    def fake_request(method, path, json=None, params=None, max_retries=None):
+        if method == "GET":
+            raise RuntimeError("404")  # file does not exist yet
+        captured["method"] = method
+        captured["path"] = path
+        captured["json"] = json
+        return {"commit": {"sha": "abc123"}}
+
+    gh._request = fake_request
+
+    image_bytes = b"\xff\xd8\xff"  # minimal JPEG header
+    gh.commit_file_bytes(
+        path="articles/images/slug.jpg",
+        content_bytes=image_bytes,
+        message="image: add slug",
+        branch="image/slug",
+    )
+
+    assert captured["method"] == "PUT"
+    assert captured["path"] == "/repos/owner/repo/contents/articles/images/slug.jpg"
+    assert captured["json"]["content"] == base64.b64encode(image_bytes).decode("ascii")
+    assert captured["json"]["branch"] == "image/slug"
+    assert captured["json"]["message"] == "image: add slug"

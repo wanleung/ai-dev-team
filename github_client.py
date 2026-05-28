@@ -291,6 +291,68 @@ class GitHubClient:
                 )
             raise
 
+    def commit_file_bytes(
+        self,
+        path: str,
+        content_bytes: bytes,
+        message: str,
+        branch: str,
+        max_retries: int | None = None,
+        _sha_retry: bool = True,
+    ) -> dict:
+        """Create or update a binary file in the repo on the given branch.
+
+        Identical to ``commit_file`` but accepts raw bytes instead of a text string,
+        allowing images and other binary assets to be committed without encoding
+        issues.
+
+        Args:
+            path: File path relative to repo root (e.g., 'articles/images/slug.jpg').
+            content_bytes: Raw bytes of the file.
+            message: Git commit message.
+            branch: Branch to commit to.
+            max_retries: Override the default retry count.
+            _sha_retry: Internal flag — False on the recursive retry to prevent loops.
+
+        Returns:
+            GitHub API response with commit and content data.
+        """
+        encoded = base64.b64encode(content_bytes).decode("ascii")
+
+        payload: dict = {"message": message, "content": encoded, "branch": branch}
+        try:
+            existing = self._request(
+                "GET",
+                f"/repos/{self.repo}/contents/{path}",
+                params={"ref": branch},
+                max_retries=max_retries,
+            )
+            payload["sha"] = existing["sha"]
+        except RuntimeError:
+            if not _sha_retry:
+                raise  # On retry path, GET failure is unexpected — abort
+            pass  # First attempt: file doesn't exist yet — create it
+
+        try:
+            return self._request(
+                "PUT",
+                f"/repos/{self.repo}/contents/{path}",
+                json=payload,
+                max_retries=max_retries,
+            )
+        except RuntimeError as exc:
+            if _sha_retry and "409" in str(exc):
+                log.warning(
+                    "[github_client] 409 SHA conflict on %s — fetching fresh SHA and retrying once",
+                    path,
+                )
+                return self.commit_file_bytes(
+                    path, content_bytes, message, branch,
+                    max_retries=max_retries,
+                    _sha_retry=False,
+                )
+            raise
+
     # ── Pull Requests ────────────────────────────────────────────────────────
 
     def create_pull_request(

@@ -124,7 +124,7 @@ class EngineerAgent(BaseAgent):
                 - pr_url (str): Pull request URL
         """
         result = self.run_all_modules(design, modules, project_name, max_workers, framework_context=framework_context, test_files=test_files)
-        safe_name = re.sub(r"[^a-z0-9-]", "-", project_name.lower())[:40]
+        safe_name = re.sub(r"[^a-z0-9-]", "-", project_name.lower())[:40].strip("-") or "auto"
         branch_name = f"{branch_prefix}/{safe_name}"
         github_client.create_branch(branch_name)
         self._commit_files_to_branch(github_client, result["all_files"], branch_name, project_name)

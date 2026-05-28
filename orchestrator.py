@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import collections
 import json
+import base64 as _base64
 import logging
 import os
 import re
@@ -418,6 +419,10 @@ class PipelineResult:
     discussion_synthesis: str = ""
     # Scan stage output
     repo_context: Optional["RepoContext"] = None
+    # Image generation stage output
+    image_path: Optional[str] = None        # e.g. "articles/images/20260528-042-slug.jpg"
+    image_bytes: Optional[bytes] = None     # raw JPEG bytes from image API
+    image_article_path: Optional[str] = None  # e.g. "articles/20260528-042-slug.md"
     # News article stage outputs
     article_draft: str = ""
     article: str = ""
@@ -518,6 +523,9 @@ class PipelineResult:
             "run_id": self.run_id,
             "total_cost_usd": self.total_cost_usd,
             "token_usage": self.token_usage,
+            "image_path": self.image_path,
+            "image_article_path": self.image_article_path,
+            "image_bytes_b64": _base64.b64encode(self.image_bytes).decode("ascii") if self.image_bytes else None,
             "repo_context": {
                 "file_count": self.repo_context.file_count,
                 "is_large": self.repo_context.is_large,
@@ -567,8 +575,13 @@ class PipelineResult:
                     "article_reviewer_notes", "article_review_retry_count",
                     "editorial_verdict", "editorial_notes", "triage_scope",
                     "progress_comment_id",
-                    "run_id", "total_cost_usd", "token_usage"]:
+                    "run_id", "total_cost_usd", "token_usage",
+                    "image_path", "image_article_path"]:
             setattr(r, key, data.get(key, getattr(r, key)))
+        # Restore image_bytes from base64
+        _img_b64 = data.get("image_bytes_b64")
+        if _img_b64:
+            r.image_bytes = _base64.b64decode(_img_b64)
         # Restore repo_context from serialised dict
         _rc = data.get("repo_context")
         if _rc:
@@ -2406,7 +2419,7 @@ class Orchestrator(TestFixLoopMixin):
         return stages
 
     def _build_utility_stages(self) -> dict[str, "PipelineStage"]:
-        """Build utility stages: scan, doc generation, doc PR, and bootstrap patterns."""
+        """Build utility stages: scan, doc generation, doc PR, bootstrap patterns, and image generation."""
         stages: dict[str, "PipelineStage"] = {}
         stages["scan"] = PipelineStage(
             name="scan",
@@ -2435,6 +2448,20 @@ class Orchestrator(TestFixLoopMixin):
             description="Scanning repo and generating .github/AGENTS.md...",
             checkpoint_key="bootstrap_patterns",
             fn=lambda r: self._stage_bootstrap_patterns(r),
+        )
+        stages["image_generate"] = PipelineStage(
+            name="image_generate",
+            label="🖼️ Image Generate",
+            description="Generate an AI image for the article and update frontmatter",
+            checkpoint_key="image_generate",
+            fn=lambda r: self._stage_image_generate(r),
+        )
+        stages["image_pr"] = PipelineStage(
+            name="image_pr",
+            label="📤 Image PR",
+            description="Commit generated image and open a pull request",
+            checkpoint_key="image_pr",
+            fn=lambda r: self._stage_image_pr(r),
         )
         return stages
 
@@ -4397,6 +4424,281 @@ class Orchestrator(TestFixLoopMixin):
                 result.modules = rev_result["revised_modules"]
         else:
             console.print(f"  🔎 Design verdict: [bold]{rev_result['verdict']}[/bold]")
+
+    def _call_image_api(self, prompt: str) -> bytes:
+        """Generate an image from *prompt* using the configured image API.
+
+        Returns raw image bytes (JPEG).
+
+        Reads config from ``self._press_cfg["image_api"]``:
+          provider  : "openai" (default) | "dashscope"
+          api_key_env: env var name for API key (default: "OPENAI_API_KEY" / "DASHSCOPE_API_KEY")
+          size      : image dimensions string (default: "1024x1024")
+          model     : model name override
+
+        Raises:
+            RuntimeError: if the image API call fails or returns no content.
+        """
+        import os
+        import requests as _requests
+
+        cfg = (self._press_cfg or {}).get("image_api", {})
+        provider = cfg.get("provider", "openai").lower()
+        size = cfg.get("size", "1024x1024")
+
+        if provider == "dashscope":
+            api_key_env = cfg.get("api_key_env", "DASHSCOPE_API_KEY")
+            api_key = os.environ.get(api_key_env, "")
+            if not api_key:
+                raise RuntimeError(
+                    f"image API key not set — export ${api_key_env} before running the image pipeline"
+                )
+            model = cfg.get("model", "wanx2.1-t2i-turbo")
+            dashscope_size = size.replace("x", "*")  # "1024x1024" → "1024*1024"
+            resp = _requests.post(
+                "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "X-DashScope-Async": "disable",
+                },
+                json={
+                    "model": model,
+                    "input": {"prompt": prompt},
+                    "parameters": {"size": dashscope_size, "n": 1},
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            try:
+                image_url = data["output"]["results"][0]["url"]
+            except (KeyError, IndexError) as exc:
+                raise RuntimeError(f"DashScope image API returned unexpected response: {data}") from exc
+        else:
+            # Default: OpenAI DALL-E 3
+            import openai as _openai
+            api_key_env = cfg.get("api_key_env", "OPENAI_API_KEY")
+            api_key = os.environ.get(api_key_env, "")
+            if not api_key:
+                raise RuntimeError(
+                    f"image API key not set — export ${api_key_env} before running the image pipeline"
+                )
+            model = cfg.get("model", "dall-e-3")
+            client = _openai.OpenAI(api_key=api_key)
+            result = client.images.generate(model=model, prompt=prompt, size=size, n=1)
+            image_url = result.data[0].url
+
+        img_resp = _requests.get(image_url, timeout=60)
+        img_resp.raise_for_status()
+        return img_resp.content
+
+    def _stage_image_generate(self, result: "PipelineResult") -> None:
+        """Generate an AI image for the article in result.requirement.
+
+        Reads the article from the target repo, generates an image prompt via LLM,
+        calls the image API, and stores the image bytes + path on result.
+
+        Sets on success:
+          result.image_bytes          — raw JPEG bytes
+          result.image_path           — "articles/images/<stem>.jpg"
+          result.image_article_path   — e.g. "articles/20260528-042-slug.md"
+          result.all_files[article_path] — updated article with image: frontmatter
+
+        Silently returns if target_github is not configured.
+        Silently skips if the article already has an image: field.
+        """
+        import re as _re
+        import yaml as _yaml
+
+        if not self.target_github:
+            return
+
+        article_path = (result.requirement or "").strip()
+        if not article_path:
+            result.add_error("image_generate: result.requirement must be the article path")
+            return
+
+        content = self.target_github.get_file_content(article_path)
+        if not content:
+            result.add_error(f"image_generate: could not read {article_path!r} from target repo")
+            return
+
+        # Parse frontmatter
+        fm_match = _re.match(r"^---\s*\n(.*?)\n---", content, _re.DOTALL)
+        if fm_match:
+            try:
+                fm = _yaml.safe_load(fm_match.group(1)) or {}
+            except Exception:
+                fm = {}
+        else:
+            fm = {}
+
+        # Skip if image already present
+        if fm.get("image"):
+            console.print(f"  🖼️  [dim]Article already has image — skipping image_generate.[/dim]")
+            return
+
+        # Generate image prompt via LLM
+        body_start = content[fm_match.end():].strip() if fm_match else content
+        body_excerpt = body_start[:2000]  # first ~2000 chars is enough for a prompt
+        title = str(fm.get("title", ""))
+        tags = ", ".join(str(t) for t in (fm.get("tags") or []))
+
+        prompt_request = (
+            f"You are writing a prompt for an AI image generator. The image is for a tech news article.\n\n"
+            f"Article title: {title}\n"
+            f"Tags: {tags}\n\n"
+            f"Article excerpt:\n{body_excerpt}\n\n"
+            f"Write a single image generation prompt (max 100 words). "
+            f"Style: photojournalism / tech editorial. No text overlays, no logos. "
+            f"Return only the prompt text, nothing else."
+        )
+        image_prompt = self.news_writer.call(prompt_request).strip()
+        console.print(f"  🖼️  [dim]Image prompt: {image_prompt[:80]}...[/dim]")
+
+        # Call image API
+        try:
+            image_bytes = self._call_image_api(image_prompt)
+        except Exception as exc:
+            result.add_error(f"image_generate: image API call failed: {exc}")
+            return
+
+        # Re-encode as JPEG to reduce file size if > 2 MB
+        if len(image_bytes) > 2 * 1024 * 1024:
+            try:
+                from PIL import Image as _PILImage
+                import io as _io
+                img = _PILImage.open(_io.BytesIO(image_bytes))
+                buf = _io.BytesIO()
+                img.save(buf, format="JPEG", quality=85, optimize=True)
+                image_bytes = buf.getvalue()
+            except Exception as exc:
+                result.add_error(f"image_generate: image re-encode failed: {exc}")
+                return
+
+        # Derive image path from article stem
+        from pathlib import Path as _Path
+        stem = _Path(article_path).stem  # e.g. "20260528-042-linux-6-9-released"
+        image_path = f"articles/images/{stem}.jpg"
+        image_fm_value = f"images/{stem}.jpg"  # relative path for frontmatter
+
+        # Update frontmatter: insert image: after tags: line
+        if fm_match:
+            frontmatter_block = fm_match.group(1)
+            # Single-line tags: tags: [...]
+            if _re.search(r"tags:\s*\[", frontmatter_block):
+                updated_fm = _re.sub(
+                    r"(tags:\s*\[.*?\])",
+                    rf"\1\nimage: {image_fm_value}",
+                    frontmatter_block,
+                    count=1,
+                )
+            # Multi-line tags: tags:\n  - item
+            elif "tags:" in frontmatter_block:
+                updated_fm = _re.sub(
+                    r"(tags:[^\n]*(?:\n[ \t]+- [^\n]+)*)",
+                    rf"\1\nimage: {image_fm_value}",
+                    frontmatter_block,
+                    count=1,
+                )
+            else:
+                updated_fm = frontmatter_block + f"\nimage: {image_fm_value}"
+            updated_content = f"---\n{updated_fm}\n---" + content[fm_match.end():]
+        else:
+            result.add_error(
+                "image_generate: article has no YAML frontmatter; cannot inject image: field"
+            )
+            return
+
+        result.image_bytes = image_bytes
+        result.image_path = image_path
+        result.image_article_path = article_path
+        if result.all_files is None:
+            result.all_files = {}
+        result.all_files[article_path] = updated_content
+
+    def _stage_image_pr(self, result: "PipelineResult") -> None:
+        """Commit the generated image and updated article frontmatter, then open a PR.
+
+        Expects result.image_bytes, result.image_path, and result.image_article_path
+        to have been populated by _stage_image_generate.
+
+        Sets result.pr_number and result.pr_url on success.
+        """
+        from pathlib import Path as _Path
+
+        if not result.image_bytes or not result.image_path or not result.image_article_path:
+            result.add_error("image_pr: missing image data from image_generate stage")
+            return
+
+        gh = self.target_github
+        if not gh:
+            result.add_error("image_pr: no target_github configured")
+            return
+
+        try:
+            repo_info = gh._request("GET", f"/repos/{gh.repo}")
+            base_branch = repo_info.get("default_branch", "main")
+        except Exception:
+            base_branch = "main"
+
+        stem = _Path(result.image_article_path).stem
+        branch = f"image/{stem}"
+
+        try:
+            gh.create_branch(branch)
+        except Exception as exc:
+            result.add_error(f"image_pr: branch creation failed: {exc}")
+            return
+        result.branch = branch
+
+        # Commit binary image file
+        try:
+            gh.commit_file_bytes(
+                path=result.image_path,
+                content_bytes=result.image_bytes,
+                message=f"image: add generated image for {stem}",
+                branch=branch,
+            )
+        except Exception as exc:
+            result.add_error(f"image_pr: failed to commit image file: {exc}")
+            return
+
+        # Commit updated article frontmatter
+        article_content = (result.all_files or {}).get(result.image_article_path, "")
+        if not article_content:
+            result.add_error(
+                f"image_pr: updated article content missing for {result.image_article_path}; "
+                "cannot open PR without frontmatter update"
+            )
+            return
+        try:
+            gh.commit_file(
+                path=result.image_article_path,
+                content=article_content,
+                message=f"image: add image frontmatter to {stem}",
+                branch=branch,
+            )
+        except Exception as exc:
+            result.add_error(f"image_pr: failed to commit article update: {exc}")
+            return
+
+        # Open PR
+        title = f"image: {stem} — add generated article image"
+        pr_body = (
+            "## 🖼️ Generated Article Image\n\n"
+            f"Adds AI-generated image for `{result.image_article_path}`.\n\n"
+            f"- Image path: `{result.image_path}`\n\n"
+            "_Generated by AI IT Press image pipeline._"
+        )
+        try:
+            pr = gh.create_pull_request(title=title, body=pr_body, head=branch, base=base_branch)
+            result.pr_number = pr.get("number")
+            result.pr_url = pr.get("html_url")
+        except Exception as exc:
+            result.add_error(f"image_pr: PR creation failed: {exc}")
+            return
 
     def _stage_scan(self, result: PipelineResult) -> None:
         """Fetch repo file tree and optionally index into RAG.

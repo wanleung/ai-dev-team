@@ -16,3 +16,4 @@ fastapi-mcp>=0.3.0
 ruff>=0.1.0
 feedparser>=6.0
 croniter
+Pillow>=10.0
