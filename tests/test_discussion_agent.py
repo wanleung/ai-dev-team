@@ -63,12 +63,14 @@ class TestDiscussionConfigFromYaml:
         cfg = DiscussionConfig.from_yaml(str(preset))
         assert cfg.participants[0].persona == "You are a deep analyst."
 
-    def test_raises_on_missing_persona(self, tmp_path):
+    def test_role_only_participant_gets_empty_persona(self, tmp_path):
         preset = _write_preset(tmp_path, {
             "participants": [{"role": "analyst"}],
         })
-        with pytest.raises(ValueError, match="persona"):
-            DiscussionConfig.from_yaml(str(preset))
+        cfg = DiscussionConfig.from_yaml(str(preset))
+        assert len(cfg.participants) == 1
+        assert cfg.participants[0].role == "analyst"
+        assert cfg.participants[0].persona == ""
 
     def test_raises_on_missing_persona_file(self, tmp_path):
         preset = _write_preset(tmp_path, {

@@ -111,15 +111,15 @@ class DiscussionConfig:
 
     @staticmethod
     def _resolve_persona(entry: dict, repo_root: Path) -> str:
-        """Resolve persona string from entry (persona_file or inline persona)."""
+        """Resolve persona string from entry (persona_file or inline persona).
+
+        Role-only entries (no persona or persona_file) return an empty string so
+        pipelines exported from the builder with blank personas don't crash at runtime.
+        """
         if "persona_file" in entry:
             pf = repo_root / entry["persona_file"]
             return pf.read_text(encoding="utf-8")
-        if "persona" in entry:
-            return entry["persona"]
-        raise ValueError(
-            f"Participant {entry.get('role', '?')!r} requires 'persona' or 'persona_file'"
-        )
+        return entry.get("persona", "")
 
     @classmethod
     def _build_participants(cls, raw_participants: list, repo_root: Path) -> list[Participant]:

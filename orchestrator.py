@@ -1747,6 +1747,44 @@ class Orchestrator(TestFixLoopMixin):
         active_repo = str(getattr(self.target_github, "repo", None) or "local") if getattr(self, "target_github", None) else "local"
         agent.run(result, memory_store=getattr(self, "memory", None), repo=active_repo)
 
+    def _stage_discuss_inline(self, result: "PipelineResult", config: dict) -> None:
+        """Run a discussion stage from an inline config dict (from pipeline.yaml).
+
+        Writes the config to a temporary YAML file inside the discussions/
+        directory (next to the orchestrator) so that DiscussionConfig.from_yaml
+        resolves persona_file paths relative to the repo root (parent.parent of
+        the config file), not from the system temp directory.
+        """
+        import os
+        import tempfile
+        from pathlib import Path
+        try:
+            import yaml as _yaml
+        except ImportError:
+            result.add_error(_PipelineError(
+                code="DISCUSS_INLINE_ERROR",
+                stage="discuss",
+                message="_stage_discuss_inline: PyYAML not installed",
+                severity="fatal",
+            ))
+            return
+        # Write inside discussions/ so .parent.parent == repo root.
+        discussions_dir = Path(__file__).parent / "discussions"
+        discussions_dir.mkdir(exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, prefix="discuss_inline_",
+            dir=str(discussions_dir),
+        ) as f:
+            _yaml.safe_dump(config, f)
+            tmp_path = f.name
+        try:
+            self._stage_discuss(result, tmp_path)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
     def _commit_and_open_pr(
         self,
         result: "PipelineResult",
@@ -2399,6 +2437,18 @@ class Orchestrator(TestFixLoopMixin):
                         )
                 result_entries.append(entry)  # store the raw dict
 
+            elif isinstance(entry, dict) and "discuss" in entry:
+                discuss = entry["discuss"]
+                if not isinstance(discuss, dict):
+                    raise ValueError(f"Discuss block at index {i} must be a mapping.")
+                participants = discuss.get("participants")
+                preset = discuss.get("preset")
+                if not participants and not preset:
+                    raise ValueError(
+                        f"Discuss block at index {i} must have 'participants' list or 'preset' path."
+                    )
+                result_entries.append(entry)  # store the raw dict
+
             else:
                 raise ValueError(
                     f"Invalid stage entry at index {i}: {entry!r}. "
@@ -2480,6 +2530,19 @@ class Orchestrator(TestFixLoopMixin):
                 for inner in (inner_stages or []):
                     if isinstance(inner, str) and inner not in registry:
                         unknown.append(f"(loop){inner}")
+            elif isinstance(entry, dict) and "discuss" in entry:
+                discuss = entry["discuss"]
+                if not isinstance(discuss, dict):
+                    raise ConfigurationError(
+                        f"Discuss block must be a mapping in {source!r}, got {type(discuss).__name__!r}"
+                    )
+                participants = discuss.get("participants")
+                preset = discuss.get("preset")
+                if not participants and not preset:
+                    raise ConfigurationError(
+                        f"Discuss block in {source!r} must have 'participants' list or 'preset' path."
+                    )
+                # inline discuss blocks are validated above; no registry lookup needed
         if unknown:
             raise ConfigurationError(
                 f"Unknown pipeline stage(s) {unknown!r} in {source!r}. "
@@ -2523,6 +2586,28 @@ class Orchestrator(TestFixLoopMixin):
                             loop_max=loop["max"],
                             loop_until=str(loop["until"]),
                         ))
+                elif isinstance(entry, dict) and "discuss" in entry:
+                    discuss_cfg = entry["discuss"]
+                    stage_name = f"discuss_inline_{i}"
+                    if not self._stage_skips.get(stage_name, False):
+                        if "preset" in discuss_cfg and "participants" not in discuss_cfg:
+                            # Preset-only: delegate directly to _stage_discuss with the preset path.
+                            preset_path = discuss_cfg["preset"]
+                            stages.append(PipelineStage(
+                                name=stage_name,
+                                label=f"💬 Discuss ({discuss_cfg['preset']})",
+                                description=f"Multi-agent round-table discussion ({discuss_cfg['preset']})",
+                                checkpoint_key=stage_name,
+                                fn=lambda r, p=preset_path: self._stage_discuss(r, p),
+                            ))
+                        else:
+                            stages.append(PipelineStage(
+                                name=stage_name,
+                                label="💬 Discuss (inline)",
+                                description="Multi-agent round-table discussion (inline participants)",
+                                checkpoint_key=stage_name,
+                                fn=lambda r, d=discuss_cfg: self._stage_discuss_inline(r, d),
+                            ))
             return stages
 
         registry = self._make_stage_registry()
