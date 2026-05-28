@@ -26,6 +26,33 @@ Fix anything that would prevent pytest from collecting or running the tests:
    app.dependency_overrides.pop(get_db, None)  # cleanup after test
    ```
 
+   **This rule also applies to `get_current_user`**: never use `with patch("app.dependencies.get_current_user", return_value=mock_user):` in individual test methods — it has no effect on FastAPI DI. Instead use the `authed_client` fixture (which uses `dependency_overrides[get_current_user]`) for routes requiring authentication. Tests must be rewritten as:
+
+   ```python
+   # WRONG — patch() does not bypass FastAPI auth:
+   def test_something(self, client, mock_db, sample_user_obj):
+       mock_user = MockModel(**sample_user_obj)
+       with patch("app.dependencies.get_current_user", return_value=mock_user):
+           response = client.patch("/api/protected", json={...})
+       assert response.status_code == 200  # FAILS with 401
+
+   # CORRECT — use authed_client which uses dependency_overrides:
+   def test_something(self, authed_client, mock_db):
+       mock_db.execute.return_value.scalar_one_or_none.return_value = MockModel(...)
+       response = authed_client.patch("/api/protected", json={...})
+       assert response.status_code == 200  # works
+   ```
+
+   Tests checking that auth IS required (expecting 401) should use the plain `client` fixture without any auth override:
+
+   ```python
+   def test_requires_auth(self, client):
+       response = client.post("/api/protected", json={...})
+       assert response.status_code == 401  # correct
+   ```
+
+   Note: if a test expects `422` (validation error) on a protected route, it still needs auth to reach the validation layer — use `authed_client` with intentionally invalid payload.
+
 4. **Mock user objects must include all required fields**: A mock user must include at minimum: `id`, `email`, `display_name`, `status`, `role`, `firebase_uid`. The `status` field must use a valid enum value (e.g. `"active"`, `"suspended"`, `"deleted"`); `role` must also use a valid enum value (e.g. `"player"`, `"venue_owner"`, `"admin"` — **not** `"user"`). Missing or wrong-valued fields cause `AttributeError` or validation failures deep in route handlers.
 
 5. **Syntax errors**: Fix any Python syntax errors.
