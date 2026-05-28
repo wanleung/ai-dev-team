@@ -1,0 +1,27 @@
+---
+title: "Attackers Hide Linux Malware in JavaScript Config Files to Bypass PHP Security Scanners"
+date: 2026-05-23T22:06:00
+author: AI Press Team
+source_url: https://thehackernews.com/2026/05/packagist-supply-chain-attack-infects-8.html
+tags: [supply-chain, packagist, malware, open-source, security]
+---
+
+A coordinated supply chain attack has compromised eight packages on Packagist, the primary repository for PHP dependencies, by embedding malicious code inside JavaScript configuration files rather than the expected PHP manifests. The campaign, first reported by The Hacker News on 23 May, downloaded and executed a Linux binary hosted on GitHub Releases — marking a notable shift in how threat actors bypass language-specific security controls.
+
+Security firm Socket, which identified the campaign, found that all eight affected packages were distributed through Composer, PHP's dependency manager. However, the malicious payloads were not inserted into `composer.json` files, where automated scanners and maintainers typically focus their audits. Instead, attackers placed executable scripts inside `package.json` files — configuration files used by Node.js and JavaScript tooling that are routinely bundled alongside PHP projects for frontend build pipelines, linting, and asset compilation.
+
+The technique exploits a structural reality in modern web development: full-stack projects frequently ship both PHP and JavaScript dependencies within the same repository. By targeting the JavaScript layer of a PHP package, the attackers effectively sidestepped security tooling calibrated to inspect Composer manifests. When a developer installed one of the compromised packages and ran standard JavaScript tooling commands, the embedded `postinstall` script reached out to a GitHub Releases URL and retrieved a compiled Linux binary named `gvfsd-network`. The binary was saved to `/tmp/.sshd`, made executable, and run in the background. The exact capabilities of that binary remain undisclosed, as the GitHub account used to host it — `parikhpreyash4` — is no longer available.
+
+Using GitHub Releases as a distribution point is itself significant. GitHub is a trusted platform for developers worldwide, and outbound traffic to `github.com` is rarely blocked by corporate firewalls or network security appliances. By hosting the payload on infrastructure that development teams already whitelist, the operators behind this campaign reduced the likelihood of detection by network monitoring tools that might flag connections to known malicious domains or newly registered URLs. The malicious command also disabled TLS certificate verification and suppressed error output, further obscuring its activity.
+
+The incident underscores a growing blind spot in automated dependency scanning. Most CI/CD pipelines and security scanners are configured to validate the primary language manifest of a project — `composer.json` for PHP, `package.json` for JavaScript, `requirements.txt` for Python — but rarely audit auxiliary configuration files with the same rigor. In hybrid environments, this creates an exploitable gap where malicious code can reside in plain sight inside files that security tooling assumes are harmless. Socket's broader investigation found references to the same payload across 777 files on GitHub, including in GitHub Actions workflow files, suggesting the campaign extended beyond Packagist packages.
+
+The attack appears to have originated from malicious commits made directly to upstream GitHub repositories. Once those repositories were updated, Packagist's branch-tracking package versions — such as `dev-main`, `dev-master`, and `3.x-dev` — automatically reflected the compromised state. Several maintainers have since reverted the malicious commits, and Packagist removed the affected packages. Two of the compromised projects carry the most practical risk: `devdojo/wave`, a Laravel SaaS starter kit with roughly 6,400 GitHub stars, and `devdojo/genesis`, which has about 9,100 Packagist installs. Starter kits are particularly dangerous for this attack pattern because the malicious `package.json` lands at the project root, where `npm install` executes its `postinstall` script directly.
+
+Security and DevOps teams should treat this campaign as a signal to transition from single-language dependency scanning to holistic, cross-ecosystem validation. Three baseline controls warrant immediate implementation:
+
+- **Expand Static Analysis Scope:** Configure automated scanners to audit all configuration and manifest files within a repository, not just the primary language's dependency file.
+- **Restrict Build-Time Network Access:** Enforce strict outbound allow-lists during dependency resolution and CI/CD execution to prevent package managers from contacting unauthorized or unexpected domains.
+- **Deploy Runtime Pipeline Monitoring:** Integrate behavioral detection into CI/CD workflows to flag anomalous network requests or unauthorized binary executions triggered during installation or build steps.
+
+The scale of the campaign's full impact remains unclear. Socket has not published definitive download counts or identified all downstream projects that may have inherited the compromised packages. Whether the GitHub account used to host the malicious binary connects to previously documented threat actor groups is also unknown. What is clear is that supply chain attacks are evolving beyond single-ecosystem tactics, and security defenses need to evolve accordingly.

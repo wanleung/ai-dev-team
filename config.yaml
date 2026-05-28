@@ -153,17 +153,17 @@ llm:
     # architect: "copilot/claude-sonnet-4.6"
     # engineer: "copilot/gpt-4o-mini"
     # ─────────────────────────────────────────────────────────────────────
-    product_manager: "openai/gpt-4.1"          # or "claude-3-5-sonnet-20241022"
-    pm_reviewer: "openai/gpt-4.1"
-    architect: "openai/gpt-4.1"                # or "claude-3-5-sonnet-20241022"
-    architect_reviewer: "openai/gpt-4.1"
-    engineer: "openai/gpt-4.1-mini"            # Code writing — runs many times
-    code_reviewer: "openai/gpt-4.1"
-    qa_planner: "openai/gpt-4.1"
-    qa_engineer: "openai/gpt-4.1-mini"
-    deployment_tester: "openai/gpt-4.1-mini"
-    summariser: "openai/gpt-4.1"
-    memory_bank_updater: "openai/gpt-4.1"
+    #product_manager: "openai/gpt-4.1"          # or "claude-3-5-sonnet-20241022"
+    #pm_reviewer: "openai/gpt-4.1"
+    #architect: "openai/gpt-4.1"                # or "claude-3-5-sonnet-20241022"
+    #architect_reviewer: "openai/gpt-4.1"
+    #engineer: "openai/gpt-4.1-mini"            # Code writing — runs many times
+    #code_reviewer: "openai/gpt-4.1"
+    #qa_planner: "openai/gpt-4.1"
+    #qa_engineer: "openai/gpt-4.1-mini"
+    #deployment_tester: "openai/gpt-4.1-mini"
+    #summariser: "openai/gpt-4.1"
+    #memory_bank_updater: "openai/gpt-4.1"
     # ── Press team agents ──────────────────────────────────────────────────
     # news_writer: "openai/gpt-4.1"
     # news_editor: "openai/gpt-4.1-mini"
@@ -309,7 +309,7 @@ pipeline:
   # Set to 0 to disable. Applies to both unit tests and deployment tests.
   max_test_retries: 5
   max_deploy_retries: 5
-  reviewer_max_retries: 2
+  reviewer_max_retries: 5
 
   # ── Pipeline chaining ────────────────────────────────────────────────────────
   # After a pipeline completes, the watcher can automatically re-label the issue

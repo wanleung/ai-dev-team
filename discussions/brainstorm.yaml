@@ -13,21 +13,27 @@
 participants:
   - role: analyst
     persona_file: roles/analyst.md
-    llm: "opencode-go/qwen3.6-plus"          # fast model for discussion rounds
-    homework_llm: "dashscope/qwen3.5-plus"  # slow+tools model for homework research
+    llm: "mimo/mimo-v2.5-pro"
+    homework_llm: "mimo/mimo-v2.5-pro"
+    #llm: "opencode-go/qwen3.6-plus"          # fast model for discussion rounds
+    #homework_llm: "dashscope/qwen3.5-plus"  # slow+tools model for homework research
 
   - role: skeptic
     persona_file: roles/skeptic.md
-    llm: "opencode-go/qwen3.6-plus"
-    homework_llm: "dashscope/qwen3.5-plus"
+    llm: "mimo/mimo-v2.5-pro"
+    homework_llm: "mimo/mimo-v2.5-pro"
+    #llm: "opencode-go/qwen3.6-plus"
+    #homework_llm: "dashscope/qwen3.5-plus"
 
   - role: optimist
     persona_file: roles/optimist.md
-    llm: "opencode-go/qwen3.6-plus"
-    homework_llm: "dashscope/qwen3.5-plus"
+    llm: "mimo/mimo-v2.5-pro"
+    homework_llm: "mimo/mimo-v2.5-pro"
+    #llm: "opencode-go/qwen3.6-plus"
+    #homework_llm: "dashscope/qwen3.5-plus"
 
 homework_round: true    # each participant thinks independently before the group discussion
-max_rounds: 2           # up to 2 discussion rounds after homework
+max_rounds: 3           # up to 2 discussion rounds after homework
 early_exit: CONSENSUS_REACHED
 
 moderator:

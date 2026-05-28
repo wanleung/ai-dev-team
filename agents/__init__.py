@@ -9,6 +9,7 @@ from .code_reviewer import CodeReviewerAgent
 from .qa_planner import QAPlannerAgent
 from .qa_engineer import QAEngineerAgent
 from .tdd_reviewer import TDDReviewerAgent
+from .contract_validator import ContractValidatorAgent
 from .deployment_tester import DeploymentTesterAgent
 from .documentation_agent import DocumentationAgent
 from .news_writer import NewsWriterAgent
@@ -27,6 +28,7 @@ __all__ = [
     "QAPlannerAgent",
     "QAEngineerAgent",
     "TDDReviewerAgent",
+    "ContractValidatorAgent",
     "DeploymentTesterAgent",
     "DocumentationAgent",
     "NewsWriterAgent",

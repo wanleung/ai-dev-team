@@ -1,65 +1,53 @@
 # Active Context
 
 ## Current Focus
-Linux 7.1 PM Dynamic EPP Feature (ai-it-press) — pipeline run completed but produced empty PRD, Architecture Design, and Code Review Notes. Source: Phoronix article on Linux 7.1 power management merges covering AMD Dynamic EPP fixes and Intel Bartlett Lake P-state scaling. Feature scope unclear; no implementation details available.
+Glassworm Botnet Takedown Article — New cybersecurity news article published covering the coordinated takedown of Glassworm botnet's four C2 channels by CrowdStrike, Google, and Shadowserver on May 26, 2026. Article sourced from Security Affairs (securityaffairs.com) with factual reporting style. Content covers supply chain poisoning narrative where botnet infected developers via poisoned tools/packages.
 
 ## Recent Changes
-- Netherlands Server Seizure News Feature (ai-it-press) — pipeline run completed but produced empty PRD, Architecture Design, and Code Review Notes. Source: BleepingComputer article about Netherlands seizing 800 servers of hosting firm enabling cyberattacks. Feature scope unclear; no implementation details available.
-- Packagist Supply Chain Attack Feature (ai-it-press) — pipeline run completed but produced empty PRD, Architecture Design, and Code Review Notes. Source: The Hacker News article on Packagist supply chain attack (8 packages infected with GitHub-hosted Linux malware). Target: Article summarization feature for security news ingestion. Feature scope unclear; article summary truncated mid-sentence; no implementation details available.
-- npm 2FA-Gated Publishing Feature (ai-it-press) — pipeline run processed feature requirement only, no implementation. Source: Hacker News article on npm's 2FA-gated publishing and package install controls for supply chain attack prevention. Feature concept: Staged publishing allowing maintainers to explicitly approve releases before public availability. PRD, Architecture Design, and Code Review Notes all empty.
-- CVE-2026-48172 LiteSpeed cPanel Plugin vulnerability news feature (ai-it-press) — pipeline run completed but produced empty PRD, Architecture Design, and Code Review Notes. Source: The Hacker News article on LiteSpeed cPanel Plugin vulnerability (CVE-2026-48172, CVSS 10.0). Vulnerability: incorrect privilege assignment allowing arbitrary script execution as root. Feature scope unclear; no implementation details available.
-- CVE-2026-9082 Drupal SQL Injection (ai-it-press) — content sourced from Security Affairs article about highly critical SQL injection vulnerability in Drupal under active exploitation. No implementation produced; pipeline stalled at requirements gathering stage. Time-sensitive: active exploitation confirmed within 48 hours of patch release (May 20, 2026).
-- **RSS topic deduplication merged (PR #86):** `topic_dedup.py` + `rss_watcher.py` integration; supports fuzzy/keyword/LLM/all similarity methods; ADD_SOURCE, CREATE_FOLLOWUP, CREATE_NEW routing; per-target config; LLM token separated from GitHub token; configurable base URL via `LLM_BASE_URL` env var
-- Pipeline run processed Linux 7.1-rc4 news summarizer feature from Phoronix (no implementation artifacts produced)
-- Pipeline run processed Google Chromium vulnerability exposure article from BleepingComputer (no implementation artifacts produced)
-- Pipeline run processed Microsoft Defender zero-day vulnerabilities news feature (no implementation artifacts produced)
-- Pipeline run captured requirement specification for CVE-2026-46333 (The Hacker News source); no code implementation produced
-- Cloud storage security feature for document handling — Implementation focused on preventing misconfigured S3 bucket exposures for sensitive documents (passports, IDs, selfies). Security-first architecture based on Tabiq breach case study (1M+ record exposure from Reqrea's hotel check-in system).
-- 7-Eleven/ShinyHunters data breach article processed through news-article pipeline; article output to `articles/` with YAML frontmatter; dual translation outputs (zh-hk, zh-tw); GitHub PR automation triggered
-- Infrastructure modules: `shipping_config`, `email_service`, `image_pipeline`, `observability`
-- Backend stack: FastAPI + SQLAlchemy + PostgreSQL 15 with Alembic migrations
-- Models: Product, Category, Cart, CartItem, Order, OrderItem, Review, User (with improved relationship definitions and database constraints)
-- Routers: products, cart, checkout, orders, reviews, auth, admin, admin_reviews, admin_returns, returns, webhooks
-- Services: product_service, cart_service, checkout_service, order_service, review_service, auth_service, return_service, email_service, image_pipeline
-- Frontend scaffolding: React 18 + Vite + Tailwind for storefront and admin panels
-- UK VAT compliance (20% default), GBP pricing with `price_excl_vat` + `vat_rate` fields
-- Guest checkout support via `session_id` on cart, `guest_email` on orders
-- Review moderation workflow with status (pending/approved/rejected)
-- Stripe PaymentIntents integration configured
-- CORS middleware and async lifespan configured
-- Pillow integrated for image processing
-- PR/Marketing Campaign Pipeline agents: PRAnalystAgent, PRCreativeAgent, PRProposalAgent
-- PR/Marketing Campaign Pipeline config: `pipelines/pr-campaign.yaml`
-- PR/Marketing Campaign Watcher config: `repos.yaml`
-- PR/Marketing Campaign issue template: `.github/ISSUE_TEMPLATE/campaign-brief.md`
-- PR/Marketing Campaign role prompts: `roles/pr_analyst.md`, `roles/pr_creative.md`, `roles/pr_proposal.md`
+- **Glassworm Botnet Takedown Article (ai-it-press)** — Cybersecurity news article created covering multi-vendor botnet takedown; sourced from Security Affairs (securityaffairs.com); content follows existing site structure for cybersecurity news; factual reporting style; supply chain poisoning narrative (malicious tools/packages targeting developers); four simultaneous C2 channel kills on May 26, 2026 at 14:00 UTC
+- **GlassWorm Malware Article Pipeline (ai-it-press)** — Content generation pipeline for GlassWorm malware takedown article; input queue processor for source URL, content generation module using LLM for structured article creation, output formatter for publication-ready text; Python with `openai` library; file-based I/O for persistence; JSON queue (`queue.json`) state management; single-run execution design
+- **Agent Skills Article (ai-it-press)** — External article by Addy Osmani from O'Reilly Radar ingested, summarized, and prepared for publication; attribution preserved as repost/permission-based content; content acquisition workflow executed
+- **Glassworm Botnet Article (ai-it-press)** — Technical news article generated for BleepingComputer; covers Solana blockchain and BitTorrent DHT usage by botnet; Markdown-formatted output at `articles/glassworm-botnet-disrupted.md`; automated content generation pipeline used
+- **Cache Aware Scheduling Article** — Completed generation of Phoronix-sourced article on Cache Aware Scheduling benchmarks for AMD Zen 5 (Linux 7.2 target) via ai-it-press article pipeline. Article covers PostgreSQL, Valkey, and network performance improvements with WordPress-compatible output.
+- **Content Summary Module (ai-it-press)** — Module built to fetch and summarize LWN.net articles; first article processed: "MOT: a tool to fight openwashing in AI" (LWN 1073420); output structured as concise factual summary (<400 words) covering OSI definitions, openwashing, and MOT tool
+- **TDD Reviewer Agent Integration** — TDDReviewerAgent implemented with correctness + quality review capabilities, wired into TDD pipeline via orchestrator. Retry logic handles review failures gracefully (returns original files on retry failure). Design spec and implementation plan documented in `docs/superpowers/`. Intake scoring improvements merged alongside.
+- **TDD Reviewer Agent (TDDReviewerAgent)** — new agent with correctness + quality review capabilities; 235 lines in `agents/tdd_reviewer.py`; 141 lines of tests in `tests/test_tdd_reviewer.py` covering retry path; system prompt in `roles/tdd_reviewer.md` (48 lines); exported from `agents/__init__.py`
+- **TDD Pipeline Integration** — orchestrator wired to call TDDReviewerAgent; `tdd_review_summary` field added to `PipelineResult`; retry logic returns original files on failure
+- **Intake Scoring Improvements** — `intake_scoring.py` updated (42 lines changed); tests added in `tests/test_intake_scoring.py` (32 lines)
+- **Design Documentation** — implementation plan (`docs/superpowers/plans/2026-05-27-tdd-reviewer-stage.md`, 848 lines) and design spec (`docs/superpowers/specs/2026-05-27-tdd-reviewer-stage-design.md`, 195 lines)
+- **Discussion Config Updates** — `discussions/intake-triage.yaml` updated (17 lines changed)
+- Backend: Python 3.12 / FastAPI API with PostgreSQL 16, Redis 7, and S3 storage implemented
+- User models, authentication (Apple ID, Gmail OAuth), and core database schemas for snooker community MVP created
+- Mobile: Initial Flutter 3.x project structure targeting iOS and Android with state management and routing foundations
+- Admin: Basic React 19 + TypeScript scaffold for web dashboard created
+- Database models: user profiles with snooker data, second-hand equipment trading marketplace with attribute filtering, venue/location data structures
+- Architecture: Clean separation between SQLAlchemy ORM models, Pydantic schemas, and Alembic migrations
+- Localization: Traditional Chinese (Hong Kong) terminology mandated across all UI strings and messages
 
 ## Immediate Next Steps
-1. Clarify deliverable type for Linux 7.1 PM Dynamic EPP Feature — documentation vs. code implementation (kernel module, monitoring tool, or other)
-2. Extract technical specifics from Phoronix source article (AMD EPP fixes, Intel Bartlett Lake P-state scaling)
-3. Create proper PRD with acceptance criteria for Linux 7.1 PM feature
-4. Investigate root cause of repeated pipeline stalls producing empty deliverables across multiple features (now 20+ consecutive failures)
-5. Verify upstream pipeline configuration to ensure PRD, Architecture, and Review sections are properly populated
-6. Establish minimum documentation requirements for feature-mode runs
+1. Confirm Glassworm botnet article rendering on site matches intended layout
+2. Verify all external links (source URL) are functional and properly attributed
+3. Check if category/tag taxonomy was updated for "botnet" or "takedown" topics
+4. Ensure no broken relative links introduced
+5. Verify article metadata (author, date, tags, SEO) was fully populated
+6. Implement input validation and security sanitization for source URLs and LLM-generated output (flagged by Code Review)
+7. Create unit and integration test suite for content pipeline
+8. Document pipeline operational triggering and expected input/output formats in PRD and architecture docs
+9. Add automated feed or scraping integration for article sourcing
+10. Implement validation step for generated article's factual accuracy against source URL
+11. Enhance article template with automated section generation or image/media placeholders
+12. Add content formatting validation (markdown, front matter, site-specific metadata) to build process
+13. Add missing database indexes for trading listings and venue location queries
+14. Address N+1 query issues in list endpoints
+15. Remove placeholder/TODO comments from production code
+16. Standardize error handling across API endpoints
+17. Implement news module (currently placeholder)
+18. Expand admin dashboard beyond initial scaffold
+19. Implement real-time features (chat, notifications)
 
 ## Reference
-- Source: Phoronix — Linux 7.1 PM merges (AMD Dynamic EPP, Intel Bartlett Lake P-state scaling)
-- Source: BleepingComputer — Netherlands seizes 800 servers of hosting firm enabling cyberattacks
-- Article URL: https://www.bleepingcomputer.com/news/security/netherlands-seizes-800-servers-of-hosting-firm-enabling-cyberattacks/
-- Source: Security Affairs — CVE-2026-9082 Drupal SQL Injection (actively exploited within 48 hours of patch release May 20, 2026)
-- Source: Phoronix — Linux 7.1-rc4 kernel release news summarizer
-- Article URL: https://www.phoronix.com/news/Linux-7.1-rc4-Released
-- Source: BleepingComputer — Google accidentally exposed details of unfixed Chromium flaw
-- Article URL: https://www.bleepingcomputer.com/news/security/google-accidentally-exposed-details-of-unfixed-chromium-flaw/
-- Source: BleepingComputer — Microsoft warns of new Defender zero-days exploited in attacks
-- Article URL: https://www.bleepingcomputer.com/news/security/microsoft-warns-of-new-defender-zero-days-exploited-in-attacks/
-- Source: The Hacker News — CVE-2026-46333 9-year-old Linux kernel privilege escalation vulnerability (CVSS 5.5)
-- Article URL: https://thehackernews.com/2026/05/9-year-old-linux-kernel-flaw-enables.html
-- Source case: Public Amazon S3 bucket exposed over 1 million passports, IDs, and selfies (Reqrea's Tabiq hotel check-in system)
-- Root cause: Storage misconfiguration in hotel check-in system
-- Security-first architecture chosen in response to Tabiq breach case study
-- Bucket access controls and authentication mechanisms prioritised
-- Source: Security Affairs — 7-Eleven/ShinyHunters data breach (Salesforce/CRM breach)
-- Pipeline: `pipelines/news-article.yaml` (news_triage → discuss_news_analysis → news_writer → discuss_news_draft → news_editor → translate_cantonese → translate_zh_traditional → news_reviewer → news_article_pr)
-- Output: `articles/` directory with YAML frontmatter (title, date, author, source_url, tags)
-- Translations: Written Cantonese (zh-hk), Formal Traditional Chinese (zh-tw)
+- Source: wanleung/ai-it-press Feature Pipeline (Glassworm Botnet Takedown Article)
+- Context: Cybersecurity news coverage, coordinated botnet takedown, supply chain poisoning
+- Repository: wanleung/ai-software-house
+- Key facts: Glassworm developer-targeting botnet using supply chain poisoning; coordinated multi-vendor operation (CrowdStrike CAO + Google + Shadowserver); four simultaneous C2 channel kills on May 26, 2026 at 14:00 UTC; current/recent cybersecurity news — accuracy critical
+- Documentation: PRD, Architecture Design, and Code Review Notes were empty/missing for this run

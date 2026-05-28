@@ -22,12 +22,12 @@ settings:
 
 # LLM config for the press pipeline.
 # Uncomment and adjust to override global settings.
-llm:
-  model: "opencode-go/qwen3.6-plus"
-  homework_llm: "dashscope/qwen3.5-plus"
-  fallbacks:
-    - model: "opencode/opencode-go/qwen3.6-plus"  # CLI subprocess — different rate bucket
-    - model: "ollama/thinker"                      # local — bypasses Alibaba entirely
+#llm:
+#  model: "opencode-go/qwen3.6-plus"
+#  homework_llm: "dashscope/qwen3.5-plus"
+#  fallbacks:
+#    - model: "opencode/opencode-go/qwen3.6-plus"  # CLI subprocess — different rate bucket
+#    - model: "ollama/thinker"                      # local — bypasses Alibaba entirely
 #   overrides:
 #     news_writer: "opencode-go/qwen3.6-plus"
 #     news_editor: "opencode-go/qwen3.6-plus"

@@ -1,47 +1,48 @@
 # Tech Context
 
-## Tech Stack
-- **Backend**: FastAPI (async), Python 3.11+
-- **Database**: PostgreSQL 15 (JSONB for product specs)
-- **Cache/Session**: Redis 7 (guest cart 7-day TTL, JWT refresh, rate limiting)
-- **Frontend**: React 18, Vite, Tailwind CSS (separate Storefront/Admin builds)
-- **Payments**: Stripe PaymentIntents API
-- **ORM**: SQLAlchemy
-- **Validation**: Pydantic v2
-- **Migrations**: Alembic
-- **Image Processing**: Pillow
+## Backend Stack
+- Python 3.12
+- FastAPI (async framework)
+- SQLAlchemy (ORM)
+- Pydantic (data validation)
+- Alembic (migrations)
 
-## Infrastructure
-- UK data residency (eu-west-2)
-- PostgreSQL JSONB for flexible product specifications and shipping addresses
-- Redis for:
-  - Guest cart persistence (7-day TTL) — *implementation unverified, cart model/service files omitted from code review*
-  - Rate limiting
-  - JWT refresh tokens
-- Alembic for database migrations
-- CORS middleware for frontend-backend separation
-- FastAPI async lifespan for startup/shutdown logging
-- Local filesystem image storage (MVP only)
+## Database & Infrastructure
+- PostgreSQL 16 (primary database)
+  - PostGIS extension for geospatial queries
+  - JSON field support
+- Redis 7 (caching/queuing)
+- S3 (file storage)
 
-## Implemented Services
-- `shipping_config`
-- `email_service`
-- `image_pipeline`
-- `observability`
-- `product_service`
-- `cart_service`
-- `checkout_service`
-- `order_service`
-- `review_service`
-- `auth_service`
-- `return_service`
+## Mobile Stack
+- Flutter 3.x
+- Target platforms: iOS and Android
+- State management framework (foundation implemented)
+- Routing foundation implemented
 
-## Environment Constraints
-- GBP pricing with VAT (20% default)
-- WCAG 2.1 AA compliance required
-- PCI DSS SAQ-A compliance via Stripe (PaymentIntents, not handling raw card data)
+## Admin Web Stack
+- React 19
+- TypeScript
 
-## Known Configuration Gaps
-- Guest cart Redis implementation unverified — critical path for checkout
-- Product→Review relationship asymmetry blocks review system completion
-- No CDN for image storage (local filesystem only for MVP)
+## Pipeline Infrastructure
+- Orchestrator-based pipeline execution
+- TDD pipeline with TDDReviewerAgent
+- Agent system prompts in `roles/*.md`
+- Design documentation in `docs/superpowers/`
+- Content generation pipeline (ai-it-press):
+  - `openai` library for LLM interaction
+  - File-based I/O for persistence
+  - JSON queue file (`queue.json`) for state management
+  - Single-run execution (not long-running service)
+
+## Localization
+- Traditional Chinese (Hong Kong)
+- Font stack configured for full TCH character support
+
+## Development Tools
+- Auto-generated API docs (FastAPI/Swagger)
+
+## Constraints
+- All UI strings must use Traditional Chinese with Hong Kong terminology
+- Database enums must be validated at schema level
+- Foreign key constraints enforced at database level

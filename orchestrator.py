@@ -30,6 +30,7 @@ from agents import (
     ArchitectAgent,
     ArchitectReviewerAgent,
     CodeReviewerAgent,
+    ContractValidatorAgent,
     DeploymentTesterAgent,
     EngineerAgent,
     PMReviewerAgent,
@@ -443,6 +444,10 @@ class PipelineResult:
     run_id: str = ""
     total_cost_usd: float = 0.0
     token_usage: dict = field(default_factory=dict)
+    # Contract validation fields
+    naming_contract: str = ""
+    contract_validation_passed: Optional[bool] = None
+    contract_divergences: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -643,6 +648,7 @@ MODES: dict[str, list[str]] = {
     "tdd": [
         "qa_planner",
         "qa_write",
+        "contract_validate",
         "tier_review",
         "junior_engineer",
         "senior_engineer",
@@ -999,6 +1005,7 @@ class Orchestrator(TestFixLoopMixin):
         self.qa_planner = QAPlannerAgent(tool_registry=tools, **{**agent_kwargs, **mk("qa_planner")})
         self.qa = QAEngineerAgent(tool_registry=rag, **{**agent_kwargs, **mk("qa_engineer")})
         self.tdd_reviewer = TDDReviewerAgent(**{**agent_kwargs, **mk("tdd_reviewer")})
+        self.contract_validator = ContractValidatorAgent(**{**agent_kwargs, **mk("contract_validator")})
         _deploy_cfg = deploy_cfg or {"mode": "docker"}
         self._deploy_cfg = _deploy_cfg
         _deploy_backend = build_deploy_backend(_deploy_cfg)
@@ -2113,6 +2120,14 @@ class Orchestrator(TestFixLoopMixin):
             checkpoint_key="tdd_review",
             fn=lambda r: self._stage_tdd_review(r),
             skip_if=lambda r: not r.test_files,
+        )
+        stages["contract_validate"] = PipelineStage(
+            name="contract_validate",
+            label="📋 Contract Validation",
+            description="Validating test files against naming contract...",
+            checkpoint_key="contract_validate",
+            fn=lambda r: self._stage_contract_validate(r),
+            skip_if=lambda r: not r.test_files or not r.naming_contract,
         )
         stages["test_fix"] = PipelineStage(
             name="test_fix",
@@ -3768,6 +3783,8 @@ class Orchestrator(TestFixLoopMixin):
             raise RuntimeError("Architect produced an empty design — LLM may have returned no content.")
         result.design = arch_result["design"]
         result.modules = arch_result["modules"]
+        # Extract naming_contract if the architect included it
+        result.naming_contract = arch_result.get("naming_contract", "")
         if self.github and result.issue_number:
             self.github.add_issue_comment(
                 result.issue_number,
@@ -4501,6 +4518,30 @@ class Orchestrator(TestFixLoopMixin):
         if summary:
             _log.info("TDD review summary: %s", summary[:200])
             console.print(f"[green]✅ TDD review complete ({len(revised)} file(s))[/green]")
+
+    def _stage_contract_validate(self, result: PipelineResult) -> None:
+        """Validate test files against naming_contract.yaml (if present)."""
+        if not result.test_files or not result.naming_contract:
+            log.info("contract_validate: no test files or no naming contract — skipping")
+            return
+        console.print("\n[bold cyan]📋 Contract Validator[/bold cyan]")
+        validation = self.contract_validator.validate(
+            contract_yaml=result.naming_contract,
+            files=result.test_files,
+        )
+        result.contract_validation_passed = validation["passed"]
+        result.contract_divergences = validation.get("divergences", [])
+        if validation.get("skipped"):
+            console.print("[yellow]⚠️  Contract validation skipped (no contract)[/yellow]")
+            return
+        if not validation["passed"]:
+            n = len(result.contract_divergences)
+            console.print(f"[yellow]⚠️  Contract validation found {n} divergence(s)[/yellow]")
+            for d in result.contract_divergences[:5]:
+                console.print(f"  • {d.get('file', '?')}: {d.get('issue', '?')}")
+            log.warning("Contract divergences: %s", result.contract_divergences)
+        else:
+            console.print("[green]✅ Contract validation passed[/green]")
 
     def _stage_qa(self, result: PipelineResult) -> None:
         cross_repo = self.target_github is not self.github and self.target_github is not None

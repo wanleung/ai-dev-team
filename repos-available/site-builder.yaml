@@ -1,0 +1,19 @@
+tracker_repo: wanleung/site-builder
+default_target: ~
+parallel_issues: 2
+labels:
+  ai-feature: ai-feature
+  ai-fix: ai-fix
+  ai-docs: ai-docs
+enabled: true
+
+settings:
+  watch_prs: true
+  pr_fix_label: "ai-fix"
+  pr_failure_pattern: "❌|FAILED|tests? failed|test suite failed"
+  max_pr_retries: 3
+  watch_draft_prs: false
+  pipeline:
+    chaining:
+      on_test_failure: "ai-fix"
+      on_review_issues: "ai-fix"

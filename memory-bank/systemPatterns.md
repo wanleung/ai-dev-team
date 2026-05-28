@@ -1,70 +1,45 @@
 # System Patterns
 
-## Architecture
-- Async-first FastAPI for high concurrency
-- Pydantic v2 for request/response validation
-- PostgreSQL 15 as primary datastore (JSONB for product specs)
-- Redis 7 for sub-millisecond guest cart persistence (7-day TTL), rate limiting, JWT refresh tokens
-- React 18 + Vite + Tailwind with isolated builds for storefront vs admin, shared component library
-- FastAPI async lifespan for startup/shutdown logging
-- CORS middleware configured for frontend-backend separation
-- Local filesystem image storage (MVP only, not CDN)
+## Architecture Overview
+- **Backend**: FastAPI (Python 3.12) with async support
+- **Mobile**: Flutter 3.x for cross-platform iOS/Android
+- **Admin Web**: React 19 + TypeScript
+- **Database**: PostgreSQL 16 with PostGIS for geospatial queries
+- **Cache/Queue**: Redis 7
+- **Storage**: S3 for file storage
 
-## PR/Marketing Campaign Pipeline
-- Three-agent sequential pipeline: PRAnalystAgent → PRCreativeAgent → PRProposalAgent
-- All agents extend `BaseAgent` with synchronous GitHub-driven flow
-- Human posts issue → watcher dispatches pipeline → PR opened for approval
-- JSON-strict output contracts with validation and fallback retry prompts
-- Exponential backoff on LLM timeouts (2^attempt seconds, max 3 retries)
-- Branch naming convention: `campaign/{issue_number}-{slugified_big_idea}`
-- Watcher monitors `wanleung/pr-campaigns` repo, triggers on `pr-campaign` label
+## Pipeline Architecture
+- Orchestrator-based pipeline execution with stage-based processing
+- TDD pipeline includes TDDReviewerAgent for correctness + quality review
+- Retry logic in review stages returns original files on failure
+- `PipelineResult` includes `tdd_review_summary` field
+- **Content Generation Pipeline (ai-it-press)** — Linear pipeline pattern (Fetch → Generate → Format → Store) for single-article generation; state managed via JSON queue file (`queue.json`); single-run execution triggered by pipeline runner; not designed as long-running service
 
-## Data Model
-- Core entities: Product, Category, Cart, CartItem, Order, OrderItem, Review, User
-- PostgreSQL JSONB for flexible product specifications and shipping addresses
-- SQLAlchemy ORM with improved relationship definitions and database constraints
-- UK VAT compliance: `price_excl_vat` + `vat_rate` fields on products
-- Guest checkout: `session_id` on cart, `guest_email` on orders
-- Review moderation: `status` (pending/approved/rejected) and `rejection_reason`
-- **Known issue**: Product→Review relationship uses filtered `primaryjoin` with `back_populates`, creating asymmetric bidirectional relationship
+## Backend Patterns
+- Clean separation of concerns:
+  - SQLAlchemy ORM models for database layer
+  - Pydantic schemas for request/response validation
+  - Alembic for database migrations
+- Mixins used for shared model behavior
+- Database-level constraints for data integrity
+- Auto-generated API documentation via FastAPI
 
-## Service Layer
-- `product_service`: Product catalog operations
-- `cart_service`: Cart management
-- `checkout_service`: Checkout flow
-- `order_service`: Order management
-- `review_service`: Review handling
-- `auth_service`: Authentication
-- `return_service`: Return processing
-- `email_service`: Email notifications
-- `image_pipeline`: Image processing (Pillow)
+## Agent Patterns
+- Agents exported from `agents/__init__.py`
+- System prompts stored in `roles/` directory as markdown files
+- Test coverage for retry paths and failure scenarios
+- Design specs and implementation plans in `docs/superpowers/`
 
-## API Routes
-- `products`: Product catalog CRUD
-- `cart`: Cart operations
-- `checkout`: Checkout flow
-- `orders`: Order management
-- `reviews`: Customer reviews
-- `auth`: Authentication
-- `admin`: Admin panel operations
-- `admin_reviews`: Review moderation
-- `admin_returns`: Return management
-- `returns`: Customer returns
-- `webhooks`: External webhook handlers
+## Data Models
+- User profiles with snooker-specific attributes
+- Second-hand equipment trading marketplace with detailed attribute filtering
+- Venue/location data with geospatial support
 
-## Infrastructure Modules
-- `shipping_config`: Shipping rules and configuration
-- `email_service`: Email notification service
-- `image_pipeline`: Image processing and media management
-- `observability`: Monitoring and logging integration
+## Localization
+- Traditional Chinese (Hong Kong) terminology mandated
+- Font stack configured for full TCH support
+- All UI strings, system prompts, and error messages use HK terminology (e.g., "登入" not "登录")
 
-## Security & Compliance
-- Stripe PaymentIntents API for PCI DSS SAQ-A compliance (not handling raw card data)
-- UK data residency (eu-west-2)
-- WCAG 2.1 AA compliance for frontend
-- GBP pricing with VAT
-
-## Patterns to Implement
-- Multi-layer enforcement for UK VAT calculations and shipping rules
-- CDN integration for image storage (post-MVP)
-- Complete Product→Review relationship fix for admin moderation
+## Authentication
+- Apple ID authentication
+- Gmail OAuth authentication
