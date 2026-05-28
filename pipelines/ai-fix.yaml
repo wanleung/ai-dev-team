@@ -2,6 +2,7 @@
 # Replaces bug_fix_orchestrator.py with a stage sequence on the unified
 # Orchestrator. The Engineer treats the diagnosis as its architecture.
 stages:
+  - scan
   - diagnose
   - bug_fix
   - validation_gate

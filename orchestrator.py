@@ -416,6 +416,8 @@ class PipelineResult:
     # Discussion stage outputs
     discussion_transcript: str = ""
     discussion_synthesis: str = ""
+    # Scan stage output
+    repo_context: Optional["RepoContext"] = None
     # News article stage outputs
     article_draft: str = ""
     article: str = ""
@@ -516,6 +518,12 @@ class PipelineResult:
             "run_id": self.run_id,
             "total_cost_usd": self.total_cost_usd,
             "token_usage": self.token_usage,
+            "repo_context": {
+                "file_count": self.repo_context.file_count,
+                "is_large": self.repo_context.is_large,
+                "tree_text": self.repo_context.tree_text,
+                "paths": self.repo_context.paths,
+            } if self.repo_context else None,
         }
 
     def add_error(self, error: "str | _PipelineError") -> None:
@@ -561,6 +569,16 @@ class PipelineResult:
                     "progress_comment_id",
                     "run_id", "total_cost_usd", "token_usage"]:
             setattr(r, key, data.get(key, getattr(r, key)))
+        # Restore repo_context from serialised dict
+        _rc = data.get("repo_context")
+        if _rc:
+            from repo_context import RepoContext as _RepoContext
+            r.repo_context = _RepoContext(
+                file_count=_rc.get("file_count", 0),
+                is_large=_rc.get("is_large", False),
+                tree_text=_rc.get("tree_text", ""),
+                paths=_rc.get("paths", []),
+            )
         # Deserialize errors from list of dicts to list of PipelineError instances.
         # Handle backward compat: old checkpoints may store errors as plain strings.
         def _to_pipeline_error(item) -> "_PipelineError":
@@ -2388,8 +2406,15 @@ class Orchestrator(TestFixLoopMixin):
         return stages
 
     def _build_utility_stages(self) -> dict[str, "PipelineStage"]:
-        """Build utility stages: doc generation, doc PR, and bootstrap patterns."""
+        """Build utility stages: scan, doc generation, doc PR, and bootstrap patterns."""
         stages: dict[str, "PipelineStage"] = {}
+        stages["scan"] = PipelineStage(
+            name="scan",
+            label="🔍 Scan",
+            description="Fetching repo file tree and indexing into RAG...",
+            checkpoint_key="scan",
+            fn=lambda r: self._stage_scan(r),
+        )
         stages["doc_generate"] = PipelineStage(
             name="doc_generate",
             label="📚 Doc Generator",
@@ -4372,6 +4397,30 @@ class Orchestrator(TestFixLoopMixin):
                 result.modules = rev_result["revised_modules"]
         else:
             console.print(f"  🔎 Design verdict: [bold]{rev_result['verdict']}[/bold]")
+
+    def _stage_scan(self, result: PipelineResult) -> None:
+        """Fetch repo file tree and optionally index into RAG.
+
+        Always builds the file tree when target_github is set.
+        Silently skips RAG indexing when repo_auto_indexer is not configured or
+        when indexing has already run (prevents double-indexing when the preamble
+        RAG index ran before this stage).
+        """
+        if not self.target_github:
+            return
+        if self.repo_context_loader:
+            result.repo_context = self.repo_context_loader.build(self.target_github)
+        if self.repo_auto_indexer and "rag_index" not in result.completed_stages:
+            console.print("  📦 [dim]Indexing repo into RAG codebase collection...[/dim]")
+            try:
+                self.repo_auto_indexer.index(
+                    repo=self.target_github.repo,
+                    github_token=self._github_token or "",
+                )
+            except Exception as exc:
+                log.warning("[scan] RAG indexing failed (non-fatal): %s", exc)
+            else:
+                result.add_completed_stage("rag_index")
 
     def _stage_repo_index(self, result: PipelineResult) -> None:
         """Auto-index the target repo into RAG codebase collection.
