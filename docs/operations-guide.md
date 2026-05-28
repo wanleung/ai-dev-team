@@ -16,6 +16,12 @@
 12. [News Reviewer Agent](#12-news-reviewer-agent)
 13. [Editorial Triage Stage](#13-editorial-triage-stage)
 14. [Batch Intake Triage Module](#14-batch-intake-triage-module)
+15. [Pipeline Builder — Inline Discuss Block](#15-pipeline-builder--inline-discuss-block)
+16. [Social Posting Agent — X, Instagram & Threads](#16-social-posting-agent--x-instagram--threads)
+11. [Cantonese & Traditional Chinese Translation Stages](#11-cantonese--traditional-chinese-translation-stages)
+12. [News Reviewer Agent](#12-news-reviewer-agent)
+13. [Editorial Triage Stage](#13-editorial-triage-stage)
+14. [Batch Intake Triage Module](#14-batch-intake-triage-module)
 
 ---
 
@@ -1451,3 +1457,289 @@ python intake_triage.py --run
 ### Human override
 
 Manually add the `triage-approved` label to any GitHub issue. The system respects it automatically — that item will be fast-passed by `news_triage` without re-running the batch discussion.
+
+---
+
+## 15. Pipeline Builder — Inline Discuss Block
+
+The pipeline builder (`pipeline_builder/index.html`) includes a **💬 Discuss** palette item. Dragging it onto the canvas creates a discussion stage inline — no separate preset file needed.
+
+### Opening the Pipeline Builder
+
+```bash
+# From the project root
+open pipeline_builder/index.html   # macOS
+xdg-open pipeline_builder/index.html  # Linux
+# or just open the file in any browser
+```
+
+### Adding a Discuss Block
+
+1. Drag **💬 Discuss** from the left palette onto the canvas.
+2. The block appears with a **mode toggle**: **Inline** | **Preset file**.
+
+---
+
+### Inline Mode — Define Participants Directly
+
+Use this for ad-hoc discussions without creating a YAML file.
+
+**Adding a participant:**
+1. Click **+ Add participant** — a new collapsed row appears.
+2. Click **✏️** to expand the row.
+3. Fill in:
+   - **Role** — short identifier (e.g. `analyst`, `skeptic`). No spaces — underscores only.
+   - **Persona** *(optional)* — description of how this participant should behave. Leave blank to use the role name only.
+   - **LLM** *(optional)* — per-participant model override. Defaults to repo default if left as `(default)`.
+4. Click anywhere outside the row to collapse.
+5. Repeat for each participant.
+
+**Removing a participant:** click **✕** on any row.
+
+**Other fields:**
+- **Max rounds** — number of discussion turns (default: 2).
+- **Output mode** — what gets written to the stage output:
+  - `both` — full transcript + synthesis
+  - `synthesis` — summary only
+  - `transcript` — raw turn-by-turn only
+
+**Generated YAML:**
+
+```yaml
+stages:
+  - discuss:
+      participants:
+        - role: analyst
+          persona: "You are a critical analyst who examines data objectively."
+          llm: gpt-4o          # omitted if left as (default)
+        - role: skeptic
+          persona: "You always challenge assumptions."
+        - role: optimist       # no persona — uses role name only
+      max_rounds: 3
+      output_mode: both
+```
+
+---
+
+### Preset Mode — Reference an External File
+
+Use this when you have a reusable discussion preset in `discussions/`.
+
+1. Toggle the mode switch to **Preset file**.
+2. Enter the preset filename (e.g. `discussions/my-debate.yaml`).
+3. Set **Max rounds** and **Output mode** as usual.
+
+**Generated YAML:**
+
+```yaml
+stages:
+  - discuss:
+      preset: my-debate.yaml
+      max_rounds: 3
+      output_mode: both
+```
+
+The preset file format is unchanged — see [Section 10](#10-multi-agent-discussion-stages) for preset YAML structure.
+
+---
+
+### Importing Existing Pipelines
+
+Paste existing pipeline YAML into the importer. The parser auto-detects the form:
+
+| YAML content | Mode restored as |
+|---|---|
+| `preset: filename.yaml` present | Preset mode, file field populated |
+| `participants:` list with `- role: ...` objects | Inline mode, structured rows restored |
+| `participants:` list with plain strings (`- analyst`) | Inline mode, role-name-only rows (backward compatible) |
+
+---
+
+### Per-Participant LLM Override
+
+The LLM dropdown per participant shows all configured backends. To add a backend to the list, ensure it is registered in `config.yaml`. Selecting `(default)` omits the `llm:` key — that participant uses the repo-level default model.
+
+Use per-participant overrides when you want one participant to use a faster/cheaper model and another to use a more capable one:
+
+```yaml
+participants:
+  - role: visionary
+    persona: "You dream big without constraints."
+    llm: openai      # expensive model — thorough
+  - role: critic
+    persona: "You identify flaws ruthlessly."
+    llm: grok        # fast model — rapid-fire challenges
+```
+
+---
+
+## 16. Social Posting Agent — X, Instagram & Threads
+
+The `pr_social_post` stage extends the PR/Marketing Campaign pipeline. After the campaign PR is created, a human reviewer triggers social posting via a GitHub issue comment.
+
+### Prerequisites
+
+- **Node.js 18+** — required to run MCP servers via `npx`
+
+  ```bash
+  node --version   # should be v18 or higher
+  ```
+
+- **Social platform API credentials** (see platform sections below)
+- **watcher running** with the `pr-campaigns` repo configured
+
+---
+
+### End-to-End Flow
+
+1. Create a campaign brief as a GitHub issue with label `ai-campaign` in your campaigns repo.
+2. The watcher picks it up and runs `pr_analyst → pr_creative → pr_proposal`.
+3. `pr_proposal` creates a GitHub PR with the campaign content and comments a social copy preview back on the original issue.
+4. Review the PR and the social copy preview.
+5. Comment `/post-social` on the **original campaign issue**.
+6. The watcher detects the command and runs `pr_social_post`.
+7. The agent refines content per platform (via LLM) and posts to all enabled platforms.
+8. A summary comment with post links is added to the issue.
+
+---
+
+### Configuring Social MCP Servers in `repos.yaml`
+
+Add `mcp_servers:` to the watcher entry for your campaigns repo. Each platform is an optional entry — omit or set `enabled: false` to skip it.
+
+```yaml
+watchers:
+  - tracker_repo: your-org/pr-campaigns
+    default_target: your-org/your-product
+    enabled: true
+    labels:
+      ai-campaign: {}
+    mcp_servers:
+      - name: x-twitter
+        enabled: true
+        type: stdio
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-twitter"]
+        env:
+          TWITTER_API_KEY: "${TWITTER_API_KEY}"
+          TWITTER_API_SECRET: "${TWITTER_API_SECRET}"
+          TWITTER_ACCESS_TOKEN: "${TWITTER_ACCESS_TOKEN}"
+          TWITTER_ACCESS_SECRET: "${TWITTER_ACCESS_SECRET}"
+      - name: instagram
+        enabled: false          # set true when ready
+        type: stdio
+        command: npx
+        args: ["-y", "mcp-instagram"]
+        env:
+          INSTAGRAM_ACCESS_TOKEN: "${INSTAGRAM_ACCESS_TOKEN}"
+          INSTAGRAM_USER_ID: "${INSTAGRAM_USER_ID}"
+      - name: threads
+        enabled: true
+        type: stdio
+        command: npx
+        args: ["-y", "mcp-threads"]
+        env:
+          THREADS_ACCESS_TOKEN: "${THREADS_ACCESS_TOKEN}"
+          THREADS_USER_ID: "${THREADS_USER_ID}"
+```
+
+Set the env vars in your shell before running the watcher:
+
+```bash
+export TWITTER_API_KEY=...
+export TWITTER_API_SECRET=...
+export TWITTER_ACCESS_TOKEN=...
+export TWITTER_ACCESS_SECRET=...
+export THREADS_ACCESS_TOKEN=...
+export THREADS_USER_ID=...
+```
+
+---
+
+### Getting API Credentials
+
+#### X / Twitter
+
+1. Go to [developer.x.com](https://developer.x.com) → **Projects & Apps** → create an app.
+2. Enable **Read and Write** permissions.
+3. Under **Keys and Tokens**, generate:
+   - API Key & Secret → `TWITTER_API_KEY`, `TWITTER_API_SECRET`
+   - Access Token & Secret (for your account) → `TWITTER_ACCESS_TOKEN`, `TWITTER_ACCESS_SECRET`
+
+> **Note:** Free tier (Basic) allows posting tweets. Elevated access not required.
+
+#### Instagram
+
+1. Go to [developers.facebook.com](https://developers.facebook.com) → create an app (Business type).
+2. Add the **Instagram Graph API** product.
+3. Connect your **Instagram Business or Creator account**.
+4. Generate a long-lived access token → `INSTAGRAM_ACCESS_TOKEN`
+5. Find your Instagram user ID via the Graph API explorer → `INSTAGRAM_USER_ID`
+
+> **Note:** Requires an Instagram Business or Creator account. Personal accounts are not supported by the Graph API.
+
+#### Threads
+
+1. Go to [developers.facebook.com](https://developers.facebook.com) → create an app.
+2. Add the **Threads API** product.
+3. Authorise your Threads account.
+4. Generate an access token → `THREADS_ACCESS_TOKEN`
+5. Retrieve your Threads user ID → `THREADS_USER_ID`
+
+> **Note:** Threads API is in public beta. Rate limits apply: 250 posts per 24 hours per user.
+
+---
+
+### Triggering Social Posting
+
+Once the campaign pipeline has completed and you have reviewed the content:
+
+1. Open the **original campaign issue** (not the PR).
+2. Post a comment containing exactly: `/post-social`
+3. The watcher detects this on its next poll cycle (default: every 60 seconds).
+4. `pr_social_post` runs and posts to all enabled platforms.
+5. A confirmation comment is added to the issue:
+
+   ```
+   ✅ Social posts published:
+   - X/Twitter: https://x.com/yourhandle/status/...
+   - Threads: https://www.threads.net/@yourhandle/post/...
+
+   ⏭️ Skipped: instagram (disabled in config)
+   ```
+
+---
+
+### Per-Platform Content
+
+The agent uses the `pr_creative` output as a draft and refines it per platform:
+
+| Platform | Format |
+|---|---|
+| X/Twitter | ≤280 characters, 1–3 hashtags, hook-first |
+| Instagram | Up to 2200 chars, 5–10 hashtags at end, emoji-friendly |
+| Threads | ≤500 characters, conversational, 1–2 hashtags |
+
+---
+
+### Disabling a Platform
+
+Set `enabled: false` on the relevant `mcp_servers:` entry. The credentials stay in the config — the platform is just skipped at posting time.
+
+```yaml
+- name: instagram
+  enabled: false   # won't post, won't fail
+  ...
+```
+
+---
+
+### Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| `/post-social` not picked up | Watcher poll interval — wait 60s, check watcher logs |
+| `mcp server not found` error | Run `npx -y @modelcontextprotocol/server-twitter` manually to install |
+| Auth error on X | Verify app has Read+Write permissions; regenerate tokens |
+| Instagram "requires business account" | Personal Instagram accounts are not supported |
+| Posts appear but agent reports error | Check `agent-failed` label on the issue; read the error comment |
