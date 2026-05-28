@@ -24,7 +24,7 @@ class ContractValidatorAgent:
 
     ROLE_FILE = Path(__file__).parent.parent / "roles" / "contract_validator.md"
 
-    def __init__(self, llm: "BaseAgent") -> None:
+    def __init__(self, llm: "BaseAgent", **kwargs) -> None:  # noqa: ARG002
         self._llm = llm
         self._role = self.ROLE_FILE.read_text(encoding="utf-8")
 

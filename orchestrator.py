@@ -4475,7 +4475,7 @@ class Orchestrator(TestFixLoopMixin):
             self._save_files_locally(result.test_files, project_name)
             console.print(f"[green]✅ {len(result.test_files)} test file(s) written locally[/green]")
             # Index test files into RAG so Engineer can search test expectations
-            if self.repo_auto_indexer:
+            if getattr(self, "repo_auto_indexer", None):
                 try:
                     safe = "".join(
                         c if c.isalnum() or c in "-_" else "_"
