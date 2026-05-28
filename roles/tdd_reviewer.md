@@ -55,7 +55,16 @@ Fix anything that would prevent pytest from collecting or running the tests:
 
 4. **Mock user objects must include all required fields**: A mock user must include at minimum: `id`, `email`, `display_name`, `status`, `role`, `firebase_uid`. The `status` field must use a valid enum value (e.g. `"active"`, `"suspended"`, `"deleted"`); `role` must also use a valid enum value (e.g. `"player"`, `"venue_owner"`, `"admin"` — **not** `"user"`). Missing or wrong-valued fields cause `AttributeError` or validation failures deep in route handlers.
 
-5. **Syntax errors**: Fix any Python syntax errors.
+5. **Python 3.13 `AsyncMock.return_value` is `AsyncMock`, not `MagicMock`**: In Python 3.13, `AsyncMock().return_value` is an `AsyncMock` instead of a `MagicMock`. This means calling `.scalars()` on an awaited result returns a coroutine, and `.scalars().all()` raises `AttributeError: 'coroutine' object has no attribute 'all'`. Always set `return_value` explicitly in the `mock_db` fixture:
+
+   ```python
+   mock_result = MagicMock()
+   session.execute = AsyncMock(return_value=mock_result)
+   ```
+
+   Tests that override the return value per-call still work: `mock_db.execute.return_value.scalar_one_or_none.return_value = mock_user` still applies to the same `mock_result` object.
+
+6. **Syntax errors**: Fix any Python syntax errors.
 
 ### Pass 2 — Quality
 
