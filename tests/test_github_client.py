@@ -125,3 +125,96 @@ def test_session_closed_on_del():
     gc._session = mock_session
     gc.__del__()
     mock_session.close.assert_called_once()
+
+
+class TestCommitFileShaRetry:
+    """commit_file retries once with a fresh SHA on 409 conflict."""
+
+    def test_commit_file_success_no_retry(self, gc):
+        """Happy path: first PUT succeeds."""
+        get_resp = MagicMock()
+        get_resp.ok = True
+        get_resp.status_code = 200
+        get_resp.text = '{"sha": "abc123"}'
+        get_resp.json.return_value = {"sha": "abc123"}
+
+        put_resp = MagicMock()
+        put_resp.ok = True
+        put_resp.status_code = 200
+        put_resp.text = '{"commit": {}}'
+        put_resp.json.return_value = {"commit": {}}
+
+        with patch.object(gc._session, "request", side_effect=[get_resp, put_resp]) as mock_req:
+            result = gc.commit_file("src/foo.py", "content", "feat: add foo", "main")
+
+        assert result == {"commit": {}}
+        assert mock_req.call_count == 2  # GET (check existing) + PUT
+
+    def test_commit_file_409_retries_with_fresh_sha(self, gc):
+        """On 409, fetches fresh SHA and retries the PUT once."""
+        # GET for existing file on first commit attempt
+        get_existing = MagicMock()
+        get_existing.ok = True
+        get_existing.status_code = 200
+        get_existing.text = '{"sha": "stale-sha"}'
+        get_existing.json.return_value = {"sha": "stale-sha"}
+
+        # PUT fails with 409
+        put_fail = MagicMock()
+        put_fail.ok = False
+        put_fail.status_code = 409
+        put_fail.text = '{"message":"is at fresh-sha but expected stale-sha"}'
+
+        # GET for fresh SHA (retry step)
+        get_fresh = MagicMock()
+        get_fresh.ok = True
+        get_fresh.status_code = 200
+        get_fresh.text = '{"sha": "fresh-sha"}'
+        get_fresh.json.return_value = {"sha": "fresh-sha"}
+
+        # Second PUT succeeds
+        put_ok = MagicMock()
+        put_ok.ok = True
+        put_ok.status_code = 200
+        put_ok.text = '{"commit": {"sha": "new-commit"}}'
+        put_ok.json.return_value = {"commit": {"sha": "new-commit"}}
+
+        with patch.object(gc._session, "request",
+                          side_effect=[get_existing, put_fail, get_fresh, put_ok]) as mock_req:
+            result = gc.commit_file("src/foo.py", "content", "feat: add foo", "main")
+
+        assert result == {"commit": {"sha": "new-commit"}}
+        assert mock_req.call_count == 4  # GET existing, PUT fail, GET fresh, PUT success
+        # Verify the retry PUT used the fresh SHA
+        retry_put_call = mock_req.call_args_list[3]
+        assert retry_put_call[1]["json"]["sha"] == "fresh-sha"
+
+    def test_commit_file_409_no_second_retry(self, gc):
+        """Does NOT retry a second time if the retry also returns 409."""
+        get_existing = MagicMock()
+        get_existing.ok = True
+        get_existing.status_code = 200
+        get_existing.text = '{"sha": "sha1"}'
+        get_existing.json.return_value = {"sha": "sha1"}
+
+        put_fail = MagicMock()
+        put_fail.ok = False
+        put_fail.status_code = 409
+        put_fail.text = '{"message":"is at sha2 but expected sha1"}'
+
+        get_fresh = MagicMock()
+        get_fresh.ok = True
+        get_fresh.status_code = 200
+        get_fresh.text = '{"sha": "sha2"}'
+        get_fresh.json.return_value = {"sha": "sha2"}
+
+        put_fail2 = MagicMock()
+        put_fail2.ok = False
+        put_fail2.status_code = 409
+        put_fail2.text = '{"message":"is at sha3 but expected sha2"}'
+
+        with patch.object(gc._session, "request",
+                          side_effect=[get_existing, put_fail, get_fresh,
+                                       put_fail2, put_fail2, put_fail2]):
+            with pytest.raises(RuntimeError, match="409"):
+                gc.commit_file("src/foo.py", "content", "feat: add foo", "main")

@@ -199,6 +199,19 @@ class GitHubClient:
         ref = self._request("GET", f"/repos/{self.repo}/git/ref/heads/{branch}")
         return ref["object"]["sha"]
 
+    def _get_contents_sha(self, path: str, branch: str) -> Optional[str]:
+        """Return the blob SHA for *path* on *branch*, or None if not found."""
+        try:
+            result = self._request(
+                "GET",
+                f"/repos/{self.repo}/contents/{path}",
+                params={"ref": branch},
+                max_retries=1,
+            )
+            return result.get("sha")
+        except RuntimeError:
+            return None
+
     def create_branch(self, branch_name: str, from_branch: Optional[str] = None) -> str:
         """Create a new branch. Auto-initializes the repo if it is empty.
         If the branch already exists, reuses it (idempotent).
@@ -236,6 +249,7 @@ class GitHubClient:
         branch: str,
         encoding: str = "utf-8",
         max_retries: int | None = None,
+        _sha_retry: bool = True,
     ) -> dict:
         """Create or update a file in the repo on the given branch.
 
@@ -245,22 +259,48 @@ class GitHubClient:
             message: Git commit message.
             branch: Branch to commit to.
             encoding: Text encoding (default 'utf-8').
-            max_retries: Override the default retry count (useful for non-critical writes).
+            max_retries: Override the default retry count.
+            _sha_retry: Internal flag — False on the recursive retry to prevent loops.
 
         Returns:
             GitHub API response with commit and content data.
         """
         encoded = base64.b64encode(content.encode(encoding)).decode("ascii")
 
-        # Check if file already exists (for update vs create)
         payload: dict = {"message": message, "content": encoded, "branch": branch}
         try:
-            existing = self._request("GET", f"/repos/{self.repo}/contents/{path}", params={"ref": branch}, max_retries=max_retries)
+            existing = self._request(
+                "GET",
+                f"/repos/{self.repo}/contents/{path}",
+                params={"ref": branch},
+                max_retries=max_retries,
+            )
             payload["sha"] = existing["sha"]
         except RuntimeError:
             pass  # File doesn't exist yet — create it
 
-        return self._request("PUT", f"/repos/{self.repo}/contents/{path}", json=payload, max_retries=max_retries)
+        try:
+            return self._request(
+                "PUT",
+                f"/repos/{self.repo}/contents/{path}",
+                json=payload,
+                max_retries=max_retries,
+            )
+        except RuntimeError as exc:
+            if _sha_retry and "409" in str(exc):
+                log.warning(
+                    "[github_client] 409 SHA conflict on %s — fetching fresh SHA and retrying once",
+                    path,
+                )
+                # Recurse with _sha_retry=False to prevent infinite loop.
+                # The recursive call re-GETs the file to pick up the fresh SHA.
+                return self.commit_file(
+                    path, content, message, branch,
+                    encoding=encoding,
+                    max_retries=max_retries,
+                    _sha_retry=False,
+                )
+            raise
 
     # ── Pull Requests ────────────────────────────────────────────────────────
 
