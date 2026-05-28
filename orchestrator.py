@@ -4474,6 +4474,21 @@ class Orchestrator(TestFixLoopMixin):
         if result.test_files:
             self._save_files_locally(result.test_files, project_name)
             console.print(f"[green]✅ {len(result.test_files)} test file(s) written locally[/green]")
+            # Index test files into RAG so Engineer can search test expectations
+            if self.repo_auto_indexer:
+                try:
+                    safe = "".join(
+                        c if c.isalnum() or c in "-_" else "_"
+                        for c in project_name.lower()
+                    )
+                    project_dir = str((self.workspace_dir / safe).resolve())
+                    self.repo_auto_indexer.index_local_dir(project_dir)
+                    _log.info(
+                        "[qa_write] indexed %d test file(s) into RAG",
+                        len(result.test_files),
+                    )
+                except Exception as exc:
+                    _log.warning("[qa_write] RAG test indexing failed (non-fatal): %s", exc)
         else:
             console.print("[yellow]⚠️  No test files generated[/yellow]")
             return

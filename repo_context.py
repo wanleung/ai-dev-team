@@ -181,3 +181,16 @@ class RepoAutoIndexer:
         )
         if proc.returncode != 0:
             log.warning("RAG indexer exited %d: %s", proc.returncode, proc.stderr[:200])
+
+    def index_local_dir(self, path: str) -> None:
+        """Index a local directory into the RAG codebase collection.
+
+        Non-blocking wrapper around _run_indexer(). Safe to call in a try/except.
+
+        Args:
+            path: Absolute or relative path to the directory to index.
+        """
+        script = Path(self.indexer_script)
+        if not script.exists():
+            return  # RAG indexer not available — skip silently
+        self._run_indexer(path)
