@@ -75,7 +75,33 @@ watchers:
     parallel_issues: 1
     labels:
       pr-campaign: pr-campaign
+      ai-social-post: pr-social-post
     enabled: false
+    # Social posting — enable/disable per platform via enabled: flag
+    # mcp_servers:
+    #   - name: x-twitter
+    #     enabled: true
+    #     command: npx
+    #     args: ["-y", "@modelcontextprotocol/server-twitter"]
+    #     env:
+    #       TWITTER_API_KEY: "${TWITTER_API_KEY}"
+    #       TWITTER_API_SECRET: "${TWITTER_API_SECRET}"
+    #       TWITTER_ACCESS_TOKEN: "${TWITTER_ACCESS_TOKEN}"
+    #       TWITTER_ACCESS_TOKEN_SECRET: "${TWITTER_ACCESS_TOKEN_SECRET}"
+    #   - name: instagram
+    #     enabled: false
+    #     command: npx
+    #     args: ["-y", "mcp-instagram"]
+    #     env:
+    #       INSTAGRAM_ACCESS_TOKEN: "${INSTAGRAM_ACCESS_TOKEN}"
+    #       INSTAGRAM_BUSINESS_ACCOUNT_ID: "${INSTAGRAM_BUSINESS_ACCOUNT_ID}"
+    #   - name: threads
+    #     enabled: false
+    #     command: npx
+    #     args: ["-y", "mcp-threads"]
+    #     env:
+    #       THREADS_ACCESS_TOKEN: "${THREADS_ACCESS_TOKEN}"
+    #       THREADS_USER_ID: "${THREADS_USER_ID}"
 
 settings:
   # Maximum parallel pipeline runs (one per issue)

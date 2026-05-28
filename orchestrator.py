@@ -902,6 +902,7 @@ class Orchestrator(TestFixLoopMixin):
 
     def _init_tool_registries(self, mcp_servers: "list[dict] | None") -> None:
         """Build MCP, RAG and Google Search tool registries; also initialises repo_auto_indexer."""
+        self._mcp_servers: list[dict] = mcp_servers or []
         # Combined tool registry (builtin + optional MCP)
         if mcp_servers:
             try:
@@ -931,6 +932,21 @@ class Orchestrator(TestFixLoopMixin):
             log.warning("[orchestrator] Google Search MCP init failed: %s — web search disabled", exc)
             search_registry = None
         self._search_registry = search_registry
+
+    def _build_social_mcp_registry(self) -> "MCPToolRegistry | None":
+        """Build an MCP registry containing only enabled social platform servers."""
+        social_names = {"x-twitter", "instagram", "threads"}
+        social_servers = [
+            s for s in self._mcp_servers
+            if s.get("name") in social_names and s.get("enabled", True)
+        ]
+        if not social_servers:
+            return None
+        try:
+            return MCPToolRegistry(social_servers)
+        except Exception as exc:
+            log.warning("[orchestrator] Social MCP registry init failed: %s", exc)
+            return None
 
     # ── LLM config + agent kwargs helpers ────────────────────────────────────
 
@@ -1574,6 +1590,73 @@ class Orchestrator(TestFixLoopMixin):
         if proposal.get("branch_name"):
             result.branch = proposal["branch_name"]
 
+        # Post social copy preview so /post-social can use it
+        if creative_output and result.issue_number:
+            import json as _json
+            gh_client = self.target_github or self.github
+            social_example = ""
+            if isinstance(creative_output, list) and creative_output:
+                social_example = creative_output[0].get("social_copy_example", "")
+            elif isinstance(creative_output, dict):
+                social_example = creative_output.get("social_copy_example", "")
+            payload = _json.dumps(creative_output, ensure_ascii=False).replace("-->", "-- >")
+            comment_body = (
+                "## 📣 Campaign Social Copy Ready\n\n"
+                + (f"> {social_example}\n\n" if social_example else "")
+                + "_Comment `/post-social` to publish to configured platforms._\n\n"
+                + f"<!-- social-copy-data\n{payload}\n-->"
+            )
+            try:
+                gh_client.add_issue_comment(result.issue_number, comment_body)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not post social copy preview comment: %s", exc)
+
+    def _stage_pr_social_post(self, result: "PipelineResult") -> None:
+        """Post campaign social copy to configured social platforms via MCP.
+
+        Reads creative data from the social-copy-data block embedded in the
+        issue's prior comment context by _stage_pr_proposal. Posts to each
+        enabled social platform via MCP tool calls.
+        """
+        from agents.pr_social_post import PRSocialPostAgent
+
+        prior_ctx = getattr(self, "_issue_prior_context", "") or ""
+        social_registry = self._build_social_mcp_registry()
+        enabled_platforms = [
+            s["name"].replace("-", "_")
+            for s in self._mcp_servers
+            if s.get("name") in ("x-twitter", "instagram", "threads") and s.get("enabled", True)
+        ]
+
+        if not enabled_platforms:
+            result.add_error("pr_social_post: no enabled social MCP servers found in config")
+            return
+
+        agent = PRSocialPostAgent(
+            model=self._resolve_agent_model("pr_social_post"),
+            github_token=self._github_token,
+            ollama_url=self.ollama_url,
+            tool_registry=social_registry,
+        )
+        gh = self.target_github or self.github
+        context = {
+            "prior_context": prior_ctx,
+            "enabled_platforms": enabled_platforms,
+            "issue_number": result.issue_number,
+            "github_client": gh,
+        }
+        updated = agent.run(context)
+        setattr(result, "pr_social_post_output", updated.get("pr_social_post"))
+        post_output = updated.get("pr_social_post", {})
+        if post_output.get("error"):
+            result.add_error(f"pr_social_post: {post_output['error']}")
+        else:
+            posted = [p for p, d in post_output.items() if isinstance(d, dict) and d.get("posted")]
+            failed = [p for p, d in post_output.items() if isinstance(d, dict) and not d.get("posted") and d.get("error")]
+            if failed and not posted:
+                result.add_error(f"pr_social_post: all platforms failed — {post_output[failed[0]]['error']}")
+            log.info("Social posts published to: %s", ", ".join(posted) or "none")
+
     def _stage_validation_gate(self, result: "PipelineResult") -> None:
         """Validate generated files before opening a PR.
 
@@ -2039,6 +2122,13 @@ class Orchestrator(TestFixLoopMixin):
             description="Assembling proposal and opening PR...",
             checkpoint_key="pr_proposal",
             fn=lambda r: self._stage_pr_proposal(r),
+        )
+        stages["pr_social_post"] = PipelineStage(
+            name="pr_social_post",
+            label="📣 Social Post",
+            description="Publishing social copy to configured platforms...",
+            checkpoint_key="pr_social_post",
+            fn=lambda r: self._stage_pr_social_post(r),
         )
         return stages
 

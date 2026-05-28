@@ -432,6 +432,7 @@ def run_pipeline(
     deploy_cfg: dict | None = None,
     llm_cfg: dict | None = None,
     pipeline_file: str = "",
+    mcp_servers: list | None = None,
 ) -> bool:
     """Run the appropriate orchestrator for a single issue. Returns True on success.
 
@@ -503,6 +504,7 @@ def run_pipeline(
             deploy_cfg=deploy_cfg,
             llm_cfg=llm_cfg,
             pipeline_file=pipeline_file,
+            mcp_servers=mcp_servers,
         )
 
         # ── Pipeline chaining ─────────────────────────────────────────────────
@@ -796,6 +798,7 @@ def _dispatch(
     deploy_cfg: dict | None = None,
     llm_cfg: dict | None = None,
     pipeline_file: str = "",
+    mcp_servers: list | None = None,
 ) -> "PipelineResult":
     """Run the unified Orchestrator with the pipeline file selected by ``label``.
 
@@ -849,6 +852,7 @@ def _dispatch(
             inter_call_delay=inter_call_delay,
             deploy_cfg=deploy_cfg,
             llm_fallbacks=_llm.get("fallbacks") or None,
+            mcp_servers=mcp_servers or None,
         )
 
         # pipeline_file: fetch pipeline YAML from tracker repo via GitHub API
@@ -1487,6 +1491,105 @@ def _run_tasks(
             ex.shutdown(wait=False, cancel_futures=True)
 
 
+def _check_social_post_commands(
+    watchers: list[dict],
+    github_token: str,
+) -> list[dict]:
+    """Scan agent-complete issues on pr-campaign repos for /post-social comments.
+
+    For each watcher entry that has at least one enabled social MCP server,
+    fetches open issues with the ``agent-complete`` label, checks their comments
+    for a bare ``/post-social`` line, and — when found — applies the
+    ``ai-social-post`` label so the next watcher cycle picks it up as a
+    ``pr-social-post`` pipeline task.
+
+    Returns a list of dicts for issues that were just labelled.
+    """
+    _SOCIAL_SERVER_NAMES = {"x-twitter", "instagram", "threads"}
+    _SKIP_LABELS = {"ai-social-post", "agent-running", "agent-social-posted"}
+    _BOT_LOGINS = {"github-actions[bot]", "dependabot[bot]"}
+    labelled: list[dict] = []
+
+    for w in watchers:
+        if not w.get("enabled", True):
+            continue
+        mcp_servers = w.get("mcp_servers", [])
+        social_servers = [
+            s for s in mcp_servers
+            if s.get("name") in _SOCIAL_SERVER_NAMES and s.get("enabled", True)
+        ]
+        if not social_servers:
+            continue
+
+        tracker_repo = w["tracker_repo"]
+        try:
+            # Use direct API call — get_open_issues() filters out SKIP_LABELS
+            # which includes LABEL_COMPLETE, so it would always return nothing here.
+            _url = f"https://api.github.com/repos/{tracker_repo}/issues"
+            _resp = requests.get(
+                _url,
+                headers=_gh_headers(),
+                params={"state": "open", "labels": LABEL_COMPLETE, "per_page": 50},
+                timeout=10,
+            )
+            _resp.raise_for_status()
+            complete_issues = [i for i in _resp.json() if "pull_request" not in i]
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "_check_social_post_commands: could not fetch issues from %s: %s",
+                tracker_repo, exc,
+            )
+            continue
+
+        for issue in complete_issues:
+            issue_labels = {lbl["name"] for lbl in issue.get("labels", [])}
+            if issue_labels & _SKIP_LABELS:
+                continue
+
+            issue_number = issue["number"]
+            try:
+                comments = _get_issue_comments(tracker_repo, issue_number, github_token)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "_check_social_post_commands: could not fetch comments for #%d: %s",
+                    issue_number, exc,
+                )
+                continue
+
+            has_command = any(
+                (c.get("body") or "").strip() == "/post-social"
+                and (c.get("user") or {}).get("login") not in _BOT_LOGINS
+                for c in comments
+            )
+            if not has_command:
+                continue
+
+            _log.info(
+                "  /post-social detected on %s #%d — applying ai-social-post label",
+                tracker_repo, issue_number,
+            )
+            try:
+                # Remove agent-complete first so SKIP_LABELS won't prevent the watcher
+                # from picking up the ai-social-post label on the next cycle.
+                try:
+                    remove_label(tracker_repo, issue_number, LABEL_COMPLETE)
+                except Exception:  # noqa: BLE001
+                    _log.debug(
+                        "_check_social_post_commands: could not remove %s from #%d",
+                        LABEL_COMPLETE, issue_number, exc_info=True,
+                    )
+                add_label(tracker_repo, issue_number, "ai-social-post")
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "_check_social_post_commands: could not label #%d: %s",
+                    issue_number, exc,
+                )
+                continue
+            labelled.append({"tracker_repo": tracker_repo, "issue": issue})
+
+    return labelled
+
+
 def _build_watch_tasks(
     watchers: list[dict],
     model: str,
@@ -1568,6 +1671,7 @@ def _build_watch_tasks(
                         deploy=w.get("deploy"),
                         llm=copy.deepcopy(effective_llm),
                         pipeline_file=pipeline_file,
+                        mcp_servers=w.get("mcp_servers", []),
                     ))
                     _log.info("  Queued %s issue #%d: %s", pipeline_name, issue["number"], issue["title"])
         except Exception as exc:  # noqa: BLE001
@@ -1660,6 +1764,10 @@ def watch(config_path: Path, once: bool = False, dry_run: bool = False, logger: 
     # Build tasks from watcher configs
     global_model = global_settings.get("model", "gpt-4.1")
     global_num_engineers = global_settings.get("num_engineers", 2)
+    # Detect /post-social commands and apply ai-social-post label to eligible issues
+    if not dry_run:
+        _check_social_post_commands(watchers, github_token)
+
     watcher_tasks = _build_watch_tasks(watchers, global_model, global_num_engineers, github_token)
     tasks.extend(watcher_tasks)
 

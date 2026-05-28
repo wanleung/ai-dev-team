@@ -1,0 +1,4 @@
+# PR Social Post pipeline — runs ONLY when /post-social is detected by watcher.
+# Triggered by the ai-social-post label added to completed pr-campaign issues.
+stages:
+  - pr_social_post

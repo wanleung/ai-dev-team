@@ -1,7 +1,7 @@
 # Active Context
 
 ## Current Focus
-Glassworm Botnet Takedown Article — New cybersecurity news article published covering the coordinated takedown of Glassworm botnet's four C2 channels by CrowdStrike, Google, and Shadowserver on May 26, 2026. Article sourced from Security Affairs (securityaffairs.com) with factual reporting style. Content covers supply chain poisoning narrative where botnet infected developers via poisoned tools/packages.
+CISA KEV Catalog Article — Hugo Markdown post generated from Security Affairs article covering CISA adding Daemon Tools, TanStack, and Nx Console vulnerabilities to its Known Exploited Vulnerabilities (KEV) catalog. Post includes appropriate metadata (title, date, source) conforming to existing site content template and taxonomy.
 
 ## Recent Changes
 - **Glassworm Botnet Takedown Article (ai-it-press)** — Cybersecurity news article created covering multi-vendor botnet takedown; sourced from Security Affairs (securityaffairs.com); content follows existing site structure for cybersecurity news; factual reporting style; supply chain poisoning narrative (malicious tools/packages targeting developers); four simultaneous C2 channel kills on May 26, 2026 at 14:00 UTC
@@ -25,29 +25,30 @@ Glassworm Botnet Takedown Article — New cybersecurity news article published c
 - Localization: Traditional Chinese (Hong Kong) terminology mandated across all UI strings and messages
 
 ## Immediate Next Steps
-1. Confirm Glassworm botnet article rendering on site matches intended layout
-2. Verify all external links (source URL) are functional and properly attributed
-3. Check if category/tag taxonomy was updated for "botnet" or "takedown" topics
-4. Ensure no broken relative links introduced
-5. Verify article metadata (author, date, tags, SEO) was fully populated
-6. Implement input validation and security sanitization for source URLs and LLM-generated output (flagged by Code Review)
-7. Create unit and integration test suite for content pipeline
-8. Document pipeline operational triggering and expected input/output formats in PRD and architecture docs
-9. Add automated feed or scraping integration for article sourcing
-10. Implement validation step for generated article's factual accuracy against source URL
-11. Enhance article template with automated section generation or image/media placeholders
-12. Add content formatting validation (markdown, front matter, site-specific metadata) to build process
-13. Add missing database indexes for trading listings and venue location queries
-14. Address N+1 query issues in list endpoints
-15. Remove placeholder/TODO comments from production code
-16. Standardize error handling across API endpoints
-17. Implement news module (currently placeholder)
-18. Expand admin dashboard beyond initial scaffold
-19. Implement real-time features (chat, notifications)
+1. Verify CISA KEV article source availability and accuracy of technical details (CVE numbers, affected software versions)
+2. Confirm Glassworm botnet article rendering on site matches intended layout
+3. Verify all external links (source URL) are functional and properly attributed
+4. Check if category/tag taxonomy was updated for "botnet" or "takedown" topics
+5. Ensure no broken relative links introduced
+6. Verify article metadata (author, date, tags, SEO) was fully populated
+7. Implement input validation and security sanitization for source URLs and LLM-generated output (flagged by Code Review)
+8. Create unit and integration test suite for content pipeline
+9. Document pipeline operational triggering and expected input/output formats in PRD and architecture docs
+10. Add automated feed or scraping integration for article sourcing
+11. Implement validation step for generated article's factual accuracy against source URL
+12. Enhance article template with automated section generation or image/media placeholders
+13. Add content formatting validation (markdown, front matter, site-specific metadata) to build process
+14. Add missing database indexes for trading listings and venue location queries
+15. Address N+1 query issues in list endpoints
+16. Remove placeholder/TODO comments from production code
+17. Standardize error handling across API endpoints
+18. Implement news module (currently placeholder)
+19. Expand admin dashboard beyond initial scaffold
+20. Implement real-time features (chat, notifications)
 
 ## Reference
-- Source: wanleung/ai-it-press Feature Pipeline (Glassworm Botnet Takedown Article)
-- Context: Cybersecurity news coverage, coordinated botnet takedown, supply chain poisoning
+- Source: wanleung/ai-it-press Feature Pipeline (CISA KEV Catalog Article)
+- Context: Cybersecurity vulnerability tracking, CISA Known Exploited Vulnerabilities catalog
 - Repository: wanleung/ai-software-house
-- Key facts: Glassworm developer-targeting botnet using supply chain poisoning; coordinated multi-vendor operation (CrowdStrike CAO + Google + Shadowserver); four simultaneous C2 channel kills on May 26, 2026 at 14:00 UTC; current/recent cybersecurity news — accuracy critical
-- Documentation: PRD, Architecture Design, and Code Review Notes were empty/missing for this run
+- Key facts: CISA added Daemon Tools, TanStack, and Nx Console vulnerabilities to KEV catalog; Hugo-based static site; Markdown content file generated with metadata (title, date, source)
+- Documentation: No PRD or code review notes provided for this run; straightforward content generation task

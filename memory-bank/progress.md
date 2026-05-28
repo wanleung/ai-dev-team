@@ -1,6 +1,7 @@
 # Progress
 
 ## Done
+- **CISA KEV Catalog Article (ai-it-press)** — Hugo Markdown post generated from Security Affairs article covering CISA adding Daemon Tools, TanStack, and Nx Console vulnerabilities to KEV catalog; conforms to existing site content template and taxonomy; metadata included (title, date, source)
 - **Glassworm Botnet Takedown Article (ai-it-press)** — Cybersecurity news article covering coordinated takedown of Glassworm botnet by CrowdStrike, Google, and Shadowserver on May 26, 2026; sourced from Security Affairs (securityaffairs.com); factual reporting style; supply chain poisoning narrative (malicious tools/packages targeting developers); four simultaneous C2 channel kills
 - **GlassWorm Malware Article Pipeline (ai-it-press)** — Content generation pipeline for GlassWorm malware takedown article; input queue processor, LLM-based content generation module, output formatter; Python with `openai` library; file-based I/O; JSON queue (`queue.json`) state management; single-run execution
 - **Agent Skills Article (ai-it-press)** — External article by Addy Osmani from O'Reilly Radar ingested, summarized, and prepared for publication; attribution preserved as repost/permission-based content; content acquisition workflow executed
@@ -28,6 +29,8 @@
 - None
 
 ## Planned
+- Automated content validation (CVE cross-referencing, version accuracy checks) for security articles
+- Robust, validated system for ingesting and parsing security bulletins
 - Input validation and security sanitization for source URLs and LLM-generated output
 - Unit and integration test suite for content pipeline
 - PRD and architecture documentation for pipeline operational triggering and input/output formats
@@ -46,6 +49,8 @@
 - Standardized error handling across API endpoints
 
 ## Known Issues / Tech Debt
+- **MINOR**: Pipeline for sourcing and generating news posts is manual or semi-automated; future improvement needed
+- **MINOR**: No explicit content validation step (e.g., cross-referencing CVEs) in current pipeline
 - **MINOR**: PRD, Architecture Design, and Code Review Notes were empty/missing for Glassworm botnet article run — no upstream specifications or reviewer feedback captured; quality gates may not have been formally applied
 - **MINOR**: Article metadata (author, date, tags, SEO) population not confirmed for Glassworm botnet article
 - **MINOR**: Internal linking verification needed — new article should cross-reference related cybersecurity/botnet content if exists
