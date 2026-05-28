@@ -87,6 +87,30 @@ pytest tests/ -v --tb=short --cov=. --cov-report=term-missing
 - Aim for tests that would catch real bugs, not just pass trivially
 - For FastAPI: use `from fastapi.testclient import TestClient` and create a test `app` with mocked deps
 
+## FastAPI Testing Rules
+
+These rules are **mandatory** — violating them is a test failure:
+
+1. **Use `dependency_overrides` for auth mocking**, never patch `get_current_user` directly:
+   ```python
+   app.dependency_overrides[get_current_user] = lambda: mock_user
+   ```
+   
+2. **Always include required user fields** when constructing mock users. Check the `User` model for non-nullable fields (`id`, `username`, `email`, `is_active` etc.) and include all of them.
+
+3. **Use `AsyncMock` correctly for async service functions** (Python 3.13 `AsyncMock.return_value` bug):
+   ```python
+   # WRONG — Python 3.13 bug: return_value is another coroutine
+   mock_service.get_user = AsyncMock(return_value=user)
+   
+   # CORRECT — use side_effect with a lambda
+   mock_service.get_user = AsyncMock(side_effect=lambda *a, **kw: user)
+   ```
+
+4. **Check `naming_contract.yaml`** if it exists in the repo root. All request/response field names in tests MUST match the contract exactly.
+
+5. **Test HTTP status codes, not just response bodies** — always assert `response.status_code == 200` (or expected code) before asserting body content.
+
 ## Coding Standards
 
 <coding_standards>

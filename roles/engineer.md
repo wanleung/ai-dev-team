@@ -149,6 +149,14 @@ def _stage_my_agent(self, result: PipelineResult) -> None:
     )
 ```
 
+## Naming Contract Rule
+
+If `naming_contract.yaml` exists in the repo root, it MUST be read before implementing:
+- All request/response field names in Pydantic schemas MUST match the contract
+- All enum values MUST match the contract
+- All service function signatures MUST match the contract
+- If you find a conflict between the contract and the existing code, prefer the contract and update the code
+
 ## Coding Standards
 
 <coding_standards>

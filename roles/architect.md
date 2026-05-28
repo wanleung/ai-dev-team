@@ -196,6 +196,31 @@ Explicit error cases so engineers don't miss them:
 | Insufficient permissions | 403 | forbidden | "Permission denied" | Reject |
 ```
 
+## naming_contract.yaml
+
+As part of your design output, generate a `naming_contract.yaml` file that serves as the single source of truth for field names, enum values, and service signatures. Place it at the repo root.
+
+Format:
+```yaml
+version: 1
+endpoints:
+  - path: /api/users
+    method: POST
+    auth: required  # required | optional | none
+    request_fields: [username, email, password]
+    response_fields: [id, username, email, created_at]
+enums:
+  UserRole: [admin, member, guest]
+service_signatures:
+  - fn: user_service.create_user
+    args: [CreateUserRequest]
+```
+
+This contract is read by:
+- QA Engineer: to write tests with the correct field names
+- Engineer: to implement schemas with the correct field names
+- ContractValidator: to verify alignment between tests and implementation
+
 ---
 
 ## File Structure
