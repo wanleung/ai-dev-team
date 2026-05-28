@@ -199,19 +199,6 @@ class GitHubClient:
         ref = self._request("GET", f"/repos/{self.repo}/git/ref/heads/{branch}")
         return ref["object"]["sha"]
 
-    def _get_contents_sha(self, path: str, branch: str) -> Optional[str]:
-        """Return the blob SHA for *path* on *branch*, or None if not found."""
-        try:
-            result = self._request(
-                "GET",
-                f"/repos/{self.repo}/contents/{path}",
-                params={"ref": branch},
-                max_retries=1,
-            )
-            return result.get("sha")
-        except RuntimeError:
-            return None
-
     def create_branch(self, branch_name: str, from_branch: Optional[str] = None) -> str:
         """Create a new branch. Auto-initializes the repo if it is empty.
         If the branch already exists, reuses it (idempotent).
@@ -277,7 +264,9 @@ class GitHubClient:
             )
             payload["sha"] = existing["sha"]
         except RuntimeError:
-            pass  # File doesn't exist yet — create it
+            if not _sha_retry:
+                raise  # On retry path, GET failure is unexpected — abort
+            pass  # First attempt: file doesn't exist yet — create it
 
         try:
             return self._request(
