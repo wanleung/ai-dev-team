@@ -971,3 +971,69 @@ def test_collect_issue_prior_context_swallows_exception_gracefully():
     from watcher import _collect_issue_prior_context
     result = _collect_issue_prior_context(mock_gh, issue_number=42)
     assert result == ""
+
+
+# ── trigger label lifecycle ───────────────────────────────────────────────────
+
+def test_run_pipeline_removes_trigger_label_and_agent_complete_on_start(tmp_path, monkeypatch):
+    """When a pipeline run starts, the trigger label and agent-complete are removed
+    so that a new trigger label (e.g. image-article) added after completion can be
+    picked up by the watcher without the old labels re-firing."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    removed_labels = []
+
+    monkeypatch.setattr("watcher._dispatch", lambda **kw: SimpleNamespace(
+        next_label=None, verdict="success", tests_passed=True, deploy_tests_passed=True,
+        errors=[],
+    ))
+    monkeypatch.setattr("watcher.ensure_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.add_label", lambda *a, **kw: None)
+    monkeypatch.setattr("watcher.remove_label", lambda repo, issue, lbl: removed_labels.append(lbl))
+    monkeypatch.setattr("watcher.post_comment", lambda *a, **kw: None)
+
+    import watcher as w
+    w.run_pipeline(
+        label="news-article",
+        trigger_label="press",
+        tracker_repo="owner/repo",
+        target_repo="owner/repo",
+        issue_number=99,
+        model="gpt-4.1",
+        num_engineers=2,
+        log_file=Path(tmp_path / "log.txt"),
+        logger=logging.getLogger("test"),
+    )
+
+    assert "press" in removed_labels, "trigger label must be removed at pipeline start"
+    assert "agent-complete" in removed_labels, "agent-complete must be removed at pipeline start"
+
+
+def test_get_open_issues_returns_issue_with_agent_complete_when_has_trigger_label(monkeypatch):
+    """An issue with agent-complete + a new trigger label (e.g. image-article) must
+    be returned by get_open_issues — not silently skipped."""
+    import watcher as w
+
+    # Issue has agent-complete (from prior run) AND new trigger label image-article
+    issue_with_both = {
+        "number": 5,
+        "title": "Test article",
+        "labels": [
+            {"name": "image-article"},
+            {"name": "agent-complete"},
+        ],
+        "body": "",
+    }
+
+    def fake_get(url, headers, params, timeout):
+        class R:
+            def raise_for_status(self): pass
+            def json(self): return [issue_with_both]
+        return R()
+
+    monkeypatch.setattr("watcher.requests.get", fake_get)
+
+    issues = w.get_open_issues("owner/repo", "image-article")
+    assert len(issues) == 1, "issue with agent-complete + image-article should be returned"
+    assert issues[0]["number"] == 5

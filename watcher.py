@@ -57,7 +57,7 @@ LABEL_COMPLETE = "agent-complete"
 LABEL_FAILED   = "agent-failed"
 LABEL_WAITING  = "agent-waiting"
 
-SKIP_LABELS = {LABEL_QUEUED, LABEL_RUNNING, LABEL_COMPLETE, LABEL_FAILED, LABEL_WAITING}
+SKIP_LABELS = {LABEL_QUEUED, LABEL_RUNNING, LABEL_FAILED, LABEL_WAITING}
 
 LABEL_COLOURS = {
     LABEL_QUEUED:   "e4e669",
@@ -433,6 +433,7 @@ def run_pipeline(
     llm_cfg: dict | None = None,
     pipeline_file: str = "",
     mcp_servers: list | None = None,
+    trigger_label: str = "",
 ) -> bool:
     """Run the appropriate orchestrator for a single issue. Returns True on success.
 
@@ -491,6 +492,18 @@ def run_pipeline(
         # Mark as running
         add_label(tracker_repo, _issue_number, LABEL_RUNNING)
         remove_label(tracker_repo, _issue_number, LABEL_QUEUED)
+        # Remove the trigger label that caused this run so it can't re-fire the same
+        # pipeline if agent-complete is later cleared. Also clear agent-complete so a
+        # new trigger label added after the previous run is not blocked.
+        if trigger_label:
+            try:
+                remove_label(tracker_repo, _issue_number, trigger_label)
+            except Exception:  # noqa: BLE001
+                _log.debug("Could not remove trigger label %r from #%d", trigger_label, _issue_number)
+        try:
+            remove_label(tracker_repo, _issue_number, LABEL_COMPLETE)
+        except Exception:  # noqa: BLE001
+            pass
 
         result = _dispatch(
             label=label,
@@ -1433,6 +1446,7 @@ def _run_tasks(
                     deploy_cfg=t.get("deploy"),
                     llm_cfg=t.get("llm"),
                     pipeline_file=t.get("pipeline_file", ""),
+                    trigger_label=t.get("trigger_label", ""),
                 )
                 futures_to_task[fut] = t
 
@@ -1666,6 +1680,7 @@ def _build_watch_tasks(
                         tracker_repo=tracker_repo,
                         default_target=default_target,
                         label=pipeline_name,
+                        trigger_label=label_name,
                         parallel_issues=w.get("parallel_issues", 1),
                         model=watcher_model,
                         num_engineers=watcher_num_engineers,
