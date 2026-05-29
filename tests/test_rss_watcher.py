@@ -37,6 +37,7 @@ def test_new_entry_creates_github_issue():
             "feeds": [{"url": "https://example.com/feed.rss", "source": "Example"}],
         }
         with patch("rss_watcher.requests.get", return_value=_mock_feed_response()), \
+             patch("rss_watcher._search_github_issues_by_url", return_value=None), \
              patch("rss_watcher.feedparser") as mock_fp, \
              patch("rss_watcher._create_github_issue") as mock_create:
             mock_fp.parse.return_value = MagicMock(
@@ -60,6 +61,7 @@ def test_duplicate_entry_skipped():
             "feeds": [{"url": "https://example.com/feed.rss", "source": "Example"}],
         }
         with patch("rss_watcher.requests.get", return_value=_mock_feed_response()), \
+             patch("rss_watcher._search_github_issues_by_url", return_value=None), \
              patch("rss_watcher.feedparser") as mock_fp, \
              patch("rss_watcher._create_github_issue") as mock_create:
             mock_fp.parse.return_value = MagicMock(
@@ -82,6 +84,7 @@ def test_github_issue_body_contains_url_and_source():
             "feeds": [{"url": "https://feeds.linux.com/feed", "source": "Linux.com"}],
         }
         with patch("rss_watcher.requests.get", return_value=_mock_feed_response()), \
+             patch("rss_watcher._search_github_issues_by_url", return_value=None), \
              patch("rss_watcher.feedparser") as mock_fp, \
              patch("rss_watcher._create_github_issue") as mock_create:
             mock_fp.parse.return_value = MagicMock(
@@ -179,6 +182,7 @@ def test_process_feeds_dedup_add_source(tmp_path):
 </channel></rss>"""
 
     with patch("rss_watcher.requests.get") as mock_get, \
+         patch("rss_watcher._search_github_issues_by_url", return_value=None), \
          patch("rss_watcher._fetch_open_issues", return_value=open_issues), \
          patch("rss_watcher._post_source_comment") as mock_comment, \
          patch("rss_watcher._create_github_issue") as mock_create:
@@ -223,6 +227,7 @@ def test_process_feeds_dedup_create_followup(tmp_path):
 </channel></rss>"""
 
     with patch("rss_watcher.requests.get") as mock_get, \
+         patch("rss_watcher._search_github_issues_by_url", return_value=None), \
          patch("rss_watcher._fetch_open_issues", return_value=old_issues), \
          patch("rss_watcher._post_source_comment") as mock_comment, \
          patch("rss_watcher._create_github_issue") as mock_create:
@@ -260,6 +265,7 @@ def test_process_feeds_dedup_disabled_creates_new(tmp_path):
 </channel></rss>"""
 
     with patch("rss_watcher.requests.get") as mock_get, \
+         patch("rss_watcher._search_github_issues_by_url", return_value=None), \
          patch("rss_watcher._create_github_issue") as mock_create:
         feed_resp = MagicMock()
         feed_resp.content = feed_xml.encode()
@@ -272,6 +278,79 @@ def test_process_feeds_dedup_disabled_creates_new(tmp_path):
     mock_create.assert_called_once()
     call_kwargs = mock_create.call_args[1]
     assert call_kwargs["title"] == "Article: Some new article"
+
+
+def test_create_skipped_when_url_already_in_github_issues(tmp_path):
+    """Even if seen_urls DB is empty, creating a new issue is skipped when the URL
+    already exists in a GitHub issue (resilient secondary dedup layer)."""
+    import rss_watcher
+    from rss_watcher import process_feeds
+    cfg = {
+        "press_repo": "owner/repo",
+        "label": "news-article",
+        "feeds": [{"url": "http://feed.test/rss", "source": "TechBlog"}],
+    }
+    feed_xml = """<?xml version="1.0"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Critical Gogs RCE</title>
+    <link>http://techblog.test/gogs-rce</link>
+    <summary>Details here.</summary>
+  </item>
+</channel></rss>"""
+
+    existing_issue = {"number": 42, "title": "Article: Critical Gogs RCE", "state": "open"}
+
+    with patch("rss_watcher.requests.get") as mock_get, \
+         patch("rss_watcher._search_github_issues_by_url", return_value=existing_issue) as mock_search, \
+         patch("rss_watcher._create_github_issue") as mock_create:
+        feed_resp = MagicMock()
+        feed_resp.content = feed_xml.encode()
+        feed_resp.raise_for_status = MagicMock()
+        mock_get.return_value = feed_resp
+
+        count = process_feeds(cfg, db_path=tmp_path / "test.db", token="tok")
+
+    mock_search.assert_called_once_with(
+        repo="owner/repo",
+        url="http://techblog.test/gogs-rce",
+        token="tok",
+    )
+    mock_create.assert_not_called()
+    # Count still incremented (URL recorded as seen even if not created anew)
+    assert count == 0
+
+
+def test_create_proceeds_when_url_not_in_github_issues(tmp_path):
+    """When GitHub issue search returns None, issue creation proceeds normally."""
+    import rss_watcher
+    from rss_watcher import process_feeds
+    cfg = {
+        "press_repo": "owner/repo",
+        "label": "news-article",
+        "feeds": [{"url": "http://feed.test/rss", "source": "TechBlog"}],
+    }
+    feed_xml = """<?xml version="1.0"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Truly New Article</title>
+    <link>http://techblog.test/new-article</link>
+    <summary>Content.</summary>
+  </item>
+</channel></rss>"""
+
+    with patch("rss_watcher.requests.get") as mock_get, \
+         patch("rss_watcher._search_github_issues_by_url", return_value=None), \
+         patch("rss_watcher._create_github_issue") as mock_create:
+        feed_resp = MagicMock()
+        feed_resp.content = feed_xml.encode()
+        feed_resp.raise_for_status = MagicMock()
+        mock_get.return_value = feed_resp
+
+        count = process_feeds(cfg, db_path=tmp_path / "test.db", token="tok")
+
+    mock_create.assert_called_once()
+    assert count == 1
 
 
 def test_process_feeds_multi_target(tmp_path):
@@ -302,6 +381,7 @@ def test_process_feeds_multi_target(tmp_path):
 </channel></rss>"""
 
     with patch("rss_watcher.requests.get") as mock_get, \
+         patch("rss_watcher._search_github_issues_by_url", return_value=None), \
          patch("rss_watcher._create_github_issue") as mock_create:
         def feed_side_effect(url, **kwargs):
             slug = "a" if "feed.test/a" in url else "b"

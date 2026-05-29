@@ -27,3 +27,4 @@ fn_map.html
 # AI tooling memory (not source code)
 memory-bank/
 .superpowers/
+rss_seen.db

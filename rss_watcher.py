@@ -170,6 +170,38 @@ def _post_source_comment(
         _log.warning("Could not post source comment to #%d: %s", issue_number, exc)
 
 
+def _search_github_issues_by_url(
+    repo: str,
+    url: str,
+    token: str | None = None,
+) -> dict | None:
+    """Search for an existing GitHub issue whose body contains *url*.
+
+    Returns the first matching issue dict (with ``number`` and ``title``) or
+    ``None`` if no match is found.  Errors are swallowed so a network failure
+    never blocks issue creation.
+    """
+    tok = token or os.environ.get("GITHUB_TOKEN", "")
+    headers = {
+        "Authorization": f"Bearer {tok}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        resp = requests.get(
+            "https://api.github.com/search/issues",
+            headers=headers,
+            params={"q": f'repo:{repo} "{url}" in:body is:issue', "per_page": 1},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        return items[0] if items else None
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("GitHub issue URL search failed for %s: %s", url, exc)
+        return None
+
+
 def _create_github_issue(
     repo: str,
     title: str,
@@ -274,6 +306,21 @@ def _process_target(
             if not url:
                 continue
             if conn.execute("SELECT 1 FROM seen_urls WHERE url = ?", (url,)).fetchone():
+                continue
+
+            # Secondary dedup: resilient check against existing GitHub issues.
+            # Guards against seen_urls DB loss (git reset, clean, etc.).
+            existing = _search_github_issues_by_url(repo=press_repo, url=url, token=token)
+            if existing is not None:
+                _log.info(
+                    "Skipping %s — already exists as issue #%d in GitHub",
+                    url, existing["number"],
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO seen_urls (url, seen_at) VALUES (?, ?)",
+                    (url, datetime.now(timezone.utc).isoformat()),
+                )
+                conn.commit()
                 continue
 
             published = getattr(entry, "published_parsed", None)
