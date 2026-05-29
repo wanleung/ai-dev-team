@@ -4514,12 +4514,14 @@ class Orchestrator(TestFixLoopMixin):
         if not self.target_github:
             return
 
-        article_path = (result.requirement or "").strip()
+        article_path = (result.image_article_path or result.requirement or "").strip()
         if not article_path:
             result.add_error("image_generate: result.requirement must be the article path")
             return
 
-        content = self.target_github.get_file_content(article_path)
+        # Prefer content already in-memory (set by news_article_pr in same pipeline run)
+        # so we don't need to fetch from remote when running inline.
+        content = (result.all_files or {}).get(article_path) or self.target_github.get_file_content(article_path)
         if not content:
             result.add_error(f"image_generate: could not read {article_path!r} from target repo")
             return
@@ -5842,6 +5844,8 @@ class Orchestrator(TestFixLoopMixin):
         if result.article_zh_tw.strip():
             extra_files[filename.replace(".md", ".zh-tw.md")] = result.article_zh_tw
         result.all_files = {filename: article, **extra_files}
+        # Allow image_generate to run inline after this stage without re-fetching from remote.
+        result.image_article_path = filename
 
         self._commit_and_open_pr(
             result,

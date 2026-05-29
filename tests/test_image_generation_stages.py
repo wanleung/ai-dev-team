@@ -193,6 +193,112 @@ def test_stage_image_pr_adds_error_when_no_target_github():
     assert any("no target_github" in e.message for e in result.errors)
 
 
+def test_stage_image_generate_uses_image_article_path_when_set():
+    """_stage_image_generate should use result.image_article_path (set by news_article_pr)
+    instead of result.requirement when running inline in the same pipeline."""
+    from unittest.mock import patch
+    from orchestrator import PipelineResult
+
+    article_no_image = (
+        "---\ntitle: Inline Article\ndate: 2026-05-29T10:00:00\n"
+        "author: HKLUG Team\ntags: [linux]\n---\nBody text.\n"
+    )
+    fake_image_bytes = b"\xff\xd8\xff\xe0inline_jpeg"
+
+    gh = MagicMock()
+    # target_github.get_file_content should NOT be called when content is in all_files
+    gh.get_file_content.return_value = article_no_image
+
+    writer = MagicMock()
+    writer.call.return_value = "Inline prompt."
+
+    orch = _make_orchestrator_for_image(target_github=gh, news_writer=writer)
+
+    result = PipelineResult()
+    # Simulate news_article_pr having already run: sets image_article_path + all_files
+    result.requirement = "articles/20260529-099-wrong.md"  # should be ignored
+    result.image_article_path = "articles/20260529-099-inline-article.md"
+    result.all_files = {"articles/20260529-099-inline-article.md": article_no_image}
+
+    with patch.object(orch, "_call_image_api", return_value=fake_image_bytes):
+        orch._stage_image_generate(result)
+
+    # Should NOT have fetched from remote — content came from all_files
+    gh.get_file_content.assert_not_called()
+    assert result.image_bytes == fake_image_bytes
+    assert result.image_path == "articles/images/20260529-099-inline-article.jpg"
+    assert result.image_article_path == "articles/20260529-099-inline-article.md"
+
+
+def test_stage_image_generate_falls_back_to_requirement_when_no_image_article_path():
+    """_stage_image_generate falls back to result.requirement when image_article_path not set
+    (standalone / independent pipeline run after article already committed)."""
+    from unittest.mock import patch
+    from orchestrator import PipelineResult
+
+    article_no_image = (
+        "---\ntitle: Standalone Article\ndate: 2026-05-29T10:00:00\n"
+        "author: HKLUG Team\ntags: [ai]\n---\nBody.\n"
+    )
+    fake_image_bytes = b"\xff\xd8\xff\xe0standalone_jpeg"
+
+    gh = MagicMock()
+    gh.get_file_content.return_value = article_no_image
+
+    writer = MagicMock()
+    writer.call.return_value = "Standalone prompt."
+
+    orch = _make_orchestrator_for_image(target_github=gh, news_writer=writer)
+
+    result = PipelineResult()
+    result.requirement = "articles/20260529-100-standalone-article.md"
+    # image_article_path is NOT set (None) — standalone run
+
+    with patch.object(orch, "_call_image_api", return_value=fake_image_bytes):
+        orch._stage_image_generate(result)
+
+    # Should have fetched from remote repo since content not in all_files
+    gh.get_file_content.assert_called_once_with("articles/20260529-100-standalone-article.md")
+    assert result.image_bytes == fake_image_bytes
+    assert result.image_path == "articles/images/20260529-100-standalone-article.jpg"
+
+
+def test_news_article_pr_sets_image_article_path_on_result():
+    """_stage_news_article_pr should set result.image_article_path to the committed article path."""
+    from orchestrator import PipelineResult, Orchestrator
+
+    article = (
+        "---\ntitle: Test Article\ndate: 2026-05-29T10:00:00\n"
+        "author: HKLUG Team\ntags: [ai]\nsource_url: https://example.com/story\n---\nBody.\n"
+    )
+
+    gh = MagicMock()
+    gh.repo = "owner/ai-it-press"
+    gh._request.return_value = {"default_branch": "main"}
+    gh.create_branch.return_value = None
+    gh.commit_file.return_value = {"commit": {"sha": "abc"}}
+    gh.create_pull_request.return_value = {"number": 5, "html_url": "https://github.com/pr/5"}
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.target_github = gh
+    orch._press_cfg = {}
+
+    result = PipelineResult()
+    result.issue_number = 42
+    result.article = article
+    result.article_zh_hk = ""
+    result.article_zh_tw = ""
+
+    orch._stage_news_article_pr(result)
+
+    # image_article_path must be set to the committed filename
+    assert result.image_article_path is not None
+    assert result.image_article_path.startswith("articles/")
+    assert result.image_article_path.endswith(".md")
+    assert "20260529" in result.image_article_path
+    assert "42" in result.image_article_path
+
+
 def test_build_utility_stages_includes_image_stages():
     """_build_utility_stages registers image_generate and image_pr."""
     orch = _make_orchestrator_for_image(target_github=MagicMock())
