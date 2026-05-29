@@ -264,7 +264,7 @@ class TestWatchQueuing:
         """watch() queues open feature issues with pipeline_type='feature'."""
         feature_issue = _make_issue(number=10, title="New feature")
 
-        def side_effect(repo: str, label) -> list:
+        def side_effect(repo: str, label, **kw) -> list:
             if label == "feature-request" or label == ["feature-request"]:
                 return [feature_issue]
             return []
@@ -295,7 +295,7 @@ class TestWatchQueuing:
         """watch() queues open bug issues with pipeline_type='bug'."""
         bug_issue = _make_issue(number=20, title="Crash on startup")
 
-        def side_effect(repo: str, label) -> list:
+        def side_effect(repo: str, label, **kw) -> list:
             if label == "bug" or label == ["bug"]:
                 return [bug_issue]
             return []
@@ -325,7 +325,7 @@ class TestWatchQueuing:
         """watch() queues issues labelled 'documentation' with pipeline_type='documentation'."""
         doc_issue = _make_issue(number=30, title="Write API docs")
 
-        def side_effect(repo: str, label) -> list:
+        def side_effect(repo: str, label, **kw) -> list:
             if label == "documentation" or label == ["documentation"]:
                 return [doc_issue]
             return []
@@ -407,7 +407,7 @@ class TestWatchQueuing:
         """watch() supports doc_label as a list of strings."""
         doc_issue = _make_issue(number=32, title="Write README")
 
-        def side_effect(repo: str, label) -> list:
+        def side_effect(repo: str, label, **kw) -> list:
             if label in (["documentation", "docs"], "documentation", "docs"):
                 return [doc_issue]
             return []
@@ -794,7 +794,7 @@ def test_watch_timeout_cancels_hung_futures(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr("watcher._process_resume_queue", lambda *a, **kw: [])
     monkeypatch.setattr("watcher.ensure_label", lambda *a, **kw: None)
     monkeypatch.setattr("watcher.get_open_issues",
-                        lambda repo, label: [{"number": 42, "title": "Hang", "body": "",
+                        lambda repo, label, **kw: [{"number": 42, "title": "Hang", "body": "",
                                               "labels": [], "state": "open",
                                               "pull_request": None, "html_url": ""}])
     monkeypatch.setattr("watcher.add_label", lambda *a, **kw: None)
@@ -857,7 +857,7 @@ def test_watch_timeout_cleans_up_labels_for_cancelled_futures(monkeypatch, tmp_p
     monkeypatch.setattr("watcher._process_resume_queue", lambda *a, **kw: [])
     monkeypatch.setattr("watcher.ensure_label", lambda *a, **kw: None)
     monkeypatch.setattr("watcher.get_open_issues",
-                        lambda repo, label: [
+                        lambda repo, label, **kw: [
                             {"number": 1, "title": "T1", "body": "", "labels": [], "state": "open", "pull_request": None, "html_url": ""},
                             {"number": 2, "title": "T2", "body": "", "labels": [], "state": "open", "pull_request": None, "html_url": ""},
                         ])
@@ -1010,12 +1010,12 @@ def test_run_pipeline_removes_trigger_label_and_agent_complete_on_start(tmp_path
     assert "agent-complete" in removed_labels, "agent-complete must be removed at pipeline start"
 
 
-def test_get_open_issues_returns_issue_with_agent_complete_when_has_trigger_label(monkeypatch):
-    """An issue with agent-complete + a new trigger label (e.g. image-article) must
-    be returned by get_open_issues — not silently skipped."""
+def test_get_open_issues_returns_issue_with_agent_complete_when_multi_run_allowed(monkeypatch):
+    """get_open_issues(allow_completed=True) must return issues that have agent-complete,
+    so multi-run labels (e.g. image-article) can trigger on previously completed issues.
+    By default (allow_completed=False), agent-complete still blocks — other repos are safe."""
     import watcher as w
 
-    # Issue has agent-complete (from prior run) AND new trigger label image-article
     issue_with_both = {
         "number": 5,
         "title": "Test article",
@@ -1034,6 +1034,12 @@ def test_get_open_issues_returns_issue_with_agent_complete_when_has_trigger_labe
 
     monkeypatch.setattr("watcher.requests.get", fake_get)
 
-    issues = w.get_open_issues("owner/repo", "image-article")
-    assert len(issues) == 1, "issue with agent-complete + image-article should be returned"
+    # Default: agent-complete blocks (preserves existing behaviour for all other repos)
+    issues = w.get_open_issues("owner/repo", "image-article", allow_completed=False)
+    assert len(issues) == 0, "agent-complete should block pickup by default"
+
+    # allow_completed=True: image-article can run on a completed issue
+    issues = w.get_open_issues("owner/repo", "image-article", allow_completed=True)
+    assert len(issues) == 1, "should return issue when allow_completed=True"
     assert issues[0]["number"] == 5
+

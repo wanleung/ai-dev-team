@@ -57,7 +57,7 @@ LABEL_COMPLETE = "agent-complete"
 LABEL_FAILED   = "agent-failed"
 LABEL_WAITING  = "agent-waiting"
 
-SKIP_LABELS = {LABEL_QUEUED, LABEL_RUNNING, LABEL_FAILED, LABEL_WAITING}
+SKIP_LABELS = {LABEL_QUEUED, LABEL_RUNNING, LABEL_COMPLETE, LABEL_FAILED, LABEL_WAITING}
 
 LABEL_COLOURS = {
     LABEL_QUEUED:   "e4e669",
@@ -197,12 +197,19 @@ def remove_label(repo: str, issue_number: int, label: str) -> None:
 
 
 @_retry_github
-def _get_open_issues_raw(repo: str, label: str | list[str]) -> list[GitHubIssue]:
+def _get_open_issues_raw(
+    repo: str, label: str | list[str], allow_completed: bool = False
+) -> list[GitHubIssue]:
     """Inner (retryable) implementation of get_open_issues.
 
     Uses raise_for_status() so that 429/5xx responses surface as HTTPError
     and are intercepted by @_retry_github for exponential-backoff retries.
+
+    allow_completed: when True, agent-complete does NOT block an issue from
+    being returned.  Used for multi-run labels (e.g. image-article) that must
+    be able to trigger on issues that already completed a prior pipeline.
     """
+    effective_skip = SKIP_LABELS - ({LABEL_COMPLETE} if allow_completed else set())
     labels = [label] if isinstance(label, str) else list(label)
     seen: set[int] = set()
     issues: list[dict] = []
@@ -217,25 +224,32 @@ def _get_open_issues_raw(repo: str, label: str | list[str]) -> list[GitHubIssue]
             if issue["number"] in seen:
                 continue  # already added via another label
             issue_labels = {l["name"] for l in issue.get("labels", [])}
-            if issue_labels & SKIP_LABELS:
+            if issue_labels & effective_skip:
                 continue  # already processed or in progress
             seen.add(issue["number"])
             issues.append(issue)
     return issues
 
 
-def get_open_issues(repo: str, label: str | list[str]) -> list[GitHubIssue]:
+def get_open_issues(
+    repo: str, label: str | list[str], allow_completed: bool = False
+) -> list[GitHubIssue]:
     """Return open issues with the given label(s) that haven't been processed.
 
     label may be a single string or a list; issues matching ANY label are returned
     (deduped by issue number).
+
+    allow_completed: when True, agent-complete does NOT block pickup.  Pass this
+    for labels configured with ``multi_run: true`` in repos.yaml (e.g.
+    image-article).  All other labels continue to be blocked by agent-complete,
+    preserving backward compatibility with other repos.
 
     Retries transiently on 429/5xx via @_retry_github applied to the inner
     function.  On final failure converts HTTPError to RuntimeError so callers
     receive a consistent exception type.
     """
     try:
-        return _get_open_issues_raw(repo, label)
+        return _get_open_issues_raw(repo, label, allow_completed=allow_completed)
     except requests.HTTPError as exc:
         resp = exc.response
         if resp is None:
@@ -1671,9 +1685,11 @@ def _build_watch_tasks(
             for label_name, label_cfg in labels_cfg.items():
                 if isinstance(label_cfg, str):
                     pipeline_name = label_cfg
+                    allow_completed = False
                 else:
                     pipeline_name = (label_cfg or {}).get("pipeline", label_name)
-                for issue in get_open_issues(tracker_repo, label_name):
+                    allow_completed = bool((label_cfg or {}).get("multi_run", False))
+                for issue in get_open_issues(tracker_repo, label_name, allow_completed=allow_completed):
                     add_label(tracker_repo, issue["number"], LABEL_QUEUED)
                     tasks.append(dict(
                         issue=issue,

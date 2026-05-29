@@ -10,12 +10,15 @@
 tracker_repo: wanleung/ai-it-press
 default_target: ~
 pipeline_file: pipelines/news-article.yaml
-parallel_issues: 2
+parallel_issues: 5
 enabled: true
 
 labels:
   news-article: news-article  # pipeline loaded from pipeline_file (above)
   press: news-article         # trigger label added by intake_triage on approve
+  image-article:
+    pipeline: image-article
+    multi_run: true           # can run on issues that already have agent-complete from a prior pipeline
 
 settings:
   watch_prs: false          # press team does not auto-fix PRs
