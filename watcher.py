@@ -853,6 +853,7 @@ def _dispatch(
             deploy_cfg=deploy_cfg,
             llm_fallbacks=_llm.get("fallbacks") or None,
             mcp_servers=mcp_servers or None,
+            press_cfg=pipeline_cfg.get("press", {}),
         )
 
         # pipeline_file: fetch pipeline YAML from tracker repo via GitHub API
