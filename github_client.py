@@ -453,6 +453,13 @@ class GitHubClient:
         """Return pull request metadata."""
         return self._request("GET", f"/repos/{self.repo}/pulls/{pr_number}")
 
+    def list_open_prs(self, head_pattern: Optional[str] = None) -> list[dict]:
+        """Return open pull requests, optionally filtered by head branch pattern (substring match)."""
+        prs = self._request("GET", f"/repos/{self.repo}/pulls", params={"state": "open", "per_page": 100})
+        if head_pattern:
+            prs = [p for p in prs if head_pattern in p.get("head", {}).get("ref", "")]
+        return prs
+
     def get_pr_review_comments(self, pr_number: int) -> list:
         """Return inline review comments on a pull request."""
         return self._request("GET", f"/repos/{self.repo}/pulls/{pr_number}/comments")

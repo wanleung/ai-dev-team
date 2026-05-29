@@ -262,12 +262,49 @@ def test_stage_image_generate_falls_back_to_issue_number_search_when_standalone(
     with patch.object(orch, "_call_image_api", return_value=fake_image_bytes):
         orch._stage_image_generate(result)
 
-    # Should have searched by issue number pattern
-    gh.search_files.assert_called_once_with("articles/*-100-*.md")
-    # Should have fetched the found article
-    gh.get_file_content.assert_called_once_with("articles/20260529-100-standalone-article.md")
+    # Should have searched by issue number pattern (default branch, ref=None)
+    gh.search_files.assert_called_once_with("articles/*-100-*.md", ref=None)
+    # Should have fetched the found article (no ref needed — default branch)
+    gh.get_file_content.assert_called_once_with("articles/20260529-100-standalone-article.md", ref=None)
     assert result.image_bytes == fake_image_bytes
     assert result.image_path == "articles/images/20260529-100-standalone-article.jpg"
+
+
+def test_stage_image_generate_finds_article_on_pr_branch_when_not_merged():
+    """_stage_image_generate falls back to open PR branches when article is not on default branch yet."""
+    from unittest.mock import patch, call
+    from orchestrator import PipelineResult
+
+    article_no_image = (
+        "---\ntitle: Unmerged Article\ndate: 2026-05-29T10:00:00\n"
+        "author: HKLUG Team\ntags: [ai]\n---\nBody.\n"
+    )
+    fake_image_bytes = b"\xff\xd8\xff\xe0pr_branch_jpeg"
+
+    gh = MagicMock()
+    # Default branch has no match; PR branch has the file
+    gh.search_files.side_effect = lambda pattern, ref=None: (
+        [] if ref is None else ["articles/20260529-100-unmerged-article.md"]
+    )
+    gh.list_open_prs.return_value = [{"head": {"ref": "article/100-issue-100"}}]
+    gh.get_file_content.return_value = article_no_image
+
+    writer = MagicMock()
+    writer.call.return_value = "PR branch prompt."
+    orch = _make_orchestrator_for_image(target_github=gh, news_writer=writer)
+
+    result = PipelineResult()
+    result.issue_number = 100
+    result.requirement = "Issue body text"
+
+    with patch.object(orch, "_call_image_api", return_value=fake_image_bytes):
+        orch._stage_image_generate(result)
+
+    gh.list_open_prs.assert_called_once_with(head_pattern="100")
+    gh.get_file_content.assert_called_once_with(
+        "articles/20260529-100-unmerged-article.md", ref="article/100-issue-100"
+    )
+    assert result.image_bytes == fake_image_bytes
 
 
 def test_stage_image_generate_errors_when_no_article_found_for_issue():
@@ -276,6 +313,7 @@ def test_stage_image_generate_errors_when_no_article_found_for_issue():
 
     gh = MagicMock()
     gh.search_files.return_value = []
+    gh.list_open_prs.return_value = []
 
     orch = _make_orchestrator_for_image(target_github=gh)
 

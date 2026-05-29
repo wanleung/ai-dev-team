@@ -4520,14 +4520,31 @@ class Orchestrator(TestFixLoopMixin):
         # When running as a standalone image-article pipeline, image_article_path is not
         # pre-populated (no prior news_article_pr stage).  Fall back to searching the
         # target repo for an article whose filename contains the issue number.
+        # Search default branch first; if not found, also check open PR branches
+        # (article may not be merged yet).
+        article_ref: Optional[str] = None  # branch/ref where article was found
         if not article_path and result.issue_number:
-            candidates = self.target_github.search_files(
-                f"articles/*-{result.issue_number}-*.md"
-            )
-            # Exclude translation variants (.zh-hk.md / .zh-tw.md)
-            candidates = [p for p in candidates if not any(
-                p.endswith(s) for s in (".zh-hk.md", ".zh-tw.md", ".zh-cn.md")
-            )]
+            def _find_in_ref(ref=None):
+                candidates = self.target_github.search_files(
+                    f"articles/*-{result.issue_number}-*.md", ref=ref
+                )
+                return [p for p in candidates if not any(
+                    p.endswith(s) for s in (".zh-hk.md", ".zh-tw.md", ".zh-cn.md")
+                )]
+
+            candidates = _find_in_ref()  # default branch
+            if not candidates:
+                # Article might be on an open PR branch (not yet merged)
+                open_prs = self.target_github.list_open_prs(
+                    head_pattern=str(result.issue_number)
+                )
+                for pr in open_prs:
+                    branch = pr.get("head", {}).get("ref", "")
+                    candidates = _find_in_ref(ref=branch)
+                    if candidates:
+                        article_ref = branch
+                        break
+
             if candidates:
                 article_path = candidates[0]
             else:
@@ -4543,7 +4560,7 @@ class Orchestrator(TestFixLoopMixin):
 
         # Prefer content already in-memory (set by news_article_pr in same pipeline run)
         # so we don't need to fetch from remote when running inline.
-        content = (result.all_files or {}).get(article_path) or self.target_github.get_file_content(article_path)
+        content = (result.all_files or {}).get(article_path) or self.target_github.get_file_content(article_path, ref=article_ref)
         if not content:
             result.add_error(f"image_generate: could not read {article_path!r} from target repo")
             return
