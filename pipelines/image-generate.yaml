@@ -1,0 +1,9 @@
+# pipelines/image-generate.yaml
+# Standalone image generation pipeline.
+# Trigger: add "image-generate" label to a completed article issue.
+# Issue body must be the article file path, e.g.:
+#   articles/20260529-042-some-article.md
+
+stages:
+  - image_generate   # reads article from target repo (result.requirement = article path)
+  - image_pr         # commits image + updates frontmatter, opens PR
