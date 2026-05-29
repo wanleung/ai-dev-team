@@ -67,7 +67,7 @@ def test_stage_image_generate_stores_image_bytes_on_result():
     orch = _make_orchestrator_for_image(target_github=gh, news_writer=writer)
 
     result = PipelineResult()
-    result.requirement = "articles/20260528-042-linux-6-9-released.md"
+    result.image_article_path = "articles/20260528-042-linux-6-9-released.md"
 
     with patch.object(orch, "_call_image_api", return_value=fake_image_bytes):
         orch._stage_image_generate(result)
@@ -232,9 +232,10 @@ def test_stage_image_generate_uses_image_article_path_when_set():
     assert result.image_article_path == "articles/20260529-099-inline-article.md"
 
 
-def test_stage_image_generate_falls_back_to_requirement_when_no_image_article_path():
-    """_stage_image_generate falls back to result.requirement when image_article_path not set
-    (standalone / independent pipeline run after article already committed)."""
+def test_stage_image_generate_falls_back_to_issue_number_search_when_standalone():
+    """_stage_image_generate searches target repo by issue number when image_article_path is
+    not set (standalone image-article pipeline triggered after article already committed).
+    Neither result.image_article_path nor result.requirement contains the file path."""
     from unittest.mock import patch
     from orchestrator import PipelineResult
 
@@ -245,6 +246,7 @@ def test_stage_image_generate_falls_back_to_requirement_when_no_image_article_pa
     fake_image_bytes = b"\xff\xd8\xff\xe0standalone_jpeg"
 
     gh = MagicMock()
+    gh.search_files.return_value = ["articles/20260529-100-standalone-article.md"]
     gh.get_file_content.return_value = article_no_image
 
     writer = MagicMock()
@@ -253,16 +255,37 @@ def test_stage_image_generate_falls_back_to_requirement_when_no_image_article_pa
     orch = _make_orchestrator_for_image(target_github=gh, news_writer=writer)
 
     result = PipelineResult()
-    result.requirement = "articles/20260529-100-standalone-article.md"
+    result.issue_number = 100
+    result.requirement = "**Source:** Ars Technica\n**URL:** https://example.com\nSummary text."
     # image_article_path is NOT set (None) — standalone run
 
     with patch.object(orch, "_call_image_api", return_value=fake_image_bytes):
         orch._stage_image_generate(result)
 
-    # Should have fetched from remote repo since content not in all_files
+    # Should have searched by issue number pattern
+    gh.search_files.assert_called_once_with("articles/*-100-*.md")
+    # Should have fetched the found article
     gh.get_file_content.assert_called_once_with("articles/20260529-100-standalone-article.md")
     assert result.image_bytes == fake_image_bytes
     assert result.image_path == "articles/images/20260529-100-standalone-article.jpg"
+
+
+def test_stage_image_generate_errors_when_no_article_found_for_issue():
+    """_stage_image_generate adds an error when no article file matches the issue number."""
+    from orchestrator import PipelineResult
+
+    gh = MagicMock()
+    gh.search_files.return_value = []
+
+    orch = _make_orchestrator_for_image(target_github=gh)
+
+    result = PipelineResult()
+    result.issue_number = 999
+    result.requirement = "Some issue body text, not a path"
+
+    orch._stage_image_generate(result)
+
+    assert any("no article found" in str(e) for e in result.errors), result.errors
 
 
 def test_news_article_pr_sets_image_article_path_on_result():
@@ -327,7 +350,7 @@ def test_stage_image_generate_uses_image_prompt_writer_when_available():
     orch.image_prompt_writer = prompt_writer
 
     result = PipelineResult()
-    result.requirement = "articles/20260528-042-linux-6-9-released.md"
+    result.image_article_path = "articles/20260528-042-linux-6-9-released.md"
 
     with patch.object(orch, "_call_image_api", return_value=fake_image_bytes):
         orch._stage_image_generate(result)

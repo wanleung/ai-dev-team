@@ -4515,7 +4515,28 @@ class Orchestrator(TestFixLoopMixin):
         if not self.target_github:
             return
 
-        article_path = (result.image_article_path or result.requirement or "").strip()
+        article_path = (result.image_article_path or "").strip()
+
+        # When running as a standalone image-article pipeline, image_article_path is not
+        # pre-populated (no prior news_article_pr stage).  Fall back to searching the
+        # target repo for an article whose filename contains the issue number.
+        if not article_path and result.issue_number:
+            candidates = self.target_github.search_files(
+                f"articles/*-{result.issue_number}-*.md"
+            )
+            # Exclude translation variants (.zh-hk.md / .zh-tw.md)
+            candidates = [p for p in candidates if not any(
+                p.endswith(s) for s in (".zh-hk.md", ".zh-tw.md", ".zh-cn.md")
+            )]
+            if candidates:
+                article_path = candidates[0]
+            else:
+                result.add_error(
+                    f"image_generate: no article found for issue #{result.issue_number} "
+                    f"in target repo — expected articles/*-{result.issue_number}-*.md"
+                )
+                return
+
         if not article_path:
             result.add_error("image_generate: result.requirement must be the article path")
             return
