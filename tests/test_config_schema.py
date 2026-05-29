@@ -64,3 +64,21 @@ def test_repo_watcher_entry_no_llm_defaults_none():
     from config_schema import RepoWatcherEntry
     entry = RepoWatcherEntry(tracker_repo="owner/my-repo")
     assert entry.llm is None
+
+
+def test_repo_watcher_entry_accepts_dict_label_config():
+    """RepoWatcherEntry accepts label values as either plain strings or dicts with multi_run."""
+    from config_schema import RepoWatcherEntry, LabelConfig
+    entry = RepoWatcherEntry.model_validate({
+        "tracker_repo": "owner/repo",
+        "labels": {
+            "press": "news-article",
+            "image-article": {"pipeline": "image-article", "multi_run": True},
+        },
+    })
+    assert entry.labels["press"] == "news-article"
+    label_cfg = entry.labels["image-article"]
+    assert isinstance(label_cfg, LabelConfig)
+    assert label_cfg.pipeline == "image-article"
+    assert label_cfg.multi_run is True
+

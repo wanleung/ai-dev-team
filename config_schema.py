@@ -6,7 +6,7 @@ Usage:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -278,13 +278,21 @@ class AppConfig(BaseModel):
 
 # ── repos.yaml models ────────────────────────────────────────────────────────
 
+class LabelConfig(BaseModel):
+    """Extended label config that supports multi-run and other per-label options."""
+    model_config = {"extra": "allow"}
+
+    pipeline: Optional[str] = None
+    multi_run: bool = False
+
+
 class RepoWatcherEntry(BaseModel):
     model_config = {"extra": "allow"}   # allow custom keys for future expansion
 
     tracker_repo: str
     default_target: Optional[str] = None
     parallel_issues: int = 1
-    labels: Dict[str, str] = Field(default_factory=dict)
+    labels: Dict[str, Union[str, LabelConfig]] = Field(default_factory=dict)
     enabled: bool = True
     senior_model: Optional[str] = None
     conflict_resolver_model: Optional[str] = None

@@ -1686,7 +1686,12 @@ def _build_watch_tasks(
                 if isinstance(label_cfg, str):
                     pipeline_name = label_cfg
                     allow_completed = False
+                elif hasattr(label_cfg, "pipeline"):
+                    # Pydantic LabelConfig object (after schema validation)
+                    pipeline_name = label_cfg.pipeline or label_name
+                    allow_completed = bool(label_cfg.multi_run)
                 else:
+                    # Raw dict (when loaded outside schema validation)
                     pipeline_name = (label_cfg or {}).get("pipeline", label_name)
                     allow_completed = bool((label_cfg or {}).get("multi_run", False))
                 for issue in get_open_issues(tracker_repo, label_name, allow_completed=allow_completed):
