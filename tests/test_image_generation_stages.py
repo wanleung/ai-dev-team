@@ -19,6 +19,8 @@ def _make_orchestrator_for_image(*, target_github=None, news_writer=None, press_
     orch = Orchestrator.__new__(Orchestrator)
     orch.target_github = target_github
     orch.news_writer = news_writer or MagicMock()
+    orch.image_prompt_writer = MagicMock()
+    orch.image_prompt_writer.call.return_value = "A vibrant cityscape representing open-source innovation."
     orch._press_cfg = press_cfg or {}
     return orch
 
@@ -297,6 +299,43 @@ def test_news_article_pr_sets_image_article_path_on_result():
     assert result.image_article_path.endswith(".md")
     assert "20260529" in result.image_article_path
     assert "42" in result.image_article_path
+
+
+def test_stage_image_generate_uses_image_prompt_writer_when_available():
+    """_stage_image_generate should use image_prompt_writer agent, not news_writer."""
+    from unittest.mock import patch
+    from orchestrator import PipelineResult
+
+    article_no_image = (
+        "---\ntitle: Test Article\ndate: 2026-05-28T10:00:00\n"
+        "author: HKLUG Team\ntags: [linux]\n---\nArticle body.\n"
+    )
+    fake_image_bytes = b"\xff\xd8\xff\xe0fake_jpeg"
+
+    gh = MagicMock()
+    gh.get_file_content.return_value = article_no_image
+
+    # news_writer uses mimo-v2.5-pro; should NOT be called
+    default_writer = MagicMock()
+    default_writer.call.return_value = "should not be used"
+
+    # dedicated image_prompt_writer returns proper prompt
+    prompt_writer = MagicMock()
+    prompt_writer.call.return_value = "A sleek server rack with glowing indicators."
+
+    orch = _make_orchestrator_for_image(target_github=gh, news_writer=default_writer)
+    orch.image_prompt_writer = prompt_writer
+
+    result = PipelineResult()
+    result.requirement = "articles/20260528-042-linux-6-9-released.md"
+
+    with patch.object(orch, "_call_image_api", return_value=fake_image_bytes):
+        orch._stage_image_generate(result)
+
+    # Should use image_prompt_writer, NOT news_writer
+    prompt_writer.call.assert_called_once()
+    default_writer.call.assert_not_called()
+    assert result.image_bytes == fake_image_bytes
 
 
 def test_build_utility_stages_includes_image_stages():

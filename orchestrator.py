@@ -1041,6 +1041,7 @@ class Orchestrator(TestFixLoopMixin):
         tools = self._tool_registry
         self.pm = ProductManagerAgent(**{**agent_kwargs, **mk("product_manager")})
         self.news_writer = NewsWriterAgent(tool_registry=search, **{**agent_kwargs, **mk("news_writer")})
+        self.image_prompt_writer = NewsWriterAgent(**{**agent_kwargs, **mk("image_prompt_writer")})
         self.news_editor = NewsEditorAgent(**{**agent_kwargs, **mk("news_editor")})
         self.news_reviewer = NewsReviewerAgent(tool_registry=search, **{**agent_kwargs, **mk("news_reviewer")})
         self.translator = TranslatorAgent(**{**agent_kwargs, **mk("translator")})
@@ -4556,7 +4557,7 @@ class Orchestrator(TestFixLoopMixin):
             f"Style: photojournalism / tech editorial. No text overlays, no logos. "
             f"Return only the prompt text, nothing else."
         )
-        image_prompt = self.news_writer.call(prompt_request).strip()
+        image_prompt = self.image_prompt_writer.call(prompt_request).strip()
         console.print(f"  🖼️  [dim]Image prompt: {image_prompt[:80]}...[/dim]")
 
         # Call image API
