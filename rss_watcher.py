@@ -170,36 +170,19 @@ def _post_source_comment(
         _log.warning("Could not post source comment to #%d: %s", issue_number, exc)
 
 
-def _search_github_issues_by_url(
-    repo: str,
-    url: str,
-    token: str | None = None,
-) -> dict | None:
-    """Search for an existing GitHub issue whose body contains *url*.
+def _find_issue_by_url(url: str, open_issues: list[dict]) -> dict | None:
+    """Return the first issue whose body contains *url*, or ``None``.
 
-    Returns the first matching issue dict (with ``number`` and ``title``) or
-    ``None`` if no match is found.  Errors are swallowed so a network failure
-    never blocks issue creation.
+    Used as a secondary dedup layer: if the seen_urls DB was lost (e.g. a
+    git reset), we can still detect already-created issues by checking the
+    in-memory list of open issues fetched at the start of each run.  This
+    avoids calling the GitHub Search API (which has strict rate limits and
+    requires elevated token scopes).
     """
-    tok = token or os.environ.get("GITHUB_TOKEN", "")
-    headers = {
-        "Authorization": f"Bearer {tok}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    try:
-        resp = requests.get(
-            "https://api.github.com/search/issues",
-            headers=headers,
-            params={"q": f'repo:{repo} "{url}" in:body is:issue', "per_page": 1},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        items = resp.json().get("items", [])
-        return items[0] if items else None
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("GitHub issue URL search failed for %s: %s", url, exc)
-        return None
+    for issue in open_issues:
+        if url in (issue.get("body") or ""):
+            return issue
+    return None
 
 
 def _create_github_issue(
@@ -251,6 +234,10 @@ def _process_target(
     cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=max_age_hours)
     created = 0
 
+    # Always fetch open issues: used for topic dedup (if enabled) AND for
+    # the URL-based secondary dedup that guards against seen_urls DB loss.
+    open_issues = _fetch_open_issues(press_repo, label, token)
+
     # Build deduplicator if configured
     dedup: TopicDeduplicator | None = None
     if dedup_cfg.get("enabled", False):
@@ -275,9 +262,6 @@ def _process_target(
             min_age_hours=int(dedup_cfg.get("min_age_hours", 168)),
             llm=llm_agent,
         )
-        open_issues = _fetch_open_issues(press_repo, label, token)
-    else:
-        open_issues = []
 
     for feed_cfg in feeds:
         feed_url = feed_cfg.get("url", "")
@@ -310,7 +294,8 @@ def _process_target(
 
             # Secondary dedup: resilient check against existing GitHub issues.
             # Guards against seen_urls DB loss (git reset, clean, etc.).
-            existing = _search_github_issues_by_url(repo=press_repo, url=url, token=token)
+            # Uses the already-fetched open_issues list — no extra API calls.
+            existing = _find_issue_by_url(url, open_issues)
             if existing is not None:
                 _log.info(
                     "Skipping %s — already exists as issue #%d in GitHub",
