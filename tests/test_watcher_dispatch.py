@@ -109,6 +109,93 @@ def test_dispatch_uses_llm_cfg_when_provided(monkeypatch, tmp_path):
     assert captured.get("model_overrides", {}).get("engineer") == "ollama/qwen3.5"
 
 
+def _dispatch_with_pipeline_config(monkeypatch, tmp_path, pipeline_cfg):
+    captured = {}
+
+    class FakeOrch:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._pipeline_yaml_stages = None
+
+        def load_pipeline_for_label(self, label):
+            return None
+
+        def run(self, *a, **kw):
+            return MagicMock(success=True)
+
+    fake_mod = types.ModuleType("orchestrator")
+    fake_mod.Orchestrator = FakeOrch
+    monkeypatch.setitem(sys.modules, "orchestrator", fake_mod)
+
+    class FakeGH:
+        def __init__(self, repo, token):
+            pass
+
+        def get_issue(self, n):
+            return {"title": "t", "body": "", "labels": []}
+
+        def get_issue_comments(self, n):
+            return []
+
+    fake_gh_mod = types.ModuleType("github_client")
+    fake_gh_mod.GitHubClient = FakeGH
+    fake_gh_mod.parse_target_repo = lambda b: None
+    monkeypatch.setitem(sys.modules, "github_client", fake_gh_mod)
+
+    monkeypatch.setattr(watcher, "_load_pipeline_config", lambda: {
+        "llm": {},
+        "pipeline": pipeline_cfg,
+    })
+
+    from watcher import _dispatch
+    _dispatch(
+        label="news-article",
+        tracker_repo="owner/tracker",
+        target_repo="owner/target",
+        issue_number=1,
+        model="gpt-4.1",
+        num_engineers=1,
+        log_file=tmp_path / "run.log",
+        logger=None,
+    )
+
+    return captured
+
+
+def test_dispatch_passes_reviewer_max_retries(monkeypatch, tmp_path):
+    """_dispatch forwards news reviewer retry config into Orchestrator."""
+    captured = _dispatch_with_pipeline_config(
+        monkeypatch, tmp_path, {"reviewer_max_retries": 5}
+    )
+
+    assert captured["reviewer_max_retries"] == 5
+
+
+def test_dispatch_defaults_reviewer_max_retries_when_missing(monkeypatch, tmp_path):
+    """_dispatch preserves the Orchestrator default when reviewer_max_retries is missing."""
+    captured = _dispatch_with_pipeline_config(monkeypatch, tmp_path, {})
+
+    assert captured["reviewer_max_retries"] == 2
+
+
+def test_dispatch_defaults_reviewer_max_retries_when_null(monkeypatch, tmp_path):
+    """_dispatch treats reviewer_max_retries: null as the default."""
+    captured = _dispatch_with_pipeline_config(
+        monkeypatch, tmp_path, {"reviewer_max_retries": None}
+    )
+
+    assert captured["reviewer_max_retries"] == 2
+
+
+def test_dispatch_allows_zero_reviewer_max_retries(monkeypatch, tmp_path):
+    """_dispatch allows reviewer_max_retries: 0 to mean no retry after the first review."""
+    captured = _dispatch_with_pipeline_config(
+        monkeypatch, tmp_path, {"reviewer_max_retries": 0}
+    )
+
+    assert captured["reviewer_max_retries"] == 0
+
+
 def test_concurrent_dispatch_does_not_redirect_global_stdout(tmp_path):
     """Concurrent _dispatch calls must not clobber sys.stdout/sys.stderr."""
     import threading

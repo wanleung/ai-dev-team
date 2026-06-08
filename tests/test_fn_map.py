@@ -2,10 +2,29 @@
 from __future__ import annotations
 
 import ast
-import textwrap
+import subprocess
+import sys
 from pathlib import Path
+
 import pytest
-from tools.fn_map import FunctionInfo, FnMapConfig, load_config, resolve_paths, _extract_calls, _parse_file, collect_functions, detect_violations, build_distribution, build_call_index, build_calledby_index, print_terminal_report
+
+from tools.fn_map import (
+    FunctionInfo,
+    FnMapConfig,
+    _extract_calls,
+    _fn_css_class,
+    _parse_file,
+    _render_function_card,
+    build_call_index,
+    build_calledby_index,
+    build_distribution,
+    collect_functions,
+    detect_violations,
+    generate_html,
+    load_config,
+    print_terminal_report,
+    resolve_paths,
+)
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -18,14 +37,14 @@ def test_function_info_defaults():
 
 def test_config_defaults():
     cfg = FnMapConfig()
-    assert cfg.limit == 30
+    assert cfg.limit == 80
     assert "orchestrator.py" in cfg.include
     assert "workspace/" in cfg.exclude
     assert cfg.html_output == "fn_map.html"
 
 def test_load_config_missing_file(tmp_path):
     cfg = load_config(str(tmp_path / "nonexistent.yaml"))
-    assert cfg.limit == 30  # falls back to defaults
+    assert cfg.limit == 80  # falls back to defaults
 
 def test_load_config_overrides_limit(tmp_path):
     yaml_file = tmp_path / "fn_map.yaml"
@@ -173,15 +192,14 @@ def test_detect_violations_none_over_limit():
 
 def test_build_distribution_buckets():
     funcs = [_make_fn("a", 5), _make_fn("b", 15), _make_fn("c", 25), _make_fn("d", 60)]
-    dist = build_distribution(funcs, [10, 20, 30, 50, 100])
-    labels = [label for label, _ in dist]
+    dist = build_distribution(funcs, [10, 20, 40, 80, 120])
     counts = {label: count for label, count in dist}
     assert counts["≤10 lines"] == 1   # a
     assert counts["≤20 lines"] == 1   # b
-    assert counts["≤30 lines"] == 1   # c
-    assert counts["≤50 lines"] == 0
-    assert counts["≤100 lines"] == 1  # d
-    assert counts[">100 lines"] == 0
+    assert counts["≤40 lines"] == 1   # c
+    assert counts["≤80 lines"] == 1   # d
+    assert counts["≤120 lines"] == 0
+    assert counts[">120 lines"] == 0
 
 def test_build_distribution_empty_buckets_raises():
     with pytest.raises(ValueError, match="buckets"):
@@ -231,9 +249,6 @@ def test_print_terminal_report_no_violations(capsys):
     print_terminal_report(funcs, limit=30)
     captured = capsys.readouterr().out
     assert "0 violation" in captured or "violations" in captured
-
-# ── Task 6: HTML generation ──────────────────────────────────────────────────
-from tools.fn_map import generate_html, _render_function_card, _fn_css_class
 
 def test_render_function_card_escapes_html():
     fn = FunctionInfo(
@@ -300,15 +315,12 @@ def test_generate_html_has_filter_buttons(tmp_path):
     assert "Violations only" in content
     assert "All" in content
 
-# ── Task 7: CLI integration ───────────────────────────────────────────────────
-import subprocess, sys
-
 def test_cli_runs_without_error(tmp_path):
     """Run fn_map.py --no-html against a tiny sample dir and check exit code 0."""
     sample = tmp_path / "sample.py"
     sample.write_text("def alpha():\n    pass\n\ndef beta():\n    alpha()\n")
     cfg = tmp_path / "fn_map.yaml"
-    cfg.write_text(f"include:\n  - sample.py\nlimit: 30\noutput:\n  html: null\n")
+    cfg.write_text("include:\n  - sample.py\nlimit: 80\noutput:\n  html: null\n")
     result = subprocess.run(
         [sys.executable, "tools/fn_map.py", "--config", str(cfg), "--root", str(tmp_path)],
         capture_output=True, text=True,
@@ -322,7 +334,7 @@ def test_cli_writes_html(tmp_path):
     sample.write_text("def alpha():\n    pass\n")
     cfg = tmp_path / "fn_map.yaml"
     out_html = tmp_path / "out.html"
-    cfg.write_text(f"include:\n  - sample.py\nlimit: 30\noutput:\n  html: {out_html}\n")
+    cfg.write_text(f"include:\n  - sample.py\nlimit: 80\noutput:\n  html: {out_html}\n")
     result = subprocess.run(
         [sys.executable, "tools/fn_map.py", "--config", str(cfg), "--root", str(tmp_path)],
         capture_output=True, text=True,

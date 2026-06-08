@@ -29,7 +29,7 @@ source: local
 ## For Architects
 - Threat model before finalising design: who are the attackers, what are the assets, what are the attack vectors?
 - Apply principle of least privilege: each component/service requests only the permissions it needs
-- Never store secrets in code, config files, or environment variables committed to VCS — use a secrets manager
+- Never store secrets in code, committed config files, or committed env files. Runtime environment variables are acceptable injection points when backed by a secret manager or deployment secret store
 - Plan for secret rotation from day one
 - Use short-lived tokens (JWT exp ≤ 15 min) with refresh tokens stored `httpOnly`
 

@@ -19,6 +19,8 @@ from typing import Optional
 
 import yaml
 
+DEFAULT_FUNCTION_LINE_LIMIT = 80
+
 
 @dataclass
 class FunctionInfo:
@@ -31,7 +33,7 @@ class FunctionInfo:
 
 @dataclass
 class FnMapConfig:
-    limit: int = 30
+    limit: int = DEFAULT_FUNCTION_LINE_LIMIT
     include: list[str] = field(default_factory=lambda: [
         "orchestrator.py", "watcher.py", "rss_watcher.py",
         "intake_triage.py", "intake_scoring.py", "main.py",
@@ -156,7 +158,7 @@ def detect_violations(funcs: list[FunctionInfo], limit: int) -> list[FunctionInf
 
 def validate_code_content(
     files: dict[str, str],
-    limit: int = 30,
+    limit: int = DEFAULT_FUNCTION_LINE_LIMIT,
 ) -> list[str]:
     """Validate function sizes from in-memory code strings (no disk I/O).
 
@@ -186,7 +188,7 @@ def validate_code_content(
 
 def validate_function_sizes(
     files: list[Path],
-    limit: int = 30,
+    limit: int = DEFAULT_FUNCTION_LINE_LIMIT,
 ) -> list[str]:
     """Return violation strings for functions exceeding limit lines.
 
@@ -253,7 +255,7 @@ def _fn_colour_code(line_count: int, limit: int) -> str:
     """Return ANSI colour code based on line_count vs limit."""
     if line_count <= limit:
         return "32"   # green
-    if line_count <= 50:
+    if line_count <= int(limit * 1.5):
         return "33"   # orange/yellow
     return "31"       # red
 
@@ -285,7 +287,7 @@ def _print_summary(funcs: list[FunctionInfo], violations: list[FunctionInfo]) ->
 
 def _print_distribution(funcs: list[FunctionInfo]) -> None:
     """Print histogram of function size distribution."""
-    buckets = [10, 20, 30, 50, 100]
+    buckets = [10, 20, 40, DEFAULT_FUNCTION_LINE_LIMIT, 120]
     dist = build_distribution(funcs, buckets)
     total = len(funcs)
     max_count = max((c for _, c in dist), default=1)
@@ -309,7 +311,7 @@ def print_terminal_report(funcs: list[FunctionInfo], limit: int) -> None:
 def _fn_css_class(fn: FunctionInfo, limit: int) -> str:
     if fn.line_count <= limit:
         return "fn-ok"
-    if fn.line_count <= 50:
+    if fn.line_count <= int(limit * 1.5):
         return "fn-warn"
     return "fn-bad"
 

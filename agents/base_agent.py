@@ -574,7 +574,7 @@ class BaseAgent:
         """Validate written files for function size violations.
 
         Call this after writing code files to disk. Returns a list of
-        violation strings (empty if all functions are within the 30-line limit).
+        violation strings (empty if all functions are within the 80-line limit).
         Used by the post-generation validation loop.
         """
         from tools.fn_map import validate_function_sizes
@@ -590,7 +590,7 @@ class BaseAgent:
     def _validate_code_strings(self, files: dict[str, str]) -> list[str]:
         """Validate function sizes in generated code strings (no disk I/O).
 
-        Returns a list of violation strings (empty if all functions are ≤30 lines).
+        Returns a list of violation strings (empty if all functions are ≤80 lines).
         Never raises — validation failures are logged and return an empty list.
         """
         from tools.fn_map import validate_code_content

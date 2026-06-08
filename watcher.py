@@ -813,6 +813,14 @@ def install_llm_pool_from_config(pipeline_cfg: dict) -> None:
     set_pool(LLMPoolManager(pools))
 
 
+def _pipeline_int(pipe_cfg: dict, key: str, default: int) -> int:
+    """Read an integer pipeline setting, treating explicit null as default."""
+    value = pipe_cfg.get(key, default)
+    if value is None:
+        return default
+    return int(value)
+
+
 def _dispatch(
     label: str,
     tracker_repo: str,
@@ -846,6 +854,7 @@ def _dispatch(
     retry_delay = pipe_cfg.get("retry_delay", 15)
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
+    reviewer_max_retries = _pipeline_int(pipe_cfg, "reviewer_max_retries", 2)
 
     # ── Per-run file logging (thread-safe: no sys.stdout redirect) ────────────
     with _file_logging(log_file):
@@ -877,6 +886,7 @@ def _dispatch(
             retry_delay=retry_delay,
             max_api_retries=max_api_retries,
             inter_call_delay=inter_call_delay,
+            reviewer_max_retries=reviewer_max_retries,
             deploy_cfg=deploy_cfg,
             llm_fallbacks=_llm.get("fallbacks") or None,
             mcp_servers=mcp_servers or None,

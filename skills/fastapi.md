@@ -20,7 +20,8 @@ source: local
 - Organise by domain, not by layer: `app/features/users/`, `app/features/orders/`, etc.
 - Use `APIRouter` per feature; mount all routers in `app/main.py`
 - Pydantic v2 for all request/response schemas; keep ORM models separate from schemas
-- SQLAlchemy 2.x async with `asyncpg` for PostgreSQL; Alembic for migrations
+- Prefer SQLAlchemy 2.x async. Use PostgreSQL/`asyncpg` for production services; SQLite is acceptable for tests, smoke deployments, and deliberate MVP/local-only apps
+- Use Alembic for production schema migrations; table auto-create is acceptable only for tests/prototypes
 - Use dependency injection (`Depends`) for DB sessions, auth, and settings
 
 ## For Engineers
@@ -28,7 +29,7 @@ source: local
 - Use `lifespan` context manager (not deprecated `on_startup`/`on_shutdown`)
 - Settings via `pydantic-settings` `BaseSettings` with `.env` support; never `os.getenv` inline
 - Background tasks: use `BackgroundTasks` for fire-and-forget; Celery for reliable queuing
-- Always version API routes: `/api/v1/...`
+- Version public business APIs, e.g. `/api/v1/...`; health checks and internal operational routes may stay unversioned when that matches project convention
 - SQLAlchemy 2.x `DeclarativeBase` must be **subclassed**, never instantiated:
   ```python
   # ✅ correct
@@ -43,7 +44,7 @@ source: local
 - Reject endpoints without `response_model` — breaks OpenAPI schema
 - Flag `os.getenv` / hardcoded config values — must use `settings` object
 - Verify all DB operations use async (`await session.execute(...)`)
-- Check that migration files are committed for every schema change
+- Check that migration files are committed for production schema changes; tests/prototypes using table auto-create must be clearly scoped
 - Flag missing `status_code` on create endpoints (should be `201`)
 - Flag `Base = DeclarativeBase()` — must be `class Base(DeclarativeBase): pass` (instantiation breaks `.metadata`)
 

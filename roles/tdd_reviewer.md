@@ -73,7 +73,7 @@ Check PRD coverage:
 - Every major feature or endpoint mentioned in the PRD should have at least one test.
 - Every test assertion must be meaningful (not `assert True` or `assert response is not None`).
 - Every tested feature should have at least one error or edge-case test.
-- Keep each test function ≤ 30 lines.
+- Keep each test function ≤ 80 lines.
 - Add concise tests for any obvious gaps.
 
 ## Output Format

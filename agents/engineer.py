@@ -4,14 +4,16 @@ Supports N parallel workers for independent modules.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from .base_agent import BaseAgent
+
+if TYPE_CHECKING:
+    from tools.registry import ToolRegistry
 
 _log = logging.getLogger(__name__)
 
@@ -61,7 +63,7 @@ class EngineerAgent(BaseAgent):
         prompt = self._build_module_prompt(module, design, project_name, framework_section, test_section, scaffold_hint)
         response = self._call_llm_with_tools(prompt)
         files = self._parse_files(response)
-        files = self._enforce_30line_rule(prompt, files)
+        files = self._enforce_function_size_rule(prompt, files)
         return {"module_name": module["name"], "files": files, "raw_response": response}
 
     def run_all_modules(
@@ -244,8 +246,8 @@ class EngineerAgent(BaseAgent):
                 return self.call(prompt)
         return self.call(prompt)
 
-    def _enforce_30line_rule(self, original_prompt: str, files: dict[str, str]) -> dict[str, str]:
-        """Validate generated files against the 30-line rule and retry once if violations found.
+    def _enforce_function_size_rule(self, original_prompt: str, files: dict[str, str]) -> dict[str, str]:
+        """Validate generated files against the 80-line rule and retry once if violations found.
 
         Returns the (possibly revised) files dict. Never raises — if validation or
         the retry itself fails, returns the original files and logs a warning.
@@ -253,29 +255,29 @@ class EngineerAgent(BaseAgent):
         violations = self._validate_code_strings(files)
         if not violations:
             return files
-        _log.info("30-line violations found, requesting fix: %s", violations)
+        _log.info("80-line violations found, requesting fix: %s", violations)
         try:
-            revised = self._request_30line_fix(original_prompt, files, violations)
+            revised = self._request_function_size_fix(original_prompt, files, violations)
         except Exception as exc:  # noqa: BLE001
-            _log.warning("30-line retry failed: %s — keeping original output", exc)
+            _log.warning("80-line retry failed: %s — keeping original output", exc)
             return files
         remaining = self._validate_code_strings(revised)
         if remaining:
-            _log.warning("30-line violations persist after retry: %s", remaining)
+            _log.warning("80-line violations persist after retry: %s", remaining)
         return revised
 
-    def _request_30line_fix(
+    def _request_function_size_fix(
         self, original_prompt: str, files: dict[str, str], violations: list[str]
     ) -> dict[str, str]:
-        """Ask the LLM to split functions that exceed 30 lines and return revised files."""
+        """Ask the LLM to split functions that exceed 80 lines and return revised files."""
         violation_list = "\n".join(f"  - {v}" for v in violations)
         fix_prompt = (
             f"{original_prompt}\n\n"
             f"---\n"
-            f"The following functions in your output exceed the 30-line rule:\n"
+            f"The following functions in your output exceed the 80-line rule:\n"
             f"{violation_list}\n\n"
             f"Please rewrite ONLY these functions, splitting each into smaller helpers "
-            f"(≤30 lines each) with clear, descriptive names. "
+            f"(≤80 lines each) with clear, descriptive names. "
             f"Output ALL files again using the '### FILE: path' format, including the revised functions."
         )
         revised_response = self._call_llm_with_tools(fix_prompt)

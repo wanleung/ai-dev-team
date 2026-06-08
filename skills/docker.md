@@ -17,7 +17,7 @@ source: local
 # Docker Skill
 
 ## For Architects
-- Use multi-stage builds: `builder` stage compiles/installs, `runtime` stage is minimal (distroless or alpine)
+- Use multi-stage builds: `builder` stage compiles/installs, `runtime` stage is minimal and compatible with the app runtime (slim Debian, alpine, or distroless as appropriate)
 - One service per container — no supervisord running multiple processes
 - Externalise all config via environment variables; no baked-in environment-specific config
 - Use named volumes for persistent data; never bind-mount host paths in production
@@ -25,7 +25,7 @@ source: local
 
 ## For Engineers
 - Pin base image versions: `python:3.12.3-slim` not `python:latest`
-- Run as non-root user: add `RUN useradd -m appuser && USER appuser`
+- Run as non-root user. Debian/Ubuntu images can use `RUN useradd -m appuser && USER appuser`; Alpine uses `adduser`; distroless images usually copy files with a fixed UID/GID and set `USER` in the runtime stage
 - `.dockerignore` must exclude: `.git`, `node_modules`, `__pycache__`, `*.pyc`, `.env`
 - Layer ordering: copy dependency files and install BEFORE copying source code (cache efficiency)
 - Use `COPY --chown=appuser:appuser` when copying files for non-root containers

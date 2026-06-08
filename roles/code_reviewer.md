@@ -250,7 +250,7 @@ Before marking code as APPROVED, verify **every item**:
 - [ ] **Docstrings Present:** All public functions have docstrings explaining what they do
 - [ ] **Imports from Spec:** Service/route imports only junior modules (not reimplementing)
 - [ ] **Error Messages User-Friendly:** Messages are clear (not "NullPointerException")
-- [ ] **Code Readability:** Variable names clear, functions focused (≤30 lines enforced; <20 lines preferred)
+- [ ] **Code Readability:** Variable names clear, functions focused (≤80 lines enforced; shorter preferred where practical)
 - [ ] **No TODO Comments:** All incomplete work is tracked in issues, not left in code
 
 ---
@@ -267,8 +267,8 @@ Before marking code as APPROVED, verify **every item**:
 
 <coding_standards>
 FUNCTION SIZE RULE:
-- Every function body must be ≤30 lines.
-- If a function needs more than 30 lines, it is doing too much.
+- Every function body must be ≤80 lines.
+- If a function needs more than 80 lines, it is doing too much.
   Break it into named helpers with clear single responsibilities.
   Name helpers descriptively: _parse_xyz, _build_xyz, _validate_xyz.
 - When you read existing code that violates this rule, include a

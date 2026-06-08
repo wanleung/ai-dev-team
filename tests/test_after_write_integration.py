@@ -17,8 +17,8 @@ def _make_agent() -> BaseAgent:
 
 
 def test_after_write_returns_violations_for_big_function(tmp_path):
-    """_after_write returns non-empty list when a written file has a >30-line function."""
-    body = "\n".join(f"    var_{i} = {i}" for i in range(35))
+    """_after_write returns non-empty list when a written file has a >80-line function."""
+    body = "\n".join(f"    var_{i} = {i}" for i in range(85))
     code = f"def process():\n{body}\n    return var_0\n"
     f = tmp_path / "service.py"
     f.write_text(code)
@@ -32,7 +32,7 @@ def test_after_write_returns_violations_for_big_function(tmp_path):
 
 
 def test_after_write_returns_empty_for_compliant_file(tmp_path):
-    """_after_write returns empty list when all functions are ≤30 lines."""
+    """_after_write returns empty list when all functions are within the line limit."""
     code = textwrap.dedent("""\
         def helper_a():
             return 1
@@ -56,11 +56,11 @@ def test_after_write_ignores_non_python_files(tmp_path):
 
 
 @pytest.mark.parametrize("line_count,expect_violation", [
-    (30, False),   # exactly at limit — must pass
-    (31, True),    # one over — must fail
+    (80, False),   # exactly at limit — must pass
+    (81, True),    # one over — must fail
 ])
 def test_after_write_boundary(tmp_path, line_count, expect_violation):
-    """_after_write respects the strict >30 line boundary."""
+    """_after_write respects the strict >80 line boundary."""
     body = "\n".join(f"    x_{i} = {i}" for i in range(line_count - 1))
     code = f"def fn():\n{body}\n"
     (tmp_path / "mod.py").write_text(code)
@@ -72,7 +72,7 @@ def test_after_write_boundary(tmp_path, line_count, expect_violation):
 def test_after_write_multiple_violations(tmp_path):
     """_after_write reports every violating function across all passed files."""
     def _big(name):
-        body = "\n".join(f"    v_{i} = {i}" for i in range(32))
+        body = "\n".join(f"    v_{i} = {i}" for i in range(82))
         return f"def {name}():\n{body}\n"
 
     f1 = tmp_path / "a.py"
@@ -89,7 +89,7 @@ def test_after_write_multiple_violations(tmp_path):
 
 def test_after_write_mixed_file_list(tmp_path):
     """Non-.py files in the list do not suppress violations from .py files."""
-    body = "\n".join(f"    v_{i} = {i}" for i in range(32))
+    body = "\n".join(f"    v_{i} = {i}" for i in range(82))
     py_file = tmp_path / "svc.py"
     py_file.write_text(f"def big():\n{body}\n")
     yaml_file = tmp_path / "config.yaml"

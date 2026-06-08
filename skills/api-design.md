@@ -25,7 +25,7 @@ source: local
 - **Prefer addition over modification**: new optional fields are safe; changing or removing existing fields breaks consumers
 
 ## For Engineers
-- Predictable naming conventions: plural nouns for REST (`GET /api/tasks`), camelCase for query params and response fields, `is/has/can` prefix for booleans, `UPPER_SNAKE` for enum values
+- Predictable naming conventions: plural nouns for REST (`GET /api/tasks`); choose one external field convention (camelCase or snake_case) and document it; use `is/has/can` prefixes for booleans and `UPPER_SNAKE` for enum values
 - Separate Input/Output types: `CreateTaskInput` (what the caller provides) vs `Task` (what the system returns, including server-generated fields like `id`, `createdAt`)
 - Use `PATCH` for partial updates (only provided fields change); use `PUT` only for full replacement
 - Paginate all list endpoints — never return unbounded collections: `{data: [...], pagination: {page, pageSize, totalItems, totalPages}}`

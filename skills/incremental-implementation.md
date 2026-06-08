@@ -17,7 +17,7 @@ source: local
 # Incremental Implementation Skill
 
 ## For Engineers
-- **Implement→Test→Verify→Commit cycle**: never write more than ~100 lines without running tests; each increment leaves the system in a working, testable state
+- **Implement→Test→Verify→Commit cycle**: work in small logical slices and run relevant tests after each slice; large generated scaffolds are acceptable only when immediately verified
 - **Vertical slices preferred**: each slice delivers working end-to-end functionality — DB + API + basic behavior complete and passing; do not build an entire layer before wiring it
 - **Simplicity first**: before writing code, ask "what is the simplest thing that could work?" — implement the naive, obviously-correct version first; optimize only after correctness is proven with tests
 - **Scope discipline**: touch ONLY what the task requires; if you notice something worth improving outside your scope, note it but do not fix it — "noticed but not touching"

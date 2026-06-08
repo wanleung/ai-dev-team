@@ -22,14 +22,19 @@ source: local
 - When official docs conflict with existing project code, surface the conflict explicitly — present both options and let the team decide; don't silently pick one
 - ADRs must cite official documentation for library/framework choices with full URLs, not memory or blog posts
 
+## For Scan Stage
+- Output detected stack, exact dependency versions, and official docs URLs downstream agents should rely on
+- Mark any framework/library guidance `UNVERIFIED` when official docs could not be checked, and explain the risk
+- Keep source URLs in scan output, design notes, ADRs, or PR notes unless a production-code comment is needed for a non-obvious constraint
+
 ## For Engineers
 - **Detect stack and versions first** from dependency files; state versions before implementing: `"React 19.1.0 from package.json → fetching docs"`
 - Fetch the **specific documentation page** for the feature (not the homepage, not a tutorial): `react.dev/reference/react/useActionState` not `react.dev`
 - Source hierarchy (in order of authority): official docs → official blog/changelog → web standards (MDN/web.dev) → runtime compatibility (caniuse, node.green)
 - **Never use as primary sources**: Stack Overflow, blog posts, tutorials, or AI-generated summaries — including your own training data
-- **Cite sources inline** for every framework-specific pattern:
+- **Cite sources in planning artifacts** for framework-specific decisions. In production code, cite only non-obvious compatibility constraints, deprecated API migrations, security-sensitive behavior, or workarounds:
   ```python
-  # FastAPI lifespan pattern (replaces deprecated on_startup/on_shutdown)
+  # Compatibility: lifespan replaces deprecated on_startup/on_shutdown.
   # Source: https://fastapi.tiangolo.com/advanced/events/#lifespan
   ```
 - If you cannot find official documentation for a pattern, flag it explicitly:
@@ -44,6 +49,6 @@ source: local
 - Reject deprecated APIs even if they appear in the existing codebase — modernisation should be noted as a separate task
 
 ## For Code Reviewers
-- Flag framework-specific code without an inline source citation — request the source URL
+- Flag framework-specific decisions with no cited source in scan output, design notes, ADRs, or PR notes. In production code, request source comments only for non-obvious constraints or workarounds
 - Reject usage of deprecated APIs (e.g. Flask `before_first_request`, FastAPI `on_startup`) — always use the current documented approach
 - Check that library usage matches current documented API signatures, not signatures from older versions

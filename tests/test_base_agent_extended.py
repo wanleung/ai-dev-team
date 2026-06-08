@@ -258,7 +258,7 @@ def test_after_write_no_violations(tmp_path):
 
 def test_after_write_returns_violations(tmp_path):
     """_after_write returns violation strings for oversized functions."""
-    body = "\n".join(f"    x{i} = {i}" for i in range(35))
+    body = "\n".join(f"    x{i} = {i}" for i in range(85))
     f = tmp_path / "big.py"
     f.write_text(f"def huge():\n{body}\n    return x0\n")
     llm = MagicMock()

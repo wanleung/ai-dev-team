@@ -268,8 +268,8 @@ Maximum 3 questions per call. Maximum 3 Q&A rounds per pipeline run; after that,
 
 <coding_standards>
 FUNCTION SIZE RULE:
-- Every function body must be ≤30 lines.
-- If a function needs more than 30 lines, it is doing too much.
+- Every function body must be ≤80 lines.
+- If a function needs more than 80 lines, it is doing too much.
   Break it into named helpers with clear single responsibilities.
   Name helpers descriptively: _parse_xyz, _build_xyz, _validate_xyz.
 - When you read existing code that violates this rule, include a

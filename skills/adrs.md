@@ -18,7 +18,7 @@ source: local
 
 ## For Architects
 - **Write an ADR when**: choosing a framework or major library, designing a data model or schema, selecting an auth strategy, deciding on API architecture, any decision that would be expensive to reverse
-- **ADR template** — store in `docs/decisions/ADR-NNN-title.md` with sequential numbering:
+- **ADR template** — store in the repo's established decision-doc location. Default to `docs/decisions/ADR-NNN-title.md` with sequential numbering when no convention exists:
   ```markdown
   # ADR-001: [Decision title]
 

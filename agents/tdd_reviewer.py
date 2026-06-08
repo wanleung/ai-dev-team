@@ -123,7 +123,7 @@ class TDDReviewerAgent(BaseAgent):
             f"- Every test should have a meaningful assertion (not just `assert True` "
             f"or `assert response is not None`).\n"
             f"- Every tested feature should have at least one error/edge-case test.\n"
-            f"- Add concise tests for any obvious gaps (keep each function ≤30 lines).\n\n"
+            f"- Add concise tests for any obvious gaps (keep each function ≤80 lines).\n\n"
             f"## Output Format\n\n"
             f"Output ALL test files (modified or unchanged) using the ### FILE: format:\n\n"
             f"### FILE: tests/conftest.py\n"

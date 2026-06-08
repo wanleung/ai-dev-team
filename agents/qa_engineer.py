@@ -4,9 +4,12 @@ QAEngineerAgent: writes tests for generated code and produces a validation repor
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from .base_agent import BaseAgent
+
+if TYPE_CHECKING:
+    from tools.registry import ToolRegistry
 
 _log = logging.getLogger(__name__)
 
@@ -47,7 +50,7 @@ class QAEngineerAgent(BaseAgent):
         response = self._call_llm_with_tools(prompt, write_only)
         test_files = self._parse_test_files(response)
         test_files = self._fix_syntax_errors(prompt, test_files)
-        test_files = self._enforce_30line_rule(prompt, test_files)
+        test_files = self._enforce_function_size_rule(prompt, test_files)
         extracted_plan = self._extract_test_plan(response)
         return {
             "test_files": test_files,
@@ -234,26 +237,26 @@ class QAEngineerAgent(BaseAgent):
                 return self.call(prompt)
         return self.call(prompt)
 
-    def _enforce_30line_rule(self, original_prompt: str, files: dict[str, str]) -> dict[str, str]:
-        """Validate test files against the 30-line rule and retry once if violations found.
+    def _enforce_function_size_rule(self, original_prompt: str, files: dict[str, str]) -> dict[str, str]:
+        """Validate test files against the 80-line rule and retry once if violations found.
 
         Returns the (possibly revised) files dict. Never raises.
         """
         violations = self._validate_code_strings(files)
         if not violations:
             return files
-        _log.info("30-line violations in test files, requesting fix: %s", violations)
+        _log.info("80-line violations in test files, requesting fix: %s", violations)
         try:
-            revised = self._request_30line_fix(original_prompt, files, violations)
+            revised = self._request_function_size_fix(original_prompt, files, violations)
         except Exception as exc:  # noqa: BLE001
-            _log.warning("30-line retry failed: %s — keeping original test output", exc)
+            _log.warning("80-line retry failed: %s — keeping original test output", exc)
             return files
         remaining = self._validate_code_strings(revised)
         if remaining:
-            _log.warning("30-line violations persist in test files after retry: %s", remaining)
+            _log.warning("80-line violations persist in test files after retry: %s", remaining)
         return revised
 
-    def _request_30line_fix(
+    def _request_function_size_fix(
         self, original_prompt: str, files: dict[str, str], violations: list[str]
     ) -> dict[str, str]:
         """Ask the LLM to split oversized test helper functions and return revised files."""
@@ -261,10 +264,10 @@ class QAEngineerAgent(BaseAgent):
         fix_prompt = (
             f"{original_prompt}\n\n"
             f"---\n"
-            f"The following test helper functions exceed the 30-line rule:\n"
+            f"The following test helper functions exceed the 80-line rule:\n"
             f"{violation_list}\n\n"
             f"Please rewrite ONLY these functions, extracting shared setup into pytest fixtures "
-            f"or small helpers (≤30 lines each). "
+            f"or small helpers (≤80 lines each). "
             f"Output ALL test files again using the '### FILE: tests/...' format."
         )
         revised_response = self.call(fix_prompt)
