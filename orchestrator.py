@@ -74,6 +74,7 @@ except ImportError:
     LearningAgent = None  # type: ignore
 
 log = logging.getLogger(__name__)
+_log = log
 
 console = Console()
 

@@ -319,6 +319,26 @@ def test_stage_qa_write_stores_test_files(monkeypatch, tmp_path):
     )
 
 
+def test_stage_qa_write_indexes_tests_without_logger_name_error(tmp_path):
+    """_stage_qa_write() indexes generated tests when RAG indexing is enabled."""
+    orch = _make_minimal_orch()
+    orch.workspace_dir = tmp_path
+    orch.repo_auto_indexer = MagicMock()
+
+    fake_qa = MagicMock()
+    fake_qa.run.return_value = {
+        "test_files": {"tests/test_app.py": "def test_hello(): pass"},
+        "test_plan": "Plan here",
+    }
+    orch.qa = fake_qa
+    orch._save_files_locally = MagicMock()
+
+    result = PipelineResult(project_name="Test Project", prd="PRD text", qa_plan="Plan here")
+    orch._stage_qa_write(result)
+
+    orch.repo_auto_indexer.index_local_dir.assert_called_once()
+
+
 def test_stage_junior_engineer_omits_test_files_in_standard_mode(monkeypatch):
     """_stage_junior_engineer() passes test_files=None when mode is not tdd."""
     orch = _make_minimal_orch()
