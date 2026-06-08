@@ -8,7 +8,7 @@ import subprocess
 import time
 from typing import TYPE_CHECKING
 
-from agents.backends.base import LLMBackend, _DEFAULT_MAX_RETRIES
+from agents.backends.base import LLMBackend
 
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
@@ -25,7 +25,7 @@ _ANSI_ESCAPE = re.compile(
 class CodexBackend(LLMBackend):
     """OpenAI Codex CLI backend — runs codex subprocess for each call.
 
-    Runs `codex exec --approval-mode full-auto --model <model> <prompt>`.
+    Runs `codex exec --model <model> --sandbox read-only --ask-for-approval never -`.
     Auth: ChatGPT plan OAuth (user must already be signed in via `codex` CLI).
     Model prefix 'codex/' is stripped; remainder passed as --model value.
     Does NOT support tool calling.
@@ -40,10 +40,18 @@ class CodexBackend(LLMBackend):
         model: str,
         timeout: int = 600,
         max_retries: int = 2,
+        sandbox: str = "read-only",
+        approval_policy: str = "never",
+        cwd: str | None = None,
+        ephemeral: bool = True,
     ) -> None:
         self.model = model.removeprefix("codex/")
         self._timeout = timeout
         self._max_retries = max_retries
+        self._sandbox = sandbox
+        self._approval_policy = approval_policy
+        self._cwd = cwd
+        self._ephemeral = ephemeral
 
     def supports_tools(self) -> bool:
         """Return False — Codex CLI does not support function calling."""
@@ -72,6 +80,10 @@ class CodexBackend(LLMBackend):
             FileNotFoundError: If the codex binary is not found.
         """
         bin_path = os.environ.get("CODEX_BIN", "codex")
+        sandbox = os.environ.get("CODEX_SANDBOX", self._sandbox)
+        approval_policy = os.environ.get("CODEX_APPROVAL_POLICY", self._approval_policy)
+        cwd = os.environ.get("CODEX_WORKDIR", self._cwd or "")
+        ephemeral = _env_bool("CODEX_EPHEMERAL", self._ephemeral)
 
         # Reconstruct system + history + final user message into a single prompt
         parts: list[str] = []
@@ -100,18 +112,25 @@ class CodexBackend(LLMBackend):
             try:
                 cmd = [
                     bin_path, "exec",
-                    "--approval-mode", "full-auto",
                     "--model", self.model,
-                    full_prompt,
+                    "--sandbox", sandbox,
+                    "--ask-for-approval", approval_policy,
+                    "--color", "never",
                 ]
+                if cwd:
+                    cmd.extend(["--cd", cwd])
+                if ephemeral:
+                    cmd.append("--ephemeral")
+                cmd.append("-")
                 proc = subprocess.Popen(
                     cmd,
+                    stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
                     start_new_session=True,
                 )
-                stdout, stderr = proc.communicate(timeout=self._timeout)
+                stdout, stderr = proc.communicate(input=full_prompt, timeout=self._timeout)
 
                 if proc.returncode != 0:
                     raise RuntimeError(
@@ -159,3 +178,11 @@ class CodexBackend(LLMBackend):
             "call_with_tools is not supported for the 'codex' backend. "
             "Use 'openai/', 'github_models', or 'copilot/' for tool calling."
         )
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Read a boolean environment variable with common shell spellings."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}

@@ -44,8 +44,8 @@ def test_call_success():
     assert result == "The answer is 42."
 
 
-def test_call_uses_correct_command():
-    """CodexBackend.call() invokes: codex exec --approval-mode full-auto --model <model> <prompt>"""
+def test_call_uses_current_exec_flags_and_stdin():
+    """CodexBackend.call() invokes current codex exec flags and sends prompt via stdin."""
     from agents.backends.codex import CodexBackend
     backend = CodexBackend(model="codex/codex-mini-latest")
     proc = _make_popen_mock(stdout="ok")
@@ -55,11 +55,31 @@ def test_call_uses_correct_command():
 
     cmd = mock_popen.call_args[0][0]
     assert cmd[0] == "codex"
-    assert "exec" in cmd
-    assert "--approval-mode" in cmd
-    assert "full-auto" in cmd
+    assert cmd[1] == "exec"
+    assert "--approval-mode" not in cmd
     assert "--model" in cmd
     assert "codex-mini-latest" in cmd
+    assert "--sandbox" in cmd
+    assert "read-only" in cmd
+    assert "--ask-for-approval" in cmd
+    assert "never" in cmd
+    assert "-" == cmd[-1]
+    assert mock_popen.call_args.kwargs["stdin"] == subprocess.PIPE
+    assert proc.communicate.call_args.kwargs["input"] == "Hello"
+
+
+def test_call_uses_gpt41_model_name():
+    """CodexBackend passes codex/gpt-4.1 through as --model gpt-4.1."""
+    from agents.backends.codex import CodexBackend
+    backend = CodexBackend(model="codex/gpt-4.1")
+    proc = _make_popen_mock(stdout="ok")
+
+    with patch("agents.backends.codex.subprocess.Popen", return_value=proc) as mock_popen:
+        backend.call([{"role": "user", "content": "Hello"}])
+
+    cmd = mock_popen.call_args[0][0]
+    model_index = cmd.index("--model") + 1
+    assert cmd[model_index] == "gpt-4.1"
 
 
 def test_codex_bin_override():
@@ -74,6 +94,29 @@ def test_codex_bin_override():
 
     cmd = mock_popen.call_args[0][0]
     assert cmd[0] == "/opt/codex/bin/codex"
+
+
+def test_codex_env_overrides_execution_policy():
+    """Environment variables override sandbox, approval policy, cwd, and ephemeral mode."""
+    from agents.backends.codex import CodexBackend
+    backend = CodexBackend(model="codex/codex-mini-latest")
+    proc = _make_popen_mock(stdout="ok")
+
+    env = {
+        "CODEX_SANDBOX": "workspace-write",
+        "CODEX_APPROVAL_POLICY": "on-request",
+        "CODEX_WORKDIR": "/tmp/project",
+        "CODEX_EPHEMERAL": "0",
+    }
+    with patch.dict(os.environ, env):
+        with patch("agents.backends.codex.subprocess.Popen", return_value=proc) as mock_popen:
+            backend.call([{"role": "user", "content": "Hello"}])
+
+    cmd = mock_popen.call_args[0][0]
+    assert cmd[cmd.index("--sandbox") + 1] == "workspace-write"
+    assert cmd[cmd.index("--ask-for-approval") + 1] == "on-request"
+    assert cmd[cmd.index("--cd") + 1] == "/tmp/project"
+    assert "--ephemeral" not in cmd
 
 
 def test_call_timeout_retries():
@@ -115,3 +158,14 @@ def test_factory_routes_codex_prefix():
     from agents.backends.codex import CodexBackend
     backend = create_backend({"model": "codex/codex-mini-latest"})
     assert isinstance(backend, CodexBackend)
+
+
+def test_base_agent_routes_codex_prefix():
+    """BaseAgent constructs CodexBackend for codex/... models."""
+    from agents.base_agent import BaseAgent
+    from agents.backends.codex import CodexBackend
+
+    agent = BaseAgent(model="codex/codex-mini-latest")
+
+    assert isinstance(agent._llm, CodexBackend)
+    assert agent._backend == "codex"

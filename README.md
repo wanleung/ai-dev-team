@@ -400,13 +400,13 @@ Direct access to the OpenAI API (`api.openai.com`) — for ChatGPT Plus/Team/Ent
 
 #### Using OpenAI Codex CLI
 
-Run the [OpenAI Codex CLI agent](https://github.com/openai/codex) (`codex exec`) as a subprocess — requires a ChatGPT Plus/Pro account:
+Run the [OpenAI Codex CLI agent](https://github.com/openai/codex) (`codex exec`) as a subprocess. Sign in with ChatGPT to use Codex through your ChatGPT plan limits, or authenticate with an API key for API billing:
 
 1. Install and sign in:
    ```bash
    curl -fsSL https://chatgpt.com/codex/install.sh | sh
    # or: npm install -g @openai/codex
-   codex   # sign in with your ChatGPT account on first run
+   codex --login   # choose "Sign in with ChatGPT"
    ```
 
 2. Use the `codex/<model>` prefix:
@@ -417,7 +417,16 @@ Run the [OpenAI Codex CLI agent](https://github.com/openai/codex) (`codex exec`)
        engineer: "codex/o4-mini"
    ```
 
-   Override the binary path with `CODEX_BIN` if needed.
+   The backend invokes `codex exec --model <model> --sandbox read-only --ask-for-approval never -`
+   and sends the prompt over stdin. Override execution settings with:
+
+   ```bash
+   export CODEX_BIN=/path/to/codex              # optional
+   export CODEX_SANDBOX=workspace-write         # default: read-only
+   export CODEX_APPROVAL_POLICY=on-request      # default: never
+   export CODEX_WORKDIR=/path/to/repo           # optional --cd
+   export CODEX_EPHEMERAL=0                     # default: 1
+   ```
 
 > ⚠️ Codex CLI does **not** support tool-calling. The Code Reviewer agent will fail if assigned a `codex/` model.
 
@@ -844,7 +853,8 @@ llm:
   #     e.g. codex/codex-mini-latest, codex/o4-mini
   #   Install: curl -fsSL https://chatgpt.com/codex/install.sh | sh
   #   ⚠️  Does NOT support tool-calling (Code Reviewer will fail).
-  #   Override binary path: CODEX_BIN env var.
+  #   Env overrides: CODEX_BIN, CODEX_SANDBOX, CODEX_APPROVAL_POLICY,
+  #                  CODEX_WORKDIR, CODEX_EPHEMERAL.
   model: "gpt-4.1"
 
   # Per-agent model overrides

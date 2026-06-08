@@ -17,7 +17,6 @@ Pass ``llm=<LLMBackend instance>`` to bypass auto-detection and inject any backe
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Sequence
 
@@ -85,6 +84,11 @@ def _is_dashscope_model(model: str) -> bool:
 def _is_mimo_model(model: str) -> bool:
     """Return True if the model should use the Xiaomi MiMo API."""
     return model.startswith("mimo/")
+
+
+def _is_codex_model(model: str) -> bool:
+    """Return True if the model should use the Codex CLI subprocess."""
+    return model.startswith("codex/")
 
 
 # ── Module-level helpers for truncate_files ────────────────────────────────
@@ -267,17 +271,29 @@ class BaseAgent:
         from agents.backends.opencode_go import OpenCodeGoBackend
         from agents.backends.nvidia_nim import NvidiaNimBackend
         from agents.backends.mimo import MiMoBackend
+        from agents.backends.codex import CodexBackend
 
         b = self._llm
-        if isinstance(b, OllamaBackend):      return "ollama"
-        if isinstance(b, CopilotBackend):     return "copilot"
-        if isinstance(b, AnthropicBackend):   return "anthropic"
-        if isinstance(b, OpenCodeBackend):    return "opencode"
-        if isinstance(b, OpenCodeZenBackend): return "opencode_zen"
-        if isinstance(b, OpenCodeGoBackend):  return "opencode_go"
-        if isinstance(b, NvidiaNimBackend):   return "nvidia_nim"
-        if isinstance(b, MiMoBackend):        return "mimo"
-        if isinstance(b, GitHubModelsBackend):return "github_models"
+        if isinstance(b, OllamaBackend):
+            return "ollama"
+        if isinstance(b, CopilotBackend):
+            return "copilot"
+        if isinstance(b, AnthropicBackend):
+            return "anthropic"
+        if isinstance(b, OpenCodeBackend):
+            return "opencode"
+        if isinstance(b, OpenCodeZenBackend):
+            return "opencode_zen"
+        if isinstance(b, OpenCodeGoBackend):
+            return "opencode_go"
+        if isinstance(b, NvidiaNimBackend):
+            return "nvidia_nim"
+        if isinstance(b, MiMoBackend):
+            return "mimo"
+        if isinstance(b, CodexBackend):
+            return "codex"
+        if isinstance(b, GitHubModelsBackend):
+            return "github_models"
         return "custom"
 
     def _build_backend(
@@ -338,7 +354,8 @@ class BaseAgent:
         use_copilot = (backend == "copilot") or (backend is None and _is_copilot_model(model))
         use_dashscope = (backend == "dashscope") or (backend is None and _is_dashscope_model(model))
         use_mimo = (backend == "mimo") or (backend is None and _is_mimo_model(model))
-        no_special = not any([use_opencode_zen, use_opencode_go, use_nvidia_nim, use_copilot, use_dashscope, use_mimo])
+        use_codex = (backend == "codex") or (backend is None and _is_codex_model(model))
+        no_special = not any([use_opencode_zen, use_opencode_go, use_nvidia_nim, use_copilot, use_dashscope, use_mimo, use_codex])
         use_anthropic = (backend == "anthropic") or (backend is None and no_special and _is_anthropic_model(model))
         return {
             "use_copilot": use_copilot,
@@ -350,6 +367,7 @@ class BaseAgent:
             "use_ollama": (backend == "ollama") or (backend is None and _is_ollama_model(model)),
             "use_dashscope": use_dashscope,
             "use_mimo": use_mimo,
+            "use_codex": use_codex,
         }
 
     def _instantiate_backend(
@@ -386,6 +404,9 @@ class BaseAgent:
         if flags["use_opencode"]:
             from agents.backends.opencode import OpenCodeBackend
             return OpenCodeBackend(model=model)
+        if flags["use_codex"]:
+            from agents.backends.codex import CodexBackend
+            return CodexBackend(model=model, max_retries=common["max_retries"])
         return None
 
     def _try_cloud_backends(self, flags: dict[str, bool], model: str, common: dict, kw: dict) -> Optional[_LLMBackend]:
