@@ -3466,7 +3466,7 @@ class Orchestrator(TestFixLoopMixin):
             total_files = sum(len(v) for v in merge_branch_files.values())
             merge_branch_note = f"\n**Incorporated branches:** {names} ({total_files} file(s))\n"
         summary = (
-            f"## ✅ Revision {new_revision} Complete\n\n"
+            f"## ✅ Revision {new_revision} Pushed\n\n"
             f"The AI agents have addressed **{len(feedback)} feedback item(s)**:\n\n"
             + "\n".join(
                 f"- {item['body'][:120]}{'…' if len(item['body']) > 120 else ''}"
@@ -3474,7 +3474,9 @@ class Orchestrator(TestFixLoopMixin):
             )
             + f"\n\n**Files updated:** {', '.join(f'`{p}`' for p in revised_files)}\n"
             f"**Code review verdict:** {rev_result.get('verdict', 'N/A')}\n"
-            f"**Test files updated:** {len(test_files)}"
+            f"**Test files updated:** {len(test_files)}\n"
+            f"**Test verification:** not run by PR revision watcher; CI or the test-fix "
+            f"pipeline must pass before merge."
             + merge_branch_note
         )
         self.target_github.add_pr_comment(pr_number, summary)
@@ -5194,6 +5196,41 @@ class Orchestrator(TestFixLoopMixin):
         if not tests_dir.exists():
             console.print("    ⚠️  No tests/ directory found — skipping execution.")
             result.test_results = "No tests directory found."
+            return
+
+        console.print(f"    🔎 Collecting pytest tests in {tests_dir}…")
+        collect_args = [
+            sys.executable, "-m", "pytest", str(tests_dir), "--collect-only", "-q",
+            f"--rootdir={project_dir}", "-p", "no:cacheprovider",
+        ]
+        try:
+            collect_proc = subprocess.run(
+                collect_args,
+                capture_output=True,
+                text=True,
+                cwd=str(project_dir),
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            console.print("    ⚠️  Pytest collection timed out after 2 minutes.")
+            result.test_results = "Pytest collection timed out after 2 minutes."
+            result.tests_passed = False
+            return
+
+        if collect_proc.returncode != 0:
+            output = collect_proc.stdout + collect_proc.stderr
+            console.print("    ❌ Pytest collection failed")
+            result.test_results = output
+            result.tests_passed = False
+            if self.target_github and result.pr_number:
+                lines = output.strip().splitlines()
+                truncated = "\n".join(lines[-80:]) if len(lines) > 80 else output
+                self.target_github.add_pr_comment(
+                    result.pr_number,
+                    f"## 🏃 Test Collection Results\n\n"
+                    f"**Status:** ❌ Pytest collection failed\n\n"
+                    f"```\n{truncated}\n```",
+                )
             return
 
         console.print(f"    🏃 Running pytest in {tests_dir}…")

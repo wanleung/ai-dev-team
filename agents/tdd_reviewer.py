@@ -78,6 +78,20 @@ class TDDReviewerAgent(BaseAgent):
                 _log.warning("TDDReviewer syntax-fix retry failed: %s — returning original files", exc)
                 return test_files, ""
 
+        rule_errors = self._collect_generation_rule_errors(revised)
+        if rule_errors:
+            _log.info("TDDReviewer: generated test rule errors after review, retrying: %s", rule_errors)
+            try:
+                retry_result, retry_summary = self._retry_generation_rule_fix(prompt, revised, rule_errors)
+                if retry_result is not None:
+                    revised, summary = retry_result, retry_summary
+                else:
+                    _log.warning("TDDReviewer rule-fix retry returned no files — returning original files")
+                    return test_files, ""
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("TDDReviewer rule-fix retry failed: %s — returning original files", exc)
+                return test_files, ""
+
         return revised, summary
 
     # ── Prompt builder ──────────────────────────────────────────────────────
@@ -109,10 +123,12 @@ class TDDReviewerAgent(BaseAgent):
             f"Perform TWO passes:\n\n"
             f"### Pass 1 — Correctness\n"
             f"Fix any issues that would prevent pytest from collecting or running tests:\n"
-            f"- `from conftest import X` patterns: if X is a plain class or helper "
-            f"(not decorated with @pytest.fixture), it must live in the ROOT conftest.py "
-            f"so `from conftest import X` resolves correctly when pytest runs from the "
-            f"project root. Move such helpers to the root conftest.py (project root level).\n"
+            f"- Do NOT import from conftest.py. Both `from conftest import X` and "
+            f"`from tests.conftest import X` are forbidden. Move plain shared helpers/classes "
+            f"to `tests/helpers.py`; request fixtures as pytest parameters.\n"
+            f"- Do NOT call pytest fixtures directly. A fixture named `make_user` must be "
+            f"requested as a test parameter; if a callable factory is needed, the fixture "
+            f"should return a nested factory function.\n"
             f"- Import paths that assume an app structure not guaranteed by the PRD "
             f"(e.g. `from app.main import app` when the PRD does not specify that path).\n"
             f"- Any syntax errors.\n\n"
@@ -206,6 +222,12 @@ class TDDReviewerAgent(BaseAgent):
                 errors.append(f"{filename}: {exc.msg} (line {exc.lineno})")
         return errors
 
+    @staticmethod
+    def _collect_generation_rule_errors(files: dict[str, str]) -> list[str]:
+        """Return deterministic generated-test rule violations."""
+        from tools.test_validation import validate_generated_tests
+        return validate_generated_tests(files)
+
     def _retry_syntax_fix(
         self,
         original_prompt: str,
@@ -229,6 +251,30 @@ class TDDReviewerAgent(BaseAgent):
             f"{original_prompt}\n\n---\n"
             f"The previous output had Python syntax errors:\n{error_list}\n\n"
             f"Fix the syntax errors and output ALL files again in ### FILE: format."
+        )
+        response = self.call(retry_prompt)
+        revised, summary = TDDReviewerAgent._parse_review_response(response)
+        return revised if revised else None, summary
+
+    def _retry_generation_rule_fix(
+        self,
+        original_prompt: str,
+        files: dict[str, str],
+        errors: list[str],
+    ) -> tuple[dict[str, str] | None, str]:
+        """Ask LLM to fix deterministic pytest rule errors; return revised files."""
+        error_list = "\n".join(f"  - {e}" for e in errors)
+        files_section = "\n\n".join(
+            f"### FILE: {path}\n```python\n{content}\n```"
+            for path, content in files.items()
+        )
+        retry_prompt = (
+            f"{original_prompt}\n\n---\n"
+            f"The previous output violated mandatory pytest generation rules:\n{error_list}\n\n"
+            f"Here is the previous output that must be repaired:\n\n{files_section}\n\n"
+            f"Fix these issues and output ALL files again in ### FILE: format. "
+            f"Do not import from conftest.py. Move helpers to tests/helpers.py, and "
+            f"request fixtures as pytest parameters instead of importing or calling them directly."
         )
         response = self.call(retry_prompt)
         revised, summary = TDDReviewerAgent._parse_review_response(response)

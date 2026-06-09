@@ -358,6 +358,7 @@ class EngineerAgent(BaseAgent):
             f"## File: {path}\n\n````\n{content}\n````"
             for path, content in all_files.items()
         )
+        test_file_instruction = self._build_test_file_fix_instruction(failure_output)
         return (
             f"{framework_section}"
             f"You are fixing test failures in the project '{project_name}'.\n\n"
@@ -365,7 +366,32 @@ class EngineerAgent(BaseAgent):
             f"## Current Project Files\n\n{files_section}\n\n"
             f"## System Design\n\n{design}\n\n"
             f"Read the test failure output carefully. Identify the root cause.\n"
-            f"Fix ONLY the broken source files. Do NOT modify test files.\n"
+            f"{test_file_instruction}\n"
             f"Return ONLY the files that need to change, using the '### FILE: path/to/file.py' format.\n"
             f"Do not return files that do not need to change."
         )
+
+    @staticmethod
+    def _build_test_file_fix_instruction(failure_output: str) -> str:
+        if _failure_is_invalid_generated_test(failure_output):
+            return (
+                "The failure is caused by invalid generated pytest files, not only app code. "
+                "You MAY modify generated test files and test helpers to make pytest collect and run. "
+                "Do not import from conftest.py; move helper classes/functions to tests/helpers.py. "
+                "Request pytest fixtures as test function parameters and do not call fixture functions directly."
+            )
+        return "Fix ONLY the broken source files. Do NOT modify test files."
+
+
+def _failure_is_invalid_generated_test(failure_output: str) -> bool:
+    markers = (
+        "ERROR collecting tests/",
+        "ImportError while loading conftest",
+        "ImportError while importing test module",
+        "from tests.conftest import",
+        "from conftest import",
+        "Fixture \"",
+        "Fixtures are not meant to be called directly",
+        "SyntaxError: invalid syntax",
+    )
+    return any(marker in failure_output for marker in markers)

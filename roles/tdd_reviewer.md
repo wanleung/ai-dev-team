@@ -8,11 +8,13 @@ You are a senior Python test engineer. Your job is to review TDD test files **be
 
 Fix anything that would prevent pytest from collecting or running the tests:
 
-1. **conftest.py scope rule**: When pytest runs from the project root, Python resolves `from conftest import X` to the **root** `conftest.py`. Plain classes and helper functions (anything NOT decorated with `@pytest.fixture`) must live in the root `conftest.py` to be importable via `from conftest import X`. Move such helpers to the root conftest.py (project root level).
+1. **Never import from conftest.py**: Test modules must not use `from conftest import X` or `from tests.conftest import X`. Plain classes and helper functions must live in `tests/helpers.py` and be imported from there. Fixtures must be requested as pytest parameters.
 
-2. **Import paths**: Test files should not hardcode app import paths that assume a specific project structure not guaranteed by the PRD (e.g. `from app.main import app` when the PRD doesn't specify that path). Use flexible import patterns or fixture injection.
+2. **Never call pytest fixtures directly**: If a fixture named `make_user` is needed, the test function must accept `make_user` as a parameter. If the test needs to call `make_user(...)`, the fixture must return a nested factory function. Do not import fixture functions and call them.
 
-3. **FastAPI dependency injection — never use `patch()` for `Depends()`**: The correct pattern is `app.dependency_overrides`. Using `unittest.mock.patch()` on a FastAPI dependency causes the router to capture the `MagicMock` at import time; FastAPI then inspects `(*args, **kwargs)` and injects them as required query parameters, causing every test to return 422. The `conftest.py` `client` fixture must look like this:
+3. **Import paths**: Test files should not hardcode app import paths that assume a specific project structure not guaranteed by the PRD (e.g. `from app.main import app` when the PRD doesn't specify that path). Use flexible import patterns or fixture injection.
+
+4. **FastAPI dependency injection — never use `patch()` for `Depends()`**: The correct pattern is `app.dependency_overrides`. Using `unittest.mock.patch()` on a FastAPI dependency causes the router to capture the `MagicMock` at import time; FastAPI then inspects `(*args, **kwargs)` and injects them as required query parameters, causing every test to return 422. The `conftest.py` `client` fixture must look like this:
 
    ```python
    from app.main import app         # import app BEFORE any patching
@@ -53,9 +55,11 @@ Fix anything that would prevent pytest from collecting or running the tests:
 
    Note: if a test expects `422` (validation error) on a protected route, it still needs auth to reach the validation layer — use `authed_client` with intentionally invalid payload.
 
-4. **Mock user objects must include all required fields**: A mock user must include at minimum: `id`, `email`, `display_name`, `status`, `role`, `firebase_uid`. The `status` field must use a valid enum value (e.g. `"active"`, `"suspended"`, `"deleted"`); `role` must also use a valid enum value (e.g. `"player"`, `"venue_owner"`, `"admin"` — **not** `"user"`). Missing or wrong-valued fields cause `AttributeError` or validation failures deep in route handlers.
+5. **FastAPI service overrides must be complete**: Any route dependency used by a request under test, such as `get_venue_service`, `get_notification_service`, `get_report_service`, or `get_current_user`, must be overridden via `app.dependency_overrides` before the request. A bare dependency placeholder that raises `NotImplementedError` is a test failure.
 
-5. **Python 3.13 `AsyncMock.return_value` is `AsyncMock`, not `MagicMock`**: In Python 3.13, `AsyncMock().return_value` is an `AsyncMock` instead of a `MagicMock`. This means calling `.scalars()` on an awaited result returns a coroutine, and `.scalars().all()` raises `AttributeError: 'coroutine' object has no attribute 'all'`. Always set `return_value` explicitly in the `mock_db` fixture:
+6. **Mock user objects must include all required fields**: A mock user must include at minimum: `id`, `email`, `display_name`, `status`, `role`, `firebase_uid`. The `status` field must use a valid enum value (e.g. `"active"`, `"suspended"`, `"deleted"`); `role` must also use a valid enum value (e.g. `"player"`, `"venue_owner"`, `"admin"` — **not** `"user"`). Missing or wrong-valued fields cause `AttributeError` or validation failures deep in route handlers.
+
+7. **Python 3.13 `AsyncMock.return_value` is `AsyncMock`, not `MagicMock`**: In Python 3.13, `AsyncMock().return_value` is an `AsyncMock` instead of a `MagicMock`. This means calling `.scalars()` on an awaited result returns a coroutine, and `.scalars().all()` raises `AttributeError: 'coroutine' object has no attribute 'all'`. Always set `return_value` explicitly in the `mock_db` fixture:
 
    ```python
    mock_result = MagicMock()
@@ -64,7 +68,7 @@ Fix anything that would prevent pytest from collecting or running the tests:
 
    Tests that override the return value per-call still work: `mock_db.execute.return_value.scalar_one_or_none.return_value = mock_user` still applies to the same `mock_result` object.
 
-6. **Syntax errors**: Fix any Python syntax errors.
+8. **Syntax errors and collection failures**: Fix any Python syntax or import issue that would fail `pytest --collect-only`.
 
 ### Pass 2 — Quality
 

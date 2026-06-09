@@ -1,6 +1,6 @@
 """Tests for EngineerAgent.fix_failures()."""
-from unittest.mock import MagicMock, patch
-import pytest
+from unittest.mock import MagicMock
+
 from agents.engineer import EngineerAgent
 
 
@@ -77,3 +77,22 @@ def test_fix_failures_prepends_framework_context():
     prompt = captured_prompt[0]
     assert prompt.startswith("## Framework Documentation")
     assert "Next.js Docs" in prompt
+
+
+def test_fix_failures_allows_test_file_changes_for_invalid_generated_tests():
+    agent = _make_agent()
+    captured_prompt = []
+    agent.call = MagicMock(side_effect=lambda p: captured_prompt.append(p) or "")
+
+    agent.fix_failures(
+        failure_output=(
+            "ERROR collecting tests/test_user_profile.py\n"
+            "Fixture \"make_user\" called directly. Fixtures are not meant to be called directly."
+        ),
+        all_files={"tests/test_user_profile.py": "def test_x(make_user): make_user(id=1)"},
+        design="design",
+    )
+
+    prompt = captured_prompt[0]
+    assert "You MAY modify generated test files" in prompt
+    assert "Do NOT modify test files" not in prompt

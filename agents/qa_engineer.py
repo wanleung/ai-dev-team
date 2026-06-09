@@ -50,6 +50,7 @@ class QAEngineerAgent(BaseAgent):
         response = self._call_llm_with_tools(prompt, write_only)
         test_files = self._parse_test_files(response)
         test_files = self._fix_syntax_errors(prompt, test_files)
+        test_files = self._fix_generation_rule_errors(prompt, test_files)
         test_files = self._enforce_function_size_rule(prompt, test_files)
         extracted_plan = self._extract_test_plan(response)
         return {
@@ -158,6 +159,8 @@ class QAEngineerAgent(BaseAgent):
                 f"Write pytest tests that define the expected behavior of each module. "
                 f"These tests will be given to engineers as a specification — they must write code to make them pass.\n"
                 f"Focus on interface contracts, inputs/outputs, and acceptance criteria. "
+                f"Do not import from conftest.py. Shared plain helpers/classes must live in tests/helpers.py; "
+                f"fixtures must be requested as pytest parameters, never imported or called directly. "
                 f"Use '### FILE: tests/test_xxx.py' format for each test file."
             )
         files_for_qa = self.truncate_files(files, max_chars=10_000)
@@ -170,6 +173,8 @@ class QAEngineerAgent(BaseAgent):
             f"{plan_section}\n\n"
             f"**Implemented code:**\n\n{code_section}\n\n"
             f"Write comprehensive pytest tests following your role instructions. "
+            f"Do not import from conftest.py. Shared plain helpers/classes must live in tests/helpers.py; "
+            f"fixtures must be requested as pytest parameters, never imported or called directly. "
             f"Use '### FILE: tests/test_xxx.py' format for each test file."
         )
 
@@ -223,6 +228,54 @@ class QAEngineerAgent(BaseAgent):
         revised_response = self.call(fix_prompt)
         revised = self._parse_test_files(revised_response)
         return revised or files
+
+    def _fix_generation_rule_errors(self, original_prompt: str, files: dict[str, str]) -> dict[str, str]:
+        """Retry once when generated tests violate deterministic pytest rules."""
+        issues = self._collect_generation_rule_errors(files)
+        if not issues:
+            return files
+        _log.info("Generated test rule violations, requesting fix: %s", issues)
+        try:
+            revised = self._request_generation_rule_fix(original_prompt, files, issues)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("Generated test rule fix retry failed: %s — keeping original output", exc)
+            return files
+        remaining = self._collect_generation_rule_errors(revised)
+        if remaining:
+            _log.warning("Generated test rule violations persist after retry: %s", remaining)
+        return revised or files
+
+    @staticmethod
+    def _collect_generation_rule_errors(files: dict[str, str]) -> list[str]:
+        """Return deterministic generated-test rule violations."""
+        from tools.test_validation import validate_generated_tests
+        return validate_generated_tests(files)
+
+    def _request_generation_rule_fix(
+        self, original_prompt: str, files: dict[str, str], issues: list[str]
+    ) -> dict[str, str]:
+        """Ask the LLM to fix deterministic pytest generation rule violations."""
+        issue_list = "\n".join(f"  - {issue}" for issue in issues)
+        files_section = "\n\n".join(
+            f"### FILE: {path}\n```python\n{content}\n```"
+            for path, content in files.items()
+        )
+        fix_prompt = (
+            f"{original_prompt}\n\n"
+            f"---\n"
+            f"The generated tests violate mandatory pytest rules:\n"
+            f"{issue_list}\n\n"
+            f"Here is the generated output that must be repaired:\n\n"
+            f"{files_section}\n\n"
+            f"Rewrite the affected test files so pytest can collect them:\n"
+            f"- Do NOT import from conftest.py (`from conftest import ...` or "
+            f"`from tests.conftest import ...` is forbidden).\n"
+            f"- Move plain shared helpers/classes to `tests/helpers.py` and import them from there.\n"
+            f"- Request fixtures as test function parameters; do not import or call fixture functions directly.\n"
+            f"Output ALL test files again using the '### FILE: tests/...' format."
+        )
+        revised_response = self.call(fix_prompt)
+        return self._parse_test_files(revised_response)
 
     def _call_llm_with_tools(self, prompt: str, write_only: bool) -> str:
         """Call LLM with optional tool registry support."""

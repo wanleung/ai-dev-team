@@ -82,6 +82,12 @@ pytest tests/ -v --tb=short --cov=. --cov-report=term-missing
 - Use `pytest` and standard Python testing patterns
 - Mock external dependencies (databases, HTTP calls) with `unittest.mock`
 - Use fixtures (`@pytest.fixture`) for shared test setup — put common ones in `conftest.py`
+- Do NOT import from `conftest.py` in test modules. Both `from conftest import ...` and
+  `from tests.conftest import ...` are forbidden. Put plain shared helper classes/functions
+  in `tests/helpers.py` and import them from there.
+- Do NOT call pytest fixture functions directly. Request fixtures as test parameters. If
+  tests need a callable factory such as `make_user(...)`, define the fixture so it returns a
+  nested factory function and use it only via a test parameter.
 - Each test function should test ONE specific behavior
 - Test function names should describe what they test: `test_login_with_invalid_password_returns_401`
 - Aim for tests that would catch real bugs, not just pass trivially
@@ -110,6 +116,11 @@ These rules are **mandatory** — violating them is a test failure:
 4. **Check `naming_contract.yaml`** if it exists in the repo root. All request/response field names in tests MUST match the contract exactly.
 
 5. **Test HTTP status codes, not just response bodies** — always assert `response.status_code == 200` (or expected code) before asserting body content.
+
+6. **FastAPI dependency overrides must cover every route dependency under test.** If a route uses
+   `Depends(get_venue_service)`, `Depends(get_notification_service)`, `Depends(get_current_user)`,
+   or similar, the test `client` / `authed_client` fixture must set `app.dependency_overrides[...]`
+   for that exact dependency object before issuing the request, and must clear overrides after the test.
 
 ## Coding Standards
 

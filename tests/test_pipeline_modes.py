@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 # ── Task 1: QAEngineerAgent write_only ───────────────────────────────────────
@@ -339,6 +339,42 @@ def test_stage_qa_write_indexes_tests_without_logger_name_error(tmp_path):
     orch.repo_auto_indexer.index_local_dir.assert_called_once()
 
 
+def test_stage_test_runner_stops_on_pytest_collection_failure(monkeypatch, tmp_path):
+    """_stage_test_runner() records collection failures before running full pytest."""
+    from types import SimpleNamespace
+
+    from orchestrator import Orchestrator
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.workspace_dir = tmp_path
+    orch.target_github = MagicMock()
+
+    project_dir = tmp_path / "project"
+    tests_dir = project_dir / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "test_bad.py").write_text("from tests.conftest import _Obj\n")
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if "pip" in args:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "--collect-only" in args:
+            return SimpleNamespace(returncode=2, stdout="", stderr="collection failed")
+        raise AssertionError("full pytest should not run after collection failure")
+
+    monkeypatch.setattr("orchestrator.subprocess.run", fake_run)
+
+    result = PipelineResult(project_name="project", pr_number=2)
+    orch._stage_test_runner(result)
+
+    assert result.tests_passed is False
+    assert "collection failed" in result.test_results
+    assert any("--collect-only" in call for call in calls)
+    orch.target_github.add_pr_comment.assert_called_once()
+
+
 def test_stage_junior_engineer_omits_test_files_in_standard_mode(monkeypatch):
     """_stage_junior_engineer() passes test_files=None when mode is not tdd."""
     orch = _make_minimal_orch()
@@ -388,8 +424,7 @@ def test_stage_junior_engineer_passes_test_files_in_tdd_mode(monkeypatch):
 
 def _make_full_orch(mode: str = "standard"):
     """Build a minimal but runnable Orchestrator with all stages mocked."""
-    from orchestrator import Orchestrator, PipelineResult
-    import types
+    from orchestrator import Orchestrator
 
     o = Orchestrator.__new__(Orchestrator)
     o._mode = mode
@@ -458,9 +493,7 @@ def _make_full_orch(mode: str = "standard"):
 
 
 def test_run_standard_mode_calls_qa_engineer_not_qa_write():
-    from orchestrator import PipelineResult
     o, called = _make_full_orch(mode="standard")
-    result = PipelineResult(requirement="build x")
     # need test_files to avoid test_fix skip
     # (skip_if checks r.test_files — leave empty to skip test_fix)
     o.run("build x")
@@ -471,7 +504,6 @@ def test_run_standard_mode_calls_qa_engineer_not_qa_write():
 
 
 def test_run_tdd_mode_calls_qa_write_not_qa_engineer():
-    from orchestrator import PipelineResult
     o, called = _make_full_orch(mode="tdd")
     o.run("build x")
     assert "_stage_qa_write" in called
@@ -497,12 +529,10 @@ def test_run_tdd_mode_test_fix_before_reviewer():
 
 def test_run_reviewer_stop_marks_reviewer_as_completed():
     """When reviewer triggers stop_if, reviewer checkpoint_key is already saved."""
-    from orchestrator import Orchestrator, PipelineResult, MODES
+    from orchestrator import Orchestrator
     o, called = _make_full_orch(mode="standard")
 
     # Make reviewer's stop_if return True
-    registry = o._make_stage_registry()
-    stages = list(MODES["standard"])
     # Patch stop_if on reviewer stage via _build_stage_list override
     saved_build = Orchestrator._build_stage_list
     def patched_build(self):
