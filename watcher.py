@@ -854,6 +854,8 @@ def _dispatch(
     retry_delay = pipe_cfg.get("retry_delay", 15)
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
+    max_test_retries = _pipeline_int(pipe_cfg, "max_test_retries", 5)
+    max_deploy_retries = _pipeline_int(pipe_cfg, "max_deploy_retries", 5)
     reviewer_max_retries = _pipeline_int(pipe_cfg, "reviewer_max_retries", 2)
 
     # ── Per-run file logging (thread-safe: no sys.stdout redirect) ────────────
@@ -886,6 +888,8 @@ def _dispatch(
             retry_delay=retry_delay,
             max_api_retries=max_api_retries,
             inter_call_delay=inter_call_delay,
+            max_test_retries=max_test_retries,
+            max_deploy_retries=max_deploy_retries,
             reviewer_max_retries=reviewer_max_retries,
             deploy_cfg=deploy_cfg,
             llm_fallbacks=_llm.get("fallbacks") or None,

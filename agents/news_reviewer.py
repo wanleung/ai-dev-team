@@ -70,6 +70,29 @@ def _fetch_source(url: str) -> str:
         return ""
 
 
+def _source_unusable_reason(content: str) -> str:
+    """Return a reason if fetched source is not useful article text."""
+    text = re.sub(r"<[^>]+>", " ", content)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return "empty"
+    lower = text.lower()
+    boilerplate_terms = (
+        "cookie consent",
+        "we use cookies",
+        "accept reject",
+        "manage preferences",
+        "privacy policy",
+    )
+    boilerplate_hits = sum(1 for term in boilerplate_terms if term in lower)
+    word_count = len(re.findall(r"\b\w+\b", text))
+    if boilerplate_hits >= 2 and word_count < 120:
+        return "boilerplate"
+    if word_count < 40:
+        return "too little article text"
+    return ""
+
+
 def _parse_verdict(output: str) -> dict:
     """Parse structured reviewer output into a result dict.
 
@@ -121,8 +144,11 @@ class NewsReviewerAgent(BaseAgent):
             dict with 'verdict' (PASS|NEEDS_REVISION), 'issues' (list), 'confidence' (str)
         """
         source_content = _fetch_source(source_url)
-        source_fetched = bool(source_content)
-        source_section = self._build_source_section(source_url, source_content, source_fetched)
+        unusable_reason = _source_unusable_reason(source_content) if source_content else ""
+        source_fetched = bool(source_content) and not unusable_reason
+        source_section = self._build_source_section(
+            source_url, source_content if source_fetched else "", source_fetched, unusable_reason
+        )
 
         prompt = (
             f"{source_section}"
@@ -135,17 +161,25 @@ class NewsReviewerAgent(BaseAgent):
         output = self._call_reviewer(prompt, source_fetched)
         return _parse_verdict(output)
 
-    def _build_source_section(self, source_url: str, source_content: str, source_fetched: bool) -> str:
+    def _build_source_section(
+        self,
+        source_url: str,
+        source_content: str,
+        source_fetched: bool,
+        unusable_reason: str = "",
+    ) -> str:
         """Build the source content section of the prompt."""
         if source_content:
             return f"<SOURCE_CONTENT>\n{source_content[:8000]}\n</SOURCE_CONTENT>\n\n"
         elif source_url and self._tool_registry is not None:
-            _log.info("news_reviewer: source fetch failed for %r — will use web search tools", source_url)
+            reason = f" returned {unusable_reason}" if unusable_reason else " was blocked (HTTP 403 or similar)"
+            _log.info("news_reviewer: direct source fetch for %r%s — will use web search tools", source_url, reason)
             return (
-                f"<SOURCE_CONTENT>Direct fetch of {source_url!r} was blocked (HTTP 403 or similar). "
-                "Use the google_fetch_page tool to retrieve it, or use google_search to find "
+                f"<SOURCE_CONTENT>Direct fetch of {source_url!r}{reason}. "
+                "Use available search/fetch tools to retrieve the original article or find "
                 "corroborating sources for the article's key claims. Perform fact-checking based "
-                "on what you find.</SOURCE_CONTENT>\n\n"
+                "on what you find. If the original source remains unavailable but independent "
+                "sources verify the claims, allow the article with CONFIDENCE: medium.</SOURCE_CONTENT>\n\n"
             )
         else:
             return "<SOURCE_CONTENT>Not available — skip fact check, still check wording and characters.</SOURCE_CONTENT>\n\n"

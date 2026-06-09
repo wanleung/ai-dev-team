@@ -1,7 +1,6 @@
 """Tests for NewsReviewerAgent."""
 from __future__ import annotations
 from unittest.mock import MagicMock, patch
-import pytest
 
 
 def _make_agent(cls, role_name):
@@ -83,10 +82,40 @@ class TestNewsReviewerAgent:
             captured["prompt"] = prompt
             return PASS_OUTPUT
         with patch.object(agent, "call", side_effect=capture):
-            with patch("agents.news_reviewer._fetch_source", return_value="Source text here"):
+            source_text = (
+                "Source text here with enough article body content to be useful for fact checking. "
+                "The article explains a software release, names the project, describes the change, "
+                "and includes several factual details that the reviewer can compare against the draft. "
+                "It also mentions the upstream repository, supported platforms, implementation timeline, "
+                "maintainer comments, and release context so the fetched page is clearly not boilerplate."
+            )
+            with patch("agents.news_reviewer._fetch_source", return_value=source_text):
                 agent.run("# Article", "# 文章", source_url="https://example.com")
         assert "Source text here" in captured["prompt"]
         assert "Source text here" in captured["prompt"]
+
+    def test_cookie_boilerplate_source_uses_tool_fallback(self):
+        from agents.news_reviewer import NewsReviewerAgent
+        agent = _make_agent(NewsReviewerAgent, "news_reviewer")
+        agent._tool_registry = MagicMock()
+        captured = {}
+
+        def capture(prompt, tools):
+            captured["prompt"] = prompt
+            captured["tools"] = tools
+            return PASS_OUTPUT
+
+        boilerplate = """
+        <html><head><style>.banner{display:block}</style><script>window.cookieConsent=true</script></head>
+        <body>Cookie consent We use cookies Accept Reject Manage preferences Privacy Policy</body></html>
+        """
+        with patch.object(agent, "call_with_tools", side_effect=capture):
+            with patch("agents.news_reviewer._fetch_source", return_value=boilerplate):
+                result = agent.run("# Article", "# 文章", source_url="https://example.com/story")
+
+        assert result["verdict"] == "PASS"
+        assert "Direct fetch of 'https://example.com/story' returned boilerplate" in captured["prompt"]
+        assert captured["tools"] is agent._tool_registry
 
     def test_exports_from_agents_package(self):
         from agents import NewsReviewerAgent

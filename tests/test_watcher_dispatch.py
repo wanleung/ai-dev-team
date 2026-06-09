@@ -171,6 +171,15 @@ def test_dispatch_passes_reviewer_max_retries(monkeypatch, tmp_path):
     assert captured["reviewer_max_retries"] == 5
 
 
+def test_dispatch_passes_max_test_retries(monkeypatch, tmp_path):
+    """_dispatch forwards test-fix retry config into Orchestrator."""
+    captured = _dispatch_with_pipeline_config(
+        monkeypatch, tmp_path, {"max_test_retries": 10}
+    )
+
+    assert captured["max_test_retries"] == 10
+
+
 def test_dispatch_defaults_reviewer_max_retries_when_missing(monkeypatch, tmp_path):
     """_dispatch preserves the Orchestrator default when reviewer_max_retries is missing."""
     captured = _dispatch_with_pipeline_config(monkeypatch, tmp_path, {})
