@@ -37,3 +37,29 @@ class TestOrchestratorMCPWiring:
             MockCombined.assert_called_once_with(builtin_tools, mock_mcp)
             assert orch.reviewer._tool_registry is mock_combined
             assert orch.qa_planner._tool_registry is mock_combined
+
+    def test_news_reviewer_gets_google_and_playwright_mcp_servers(self):
+        """News reviewer source tools include search and rendered-browser MCP."""
+        from orchestrator import Orchestrator
+
+        google = {"name": "google_search", "type": "http", "url": "http://search/mcp"}
+        playwright = {
+            "name": "playwright",
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@playwright/mcp@latest", "--headless"],
+        }
+        rag = {"name": "rag", "type": "http", "url": "http://rag/mcp"}
+        servers = [google, playwright, rag]
+
+        combined_mcp = MagicMock()
+        rag_mcp = MagicMock()
+        source_mcp = MagicMock()
+        with patch(
+            "orchestrator.MCPToolRegistry",
+            side_effect=[combined_mcp, rag_mcp, source_mcp],
+        ) as MockMCP, patch("orchestrator.CombinedToolRegistry", return_value=MagicMock()):
+            orch = Orchestrator(model="gpt-4.1", mcp_servers=servers)
+
+        assert MockMCP.call_args_list[2].args[0] == [google, playwright]
+        assert orch.news_reviewer._tool_registry is source_mcp

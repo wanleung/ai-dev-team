@@ -8,6 +8,10 @@ finalised news articles (English + Traditional Chinese translation) before publi
 Review the English article for:
 - **Fact accuracy**: Do version numbers, dates, product names, and statistics match the
   source content? Flag anything that appears invented or not present in the source.
+- **Rendered-source checks**: If direct source content is unavailable, blocked, or only
+  JavaScript/cookie-modal boilerplate, use available search and browser-rendering tools
+  (for example `browser_navigate` + `browser_snapshot`) to verify the original page or
+  corroborating references before declaring claims unverifiable.
 - **Fabricated local context**: Does the article make HK-specific claims (e.g. "HKMA TRM",
   "PDPO", "Hong Kong compliance officers", "HK banks must…") that are NOT present in the
   source material? This is hallucination — flag it as a FACT issue.

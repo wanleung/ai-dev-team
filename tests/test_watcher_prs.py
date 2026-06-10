@@ -206,6 +206,50 @@ def test_run_pr_revision_success(monkeypatch, tmp_path):
     assert sys.stderr is saved_stderr, "stderr was not restored"
 
 
+def test_run_pr_revision_passes_test_retry_config(monkeypatch, tmp_path):
+    """PR watcher revision path forwards pipeline retry settings."""
+    import sys
+    import types
+    import logging
+    from watcher import _run_pr_revision
+
+    captured = {}
+
+    class FakeOrch:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_revision(self, pr_number):
+            return {"status": "ok", "revision": 1}
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("watcher.add_label", lambda *a: None)
+    monkeypatch.setattr("watcher.remove_label", lambda *a: None)
+    monkeypatch.setattr("watcher.post_comment", lambda *a: None)
+    monkeypatch.setattr("watcher.ensure_label", lambda *a: None)
+    monkeypatch.setattr("watcher._load_pipeline_config", lambda: {
+        "llm": {},
+        "pipeline": {"max_test_retries": 10, "max_deploy_retries": 9},
+    })
+    fake_mod = types.ModuleType("orchestrator")
+    fake_mod.Orchestrator = FakeOrch
+    monkeypatch.setitem(sys.modules, "orchestrator", fake_mod)
+
+    _run_pr_revision(
+        {"number": 7, "labels": [{"name": "ai-fix"}], "title": "Fix me"},
+        "owner/tracker",
+        "owner/target",
+        "gpt-4.1",
+        2,
+        tmp_path,
+        logging.getLogger("test"),
+        pr_fix_label="ai-fix",
+    )
+
+    assert captured["max_test_retries"] == 10
+    assert captured["max_deploy_retries"] == 9
+
+
 @pytest.mark.parametrize("status", ["max_revisions_reached", "error"])
 def test_run_pr_revision_failure_statuses(monkeypatch, tmp_path, status):
     """Failure statuses add agent-failed and remove agent-running."""

@@ -117,6 +117,43 @@ class TestNewsReviewerAgent:
         assert "Direct fetch of 'https://example.com/story' returned boilerplate" in captured["prompt"]
         assert captured["tools"] is agent._tool_registry
 
+    def test_large_cookie_modal_html_uses_tool_fallback(self):
+        from agents.news_reviewer import NewsReviewerAgent
+        agent = _make_agent(NewsReviewerAgent, "news_reviewer")
+        agent._tool_registry = MagicMock()
+        captured = {}
+
+        def capture(prompt, tools):
+            captured["prompt"] = prompt
+            captured["tools"] = tools
+            return PASS_OUTPUT
+
+        repeated_js = " ".join(
+            ["function CookieConsentModal(){return window.localStorage.getItem('cookie-consent');}"] * 80
+        )
+        modal_html = f"""
+        <html>
+          <head>
+            <style>.cookie-consent-modal {{ display: block; position: fixed; }}</style>
+            <script>{repeated_js}</script>
+          </head>
+          <body>
+            <div id="cookie-consent-modal">
+              Cookie settings. We use cookies to personalise content and analyse traffic.
+              Accept all cookies. Reject optional cookies. Manage preferences.
+              Privacy Policy. Consent Management Platform.
+            </div>
+          </body>
+        </html>
+        """
+        with patch.object(agent, "call_with_tools", side_effect=capture):
+            with patch("agents.news_reviewer._fetch_source", return_value=modal_html):
+                result = agent.run("# Article", "# 文章", source_url="https://example.com/story")
+
+        assert result["verdict"] == "PASS"
+        assert "returned boilerplate" in captured["prompt"]
+        assert captured["tools"] is agent._tool_registry
+
     def test_exports_from_agents_package(self):
         from agents import NewsReviewerAgent
         assert NewsReviewerAgent

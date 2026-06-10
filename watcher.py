@@ -998,6 +998,8 @@ def _run_pr_revision(
     retry_delay = pipe_cfg.get("retry_delay", 15)
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
+    max_test_retries = _pipeline_int(pipe_cfg, "max_test_retries", 5)
+    max_deploy_retries = _pipeline_int(pipe_cfg, "max_deploy_retries", 5)
 
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"pr-revision-{pr_number}-attempt{attempt}.log"
@@ -1030,6 +1032,8 @@ def _run_pr_revision(
                     retry_delay=retry_delay,
                     max_api_retries=max_api_retries,
                     inter_call_delay=inter_call_delay,
+                    max_test_retries=max_test_retries,
+                    max_deploy_retries=max_deploy_retries,
                     update_branch_enabled=update_branch_enabled,
                     conflict_resolver_model=conflict_resolver_model,
                     llm_fallbacks=_llm.get("fallbacks") or None,

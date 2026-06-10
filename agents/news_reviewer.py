@@ -72,6 +72,7 @@ def _fetch_source(url: str) -> str:
 
 def _source_unusable_reason(content: str) -> str:
     """Return a reason if fetched source is not useful article text."""
+    raw_lower = content.lower()
     text = re.sub(r"<[^>]+>", " ", content)
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
@@ -83,10 +84,24 @@ def _source_unusable_reason(content: str) -> str:
         "accept reject",
         "manage preferences",
         "privacy policy",
+        "cookie settings",
+        "consent management",
+        "cookie-consent",
     )
-    boilerplate_hits = sum(1 for term in boilerplate_terms if term in lower)
+    boilerplate_hits = sum(
+        1 for term in boilerplate_terms if term in lower or term in raw_lower
+    )
+    markup_terms = (
+        "<script",
+        "<style",
+        "function ",
+        "localstorage",
+        "cookieconsent",
+        "cookie-consent-modal",
+    )
+    markup_hits = sum(1 for term in markup_terms if term in raw_lower)
     word_count = len(re.findall(r"\b\w+\b", text))
-    if boilerplate_hits >= 2 and word_count < 120:
+    if boilerplate_hits >= 2 and (word_count < 120 or markup_hits >= 2):
         return "boilerplate"
     if word_count < 40:
         return "too little article text"

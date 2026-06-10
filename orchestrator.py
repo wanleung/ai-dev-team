@@ -956,12 +956,16 @@ class Orchestrator(TestFixLoopMixin):
         self._rag_registry = rag_registry
         self.repo_auto_indexer = RepoAutoIndexer() if rag_registry else None
 
-        # Google Search MCP (for news_reviewer etc.)
-        search_servers = [s for s in (mcp_servers or []) if s.get("name") == "google_search"]
+        # Source research MCPs (for news_reviewer etc.): search + rendered browser.
+        source_tool_names = {"google_search", "playwright", "browser", "browser_render"}
+        search_servers = [
+            s for s in (mcp_servers or [])
+            if s.get("name") in source_tool_names
+        ]
         try:
             search_registry = MCPToolRegistry(search_servers) if search_servers else None
         except Exception as exc:
-            log.warning("[orchestrator] Google Search MCP init failed: %s — web search disabled", exc)
+            log.warning("[orchestrator] source research MCP init failed: %s — web/browser search disabled", exc)
             search_registry = None
         self._search_registry = search_registry
 
