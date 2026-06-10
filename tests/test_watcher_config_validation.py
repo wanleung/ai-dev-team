@@ -70,6 +70,69 @@ def test_load_pipeline_config_valid_local_overrides(monkeypatch):
     assert cfg["llm"]["model"] == "gpt-4o-mini"
 
 
+def test_load_pipeline_config_deep_merges_nested_sections(monkeypatch):
+    """config.local.yaml must override nested keys without dropping siblings."""
+    import watcher
+
+    base_yaml = """
+llm:
+  model: gpt-4o
+  overrides:
+    engineer: gpt-4o-mini
+    reviewer: gpt-4o
+  pools:
+    openai: 5
+pipeline:
+  max_revisions: 3
+  chaining:
+    on_test_failure: ai-fix
+    on_review_issues: ai-fix
+"""
+    local_yaml = """
+llm:
+  overrides:
+    engineer: mimo/mimo-v2.5-pro
+  pools:
+    mimo: 10
+pipeline:
+  max_revisions: 5
+  chaining:
+    on_test_failure: ai-smart-fix
+"""
+
+    orig_exists = Path.exists
+
+    def fake_exists(self):
+        if self.name == "config.yaml":
+            return True
+        if self.name == "config.local.yaml":
+            return True
+        return orig_exists(self)
+
+    original_open = open
+
+    def fake_open(path, *args, **kwargs):
+        path_str = str(path)
+        if path_str.endswith("config.local.yaml"):
+            return io.StringIO(local_yaml)
+        if path_str.endswith("config.yaml"):
+            return io.StringIO(base_yaml)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    monkeypatch.setattr("builtins.open", fake_open)
+
+    cfg = watcher._load_pipeline_config()
+    assert cfg["llm"]["model"] == "gpt-4o"
+    assert cfg["llm"]["overrides"]["engineer"] == "mimo/mimo-v2.5-pro"
+    assert cfg["llm"]["overrides"]["reviewer"] == "gpt-4o"
+    assert cfg["llm"]["pools"]["openai"] == 5
+    assert cfg["llm"]["pools"]["mimo"] == 10
+    assert cfg["pipeline"]["max_revisions"] == 5
+    assert cfg["pipeline"]["chaining"]["on_test_failure"] == "ai-smart-fix"
+    assert cfg["pipeline"]["chaining"]["on_review_issues"] == "ai-fix"
+
+
 def test_load_pipeline_config_no_local_file(monkeypatch):
     """Absent config.local.yaml: base config loaded without error."""
     import watcher

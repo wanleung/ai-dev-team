@@ -229,7 +229,11 @@ def test_run_pr_revision_passes_test_retry_config(monkeypatch, tmp_path):
     monkeypatch.setattr("watcher.ensure_label", lambda *a: None)
     monkeypatch.setattr("watcher._load_pipeline_config", lambda: {
         "llm": {},
-        "pipeline": {"max_test_retries": 10, "max_deploy_retries": 9},
+        "pipeline": {
+            "max_revisions": 5,
+            "max_test_retries": 10,
+            "max_deploy_retries": 9,
+        },
     })
     fake_mod = types.ModuleType("orchestrator")
     fake_mod.Orchestrator = FakeOrch
@@ -246,6 +250,7 @@ def test_run_pr_revision_passes_test_retry_config(monkeypatch, tmp_path):
         pr_fix_label="ai-fix",
     )
 
+    assert captured["max_revisions"] == 5
     assert captured["max_test_retries"] == 10
     assert captured["max_deploy_retries"] == 9
 

@@ -45,7 +45,7 @@ from tenacity import (
     wait_exponential,
     before_sleep_log,
 )
-from utils import sanitise as _sanitise
+from utils import sanitise as _sanitise, deep_merge as _deep_merge
 from config_schema import load_repo_entry, AppConfig as _AppConfig
 from pydantic import ValidationError as _ValidationError
 from watcher_types import GitHubComment, GitHubIssue, GitHubPR, WatcherTask
@@ -633,12 +633,9 @@ def _load_pipeline_config() -> dict:
         if p.exists():
             with open(p, encoding="utf-8") as f:
                 local = yaml.safe_load(f) or {}
-            # Deep merge: local overrides base
-            for section, val in local.items():
-                if isinstance(val, dict) and isinstance(cfg.get(section), dict):
-                    cfg[section] = {**cfg.get(section, {}), **val}
-                else:
-                    cfg[section] = val
+            # Recursive merge: config.local.yaml overrides base without
+            # discarding unrelated nested keys.
+            cfg = _deep_merge(cfg, local)
     try:
         _AppConfig.model_validate(cfg)  # validate only; callers consume raw dict
     except _ValidationError as exc:
@@ -854,6 +851,9 @@ def _dispatch(
     retry_delay = pipe_cfg.get("retry_delay", 15)
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
+    max_revisions = _pipeline_int(pipe_cfg, "max_revisions", 3)
+    max_prd_revisions = _pipeline_int(pipe_cfg, "max_prd_revisions", 3)
+    max_design_revisions = _pipeline_int(pipe_cfg, "max_design_revisions", 3)
     max_test_retries = _pipeline_int(pipe_cfg, "max_test_retries", 5)
     max_deploy_retries = _pipeline_int(pipe_cfg, "max_deploy_retries", 5)
     reviewer_max_retries = _pipeline_int(pipe_cfg, "reviewer_max_retries", 2)
@@ -888,6 +888,9 @@ def _dispatch(
             retry_delay=retry_delay,
             max_api_retries=max_api_retries,
             inter_call_delay=inter_call_delay,
+            max_revisions=max_revisions,
+            max_prd_revisions=max_prd_revisions,
+            max_design_revisions=max_design_revisions,
             max_test_retries=max_test_retries,
             max_deploy_retries=max_deploy_retries,
             reviewer_max_retries=reviewer_max_retries,
@@ -998,6 +1001,9 @@ def _run_pr_revision(
     retry_delay = pipe_cfg.get("retry_delay", 15)
     max_api_retries = pipe_cfg.get("max_api_retries", 5)
     inter_call_delay = pipe_cfg.get("inter_call_delay", 0)
+    max_revisions = _pipeline_int(pipe_cfg, "max_revisions", 3)
+    max_prd_revisions = _pipeline_int(pipe_cfg, "max_prd_revisions", 3)
+    max_design_revisions = _pipeline_int(pipe_cfg, "max_design_revisions", 3)
     max_test_retries = _pipeline_int(pipe_cfg, "max_test_retries", 5)
     max_deploy_retries = _pipeline_int(pipe_cfg, "max_deploy_retries", 5)
 
@@ -1032,6 +1038,9 @@ def _run_pr_revision(
                     retry_delay=retry_delay,
                     max_api_retries=max_api_retries,
                     inter_call_delay=inter_call_delay,
+                    max_revisions=max_revisions,
+                    max_prd_revisions=max_prd_revisions,
+                    max_design_revisions=max_design_revisions,
                     max_test_retries=max_test_retries,
                     max_deploy_retries=max_deploy_retries,
                     update_branch_enabled=update_branch_enabled,
