@@ -36,8 +36,8 @@ class PRCreativeAgent(BaseAgent):
         """
         Executes the creative generation stage.
         
-        Extracts analyst output from context, constructs the LLM prompt, 
-        handles retries on timeout/parse errors, validates the output schema, 
+        Extracts analyst output from context, constructs the LLM prompt,
+        handles retries on timeout/parse errors, validates the output schema,
         and updates the context with the generated concepts.
         """
         analyst_output = context.get("pr_analyst")

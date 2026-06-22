@@ -8,7 +8,7 @@ import tempfile
 import time
 from typing import TYPE_CHECKING
 
-from agents.backends.base import LLMBackend, _DEFAULT_MAX_RETRIES
+from agents.backends.base import LLMBackend
 
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry

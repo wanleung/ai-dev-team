@@ -9,7 +9,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from agents.base_agent import BaseAgent
 from github_client import GitHubClient
@@ -285,7 +285,7 @@ class PRProposalAgent(BaseAgent):
             RuntimeError: If PR creation fails after maximum retries
         """
         current_branch = branch_name
-        for attempt in range(MAX_PR_RETRIES):
+        for _attempt in range(MAX_PR_RETRIES):
             try:
                 return self._attempt_pr_creation(
                     client, current_branch, title, body, issue_number, markdown_body

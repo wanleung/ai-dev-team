@@ -3,7 +3,6 @@ ProductManagerAgent: translates a raw requirement into a PRD and creates a GitHu
 """
 from __future__ import annotations
 
-from typing import Optional
 
 from .base_agent import BaseAgent
 

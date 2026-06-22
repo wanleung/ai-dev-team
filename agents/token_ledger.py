@@ -6,7 +6,6 @@ import threading
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 # ContextVar that backends read to tag records with the current stage name.
 # Set by Orchestrator._run_stage() before calling each stage fn.
