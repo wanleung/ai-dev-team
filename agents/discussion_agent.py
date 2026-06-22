@@ -294,6 +294,14 @@ class DiscussionAgent:
             lines.append("")
         return "\n".join(lines)
 
+    def _failure_turn(self, participant: Participant, round_num: int) -> Turn:
+        """Return a safe transcript entry for a failed participant call."""
+        return Turn(
+            role=participant.role,
+            content="[Participant unavailable for this round; continue without this input.]",
+            round_num=round_num,
+        )
+
     def _build_participant_messages(
         self, context: str, transcript: list[Turn], participant: Participant
     ) -> list[dict]:
@@ -403,7 +411,7 @@ class DiscussionAgent:
                 transcript.append(self._call_participant(p, context, [], 0))
             except Exception as e:
                 logger.warning("DiscussionAgent: %s failed in homework: %s", p.role, e)
-                transcript.append(Turn(role=p.role, content=f"[Error: {e}]", round_num=0))
+                transcript.append(self._failure_turn(p, 0))
         return transcript
 
     def _run_homework_round(self, context: str) -> list[Turn]:
@@ -421,14 +429,12 @@ class DiscussionAgent:
                     participant = futures[future]
                     try:
                         transcript.append(future.result())
-                    except Exception as exc:
+                    except (RuntimeError, TimeoutError, OSError) as exc:
                         logger.warning(
                             "DiscussionAgent: %s failed in homework round: %s",
                             participant.role, exc,
                         )
-                        transcript.append(
-                            Turn(role=participant.role, content=f"[Error: {exc}]", round_num=0)
-                        )
+                        transcript.append(self._failure_turn(participant, 0))
         except RuntimeError as exc:
             logger.warning(
                 "DiscussionAgent: parallel homework unavailable (%s) — running sequentially", exc
@@ -518,14 +524,12 @@ class DiscussionAgent:
                 if p is not participant
             ]
             return turn, mentions, False
-        except Exception as exc:
+        except (RuntimeError, TimeoutError, OSError) as exc:
             logger.warning(
                 "DiscussionAgent: %s failed in round %d: %s",
                 participant.role, round_num, exc,
             )
-            transcript.append(
-                Turn(role=participant.role, content=f"[Error: {exc}]", round_num=round_num)
-            )
+            transcript.append(self._failure_turn(participant, round_num))
             return None, [], False
 
     def _run_discussion_rounds(self, context: str, transcript: list[Turn]) -> list[Turn]:

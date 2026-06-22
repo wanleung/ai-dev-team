@@ -150,6 +150,7 @@ class BaseAgent:
         github_token: Optional[str] = None,
         roles_dir: Optional[Path] = None,
         backend: Optional[str] = None,
+        system_prompt: Optional[str] = None,
         ollama_url: str = "http://localhost:11434",
         ollama_think: bool = False,
         ollama_preserve_thinking: bool = False,
@@ -176,7 +177,7 @@ class BaseAgent:
         **kwargs,
     ) -> None:
         self.model = model
-        self.system_prompt = self._load_system_prompt(roles_dir)
+        self.system_prompt = system_prompt if system_prompt is not None else self._load_system_prompt(roles_dir)
         self._token = github_token
         self._history: list[dict] = []
         self._init_retry_settings(retry_delay, max_api_retries, inter_call_delay)
@@ -449,6 +450,19 @@ class BaseAgent:
     def reset_history(self) -> None:
         """Clear conversation history (call between unrelated pipeline tasks)."""
         self._history = []
+
+    def _cap_history(self, max_exchanges: int = 3) -> None:
+        """Trim conversation history to at most *max_exchanges* user/assistant pairs.
+
+        Call this before repeated fix-loop iterations to prevent context window
+        blow-up.  Each exchange is a (user, assistant) message pair.
+        """
+        history = getattr(self, "_history", None)
+        if history is None:
+            return
+        max_messages = max_exchanges * 2  # 2 messages per exchange
+        if len(history) > max_messages:
+            self._history = history[-max_messages:]
 
     def _history_messages(self) -> list[dict]:
         """Return history formatted for OpenAI-compatible API."""

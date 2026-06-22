@@ -202,13 +202,13 @@ def test_parse_batch_verdicts_mixed():
     assert results[2] == ("PUBLISH", "Strong enterprise angle.")
 
 
-def test_parse_batch_verdicts_fail_open_on_missing():
-    """Missing items default to PUBLISH (fail-open)."""
+def test_parse_batch_verdicts_fail_safe_on_missing():
+    """Missing items default to SKIP (fail-safe)."""
     text = "ITEM 1: PUBLISH\nNOTES: Good.\n"
     results = _parse_batch_verdicts(text, item_count=3)
     assert results[0] == ("PUBLISH", "Good.")
-    assert results[1] == ("PUBLISH", "")   # missing → fail-open
-    assert results[2] == ("PUBLISH", "")   # missing → fail-open
+    assert results[1] == ("SKIP", "unparseable LLM output")   # missing → fail-safe
+    assert results[2] == ("SKIP", "unparseable LLM output")   # missing → fail-safe
 
 
 def test_parse_batch_verdicts_skip_all():
@@ -233,7 +233,7 @@ def test_parse_batch_verdicts_notes_optional():
 
 def test_parse_batch_verdicts_empty_text():
     results = _parse_batch_verdicts("", item_count=2)
-    assert results == [("PUBLISH", ""), ("PUBLISH", "")]
+    assert results == [("SKIP", "unparseable LLM output"), ("SKIP", "unparseable LLM output")]
 
 
 # ── Task 4: intake_triage.py ───────────────────────────────────────────────

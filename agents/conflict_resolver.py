@@ -48,19 +48,23 @@ class ConflictResolverAgent(BaseAgent):
         head_branch: str,
         base_branch: str,
         pr_context: PRContext,
+        github_token: str | None = None,
     ) -> ResolveResult:
         """Clone the repo, merge base into head, resolve conflicts, and push.
 
         Args:
-            repo_url:    Authenticated HTTPS clone URL (may include token).
-            head_branch: The PR's source branch.
-            base_branch: The target branch to merge from (e.g. ``"main"``).
-            pr_context:  Pull-request metadata used to guide LLM resolution.
+            repo_url:      Clean HTTPS clone URL (no embedded token).
+            head_branch:   The PR's source branch.
+            base_branch:   The target branch to merge from (e.g. ``"main"``).
+            pr_context:    Pull-request metadata used to guide LLM resolution.
+            github_token:  GitHub PAT used for authentication via
+                           ``http.extraHeader`` (never embedded in URL).
 
         Returns:
             A :class:`ResolveResult` with ``status``, ``resolved_files``,
             ``failed_files``, and an optional ``reason`` string.
         """
+        self._token = github_token  # Enables _sanitise() to redact if needed
         tmpdir = tempfile.mkdtemp()
         try:
             return self._resolve(tmpdir, repo_url, head_branch, base_branch, pr_context)
@@ -79,14 +83,19 @@ class ConflictResolverAgent(BaseAgent):
             capture_output=True,
             text=True,
         )
-
     def _sanitise(self, text: str) -> str:
         """Remove the GitHub token from *text* so it is safe to log or surface."""
         return _sanitise_utils(text, getattr(self, "_token", None))
 
     def _clone_and_setup(self, tmpdir: str, repo_url: str, head_branch: str) -> Optional[str]:
         """Clone repo and setup git config. Returns error reason if failed, None on success."""
-        r = self._run(["git", "clone", "--filter=blob:none", repo_url, tmpdir])
+        clone_cmd = ["git", "clone", "--filter=blob:none"]
+        # Authenticate via header instead of embedding token in URL
+        token = getattr(self, "_token", None)
+        if token:
+            clone_cmd += ["-c", f"http.extraHeader=Bearer {token}"]
+        clone_cmd += [repo_url, tmpdir]
+        r = self._run(clone_cmd)
         if r.returncode != 0:
             return f"clone failed: {self._sanitise(r.stderr.strip())}"
 
@@ -147,7 +156,12 @@ class ConflictResolverAgent(BaseAgent):
             cwd=tmpdir,
         )
 
-        push_r = self._run(["git", "push", "origin", head_branch], cwd=tmpdir)
+        push_cmd = ["git"]
+        token = getattr(self, "_token", None)
+        if token:
+            push_cmd += ["-c", f"http.extraHeader=Bearer {token}"]
+        push_cmd += ["push", "origin", head_branch]
+        push_r = self._run(push_cmd, cwd=tmpdir)
         if push_r.returncode != 0:
             return f"push failed: {self._sanitise(push_r.stderr.strip())}"
         return None

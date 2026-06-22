@@ -399,6 +399,15 @@ class PipelineResult:
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
     )
+    def safe_set(self, **kwargs) -> None:
+        """Update multiple fields atomically under the instance lock.
+
+        Use from parallel stages instead of direct ``result.field = value``
+        assignments to prevent lost-update races.
+        """
+        with self._lock:
+            for key, value in kwargs.items():
+                setattr(self, key, value)
     # Q&A clarification fields
     pending_clarification: Optional[dict] = None  # set while waiting for human reply
     clarification_history: list[dict] = field(default_factory=list)  # completed Q&A rounds
@@ -680,6 +689,24 @@ MODES: dict[str, list[str]] = {
     "tdd": [
         "qa_planner",
         "qa_write",
+        "contract_validate",
+        "tier_review",
+        "junior_engineer",
+        "senior_engineer",
+        "test_fix",
+        "reviewer",
+        "deploy_tester",
+        "deploy_fix",
+    ],
+    # Planned: Superpowers (or another strong planning flow) already produced
+    # the spec and implementation plan. Ingest those artifacts, gate generated
+    # TDD tests before implementation, then use normal build/fix/review loops.
+    "planned": [
+        "superpowers_ingest",
+        "qa_planner",
+        "qa_write",
+        "tdd_review",
+        "qa_fix",
         "contract_validate",
         "tier_review",
         "junior_engineer",
@@ -1704,10 +1731,6 @@ class Orchestrator(TestFixLoopMixin):
         is opened as a draft with the needs-human-fix label.
         """
         import py_compile
-        import subprocess
-        import sys
-        import tempfile
-        import os
 
         errors: list[str] = []
         py_files = {p: c for p, c in (result.all_files or {}).items() if p.endswith(".py")}
@@ -1875,9 +1898,6 @@ class Orchestrator(TestFixLoopMixin):
         resolves persona_file paths relative to the repo root (parent.parent of
         the config file), not from the system temp directory.
         """
-        import os
-        import tempfile
-        from pathlib import Path
         try:
             import yaml as _yaml
         except ImportError:
@@ -2271,6 +2291,15 @@ class Orchestrator(TestFixLoopMixin):
     def _build_engineering_stages_test(self) -> dict[str, "PipelineStage"]:
         """Build TDD write, test-runner loop, and validation-gate stages."""
         stages: dict[str, "PipelineStage"] = {}
+        stages["superpowers_ingest"] = PipelineStage(
+            name="superpowers_ingest",
+            label="📘 Superpowers Ingest",
+            description="Loading Superpowers spec and implementation plan...",
+            checkpoint_key="superpowers_ingest",
+            fn=lambda r: self._stage_superpowers_ingest(r),
+            required_output_fields=["prd", "design"],
+            is_critical=True,
+        )
         stages["qa_write"] = PipelineStage(
             name="qa_write",
             label="✍️  QA Write (TDD)",
@@ -2284,6 +2313,14 @@ class Orchestrator(TestFixLoopMixin):
             description="Reviewing and auto-fixing TDD test files...",
             checkpoint_key="tdd_review",
             fn=lambda r: self._stage_tdd_review(r),
+            skip_if=lambda r: not r.test_files,
+        )
+        stages["qa_fix"] = PipelineStage(
+            name="qa_fix",
+            label="🛠️  QA Fix (TDD)",
+            description="Applying TDD review fixes before implementation...",
+            checkpoint_key="qa_fix",
+            fn=lambda r: self._stage_qa_fix(r),
             skip_if=lambda r: not r.test_files,
         )
         stages["contract_validate"] = PipelineStage(
@@ -2617,11 +2654,9 @@ class Orchestrator(TestFixLoopMixin):
         2. ``pipelines/<label>.yaml`` next to this orchestrator module
         3. ``None`` (caller falls back to built-in default)
         """
-        from pathlib import Path
         if project_dir:
             project_yaml = Path(project_dir) / "pipeline.yaml"
             if project_yaml.exists():
-                import yaml
                 with open(project_yaml, encoding="utf-8") as fh:
                     raw = yaml.safe_load(fh) or {}
                 stages = raw.get("stages")
@@ -2631,7 +2666,6 @@ class Orchestrator(TestFixLoopMixin):
 
         builtin = Path(__file__).parent / "pipelines" / f"{label}.yaml"
         if builtin.exists():
-            import yaml
             with open(builtin, encoding="utf-8") as fh:
                 raw = yaml.safe_load(fh) or {}
             stages = raw.get("stages")
@@ -3044,16 +3078,17 @@ class Orchestrator(TestFixLoopMixin):
         model = self.conflict_resolver_model or self.senior_model or self.model
         resolver = ConflictResolverAgent(model=model, **self.agent_kwargs)
 
-        # Build authenticated HTTPS clone URL from the target GitHub client
+        # Build clean HTTPS clone URL — token passed separately via github_token
         token = self.target_github.token
         repo = self.target_github.repo
-        repo_url = f"https://{token}@github.com/{repo}.git"
+        repo_url = f"https://github.com/{repo}.git"
 
         result = resolver.resolve(
             repo_url=repo_url,
             head_branch=head_branch,
             base_branch=base_branch,
             pr_context=pr_context,
+            github_token=token,
         )
 
         if result.status == "resolved":
@@ -3958,10 +3993,18 @@ class Orchestrator(TestFixLoopMixin):
         self._clear_checkpoint(result)
         return self._finish(result, start_time)
 
-    def run(self, requirement: str, trigger_issue_body: Optional[str] = None, resume: bool = True, issue_number: Optional[int] = None) -> PipelineResult:
+    def run(
+        self,
+        requirement: str,
+        trigger_issue_body: Optional[str] = None,
+        resume: bool = True,
+        issue_number: Optional[int] = None,
+        planning_artifacts: Optional[dict] = None,
+    ) -> PipelineResult:
         """Execute the full pipeline for *requirement* and return a PipelineResult."""
         start_time = time.time()
         run_id = str(uuid.uuid4())
+        self._superpowers_artifacts = planning_artifacts or None
         result = self._initialize_run(
             requirement, trigger_issue_body, resume, issue_number, run_id, start_time
         )
@@ -4085,93 +4128,124 @@ class Orchestrator(TestFixLoopMixin):
                 f"## 📋 Revised PRD (Product Manager — round {round_num})\n\n{result.prd}",
             )
 
-    def _prd_revision_loop(self, result: PipelineResult, requirement: str) -> bool:
-        """Run PM → PM Reviewer revision loop (up to max_prd_revisions rounds).
+    # ── Shared helpers for revision loops ────────────────────────────────────
 
-        Returns True if pipeline should continue, False if it should halt.
+    @staticmethod
+    def _safe_project_slug(name: str) -> str:
+        """Return *name* lowercased with non-alphanumeric chars replaced by ``_``."""
+        return "".join(c if c.isalnum() or c in "-_" else "_" for c in name.lower())
+
+    def _checkpoint_and_advance(self, key: str, result: PipelineResult) -> None:
+        """Mark *key* done, stamp ``progress_comment_id``, save checkpoint."""
+        result.add_completed_stage(key)
+        self._tracker.mark_done(key)
+        result.progress_comment_id = self._tracker.comment_id
+        self._save_checkpoint(result)
+
+    def _run_revision_loop(
+        self,
+        result: PipelineResult,
+        *,
+        # Initial agent stage
+        agent_stage_key: str,
+        agent_label: str,
+        agent_desc: str,
+        agent_fn,
+        agent_output_fields: list[str],
+        # Reviewer stage
+        reviewer_stage_key: str,
+        reviewer_label: str,
+        reviewer_desc: str,
+        reviewer_fn,
+        reviewer_output_fields: list[str],
+        # Loop config
+        max_revisions: int,
+        revision_key_prefix: str,
+        verdict_attr: str,
+        expected_verdict_value: str,
+        stop_on_issues: bool,
+        loop_label: str,
+        revision_label: str,
+        halt_comment_tpl: str,
+        # Optional: catch ClarificationNeeded on the initial agent stage
+        catch_clarification: bool = False,
+    ) -> bool:
+        """Generic agent → reviewer revision loop.
+
+        Returns True if the pipeline should continue, False to halt.
         """
-        # Step 1: PM writes initial PRD
-        if "pm" not in result.completed_stages:
-            self._tracker.mark_in_progress("pm")
+
+        # ── Step 1: initial agent stage ──
+        if agent_stage_key not in result.completed_stages:
+            self._tracker.mark_in_progress(agent_stage_key)
             try:
                 self._run_stage(
-                    "📋 Product Manager",
-                    "Analyzing requirements & writing PRD...",
-                    result,
-                    lambda: self._stage_pm(result, requirement),
-                    required_output_fields=["prd"],
+                    agent_label, agent_desc, result,
+                    agent_fn,
+                    required_output_fields=agent_output_fields,
                 )
             except ClarificationNeeded as exc:
-                self._tracker.mark_failed("pm", "Awaiting clarification")
-                result.progress_comment_id = self._tracker.comment_id
-                self._pause_for_clarification(result, "pm", exc.questions)
-                return False
+                if catch_clarification:
+                    self._tracker.mark_failed(agent_stage_key, "Awaiting clarification")
+                    result.progress_comment_id = self._tracker.comment_id
+                    self._pause_for_clarification(result, agent_stage_key, exc.questions)
+                    return False
+                raise
             if result.errors:
-                self._tracker.mark_failed("pm", str(result.errors[-1]))
+                self._tracker.mark_failed(agent_stage_key, str(result.errors[-1]))
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
-            result.add_completed_stage("pm")
-            self._tracker.mark_done("pm")
-            result.progress_comment_id = self._tracker.comment_id
-            self._save_checkpoint(result)
+            self._checkpoint_and_advance(agent_stage_key, result)
         else:
-            console.print("  ⏭️  [dim]📋 Product Manager — skipped (checkpoint)[/dim]")
+            console.print(f"  ⏭️  [dim]{agent_label} — skipped (checkpoint)[/dim]")
 
-        # Step 2: Initial PM Reviewer pass
-        if "pm_reviewer" not in result.completed_stages:
-            self._tracker.mark_in_progress("pm_reviewer")
+        # ── Step 2: initial reviewer pass ──
+        if reviewer_stage_key not in result.completed_stages:
+            self._tracker.mark_in_progress(reviewer_stage_key)
             self._run_stage(
-                "📝 PM Reviewer",
-                "Reviewing PRD for completeness...",
-                result,
-                lambda: self._stage_pm_reviewer(result, requirement),
-                required_output_fields=["prd_review", "prd_verdict"],
+                reviewer_label, reviewer_desc, result,
+                reviewer_fn,
+                required_output_fields=reviewer_output_fields,
             )
             if result.errors:
-                self._tracker.mark_failed("pm_reviewer", str(result.errors[-1]))
+                self._tracker.mark_failed(reviewer_stage_key, str(result.errors[-1]))
                 result.progress_comment_id = self._tracker.comment_id
                 self._save_checkpoint(result)
                 return False
-            result.add_completed_stage("pm_reviewer")
-            self._tracker.mark_done("pm_reviewer")
-            result.progress_comment_id = self._tracker.comment_id
-            self._save_checkpoint(result)
+            self._checkpoint_and_advance(reviewer_stage_key, result)
         else:
-            console.print("  ⏭️  [dim]📝 PM Reviewer — skipped (checkpoint)[/dim]")
+            console.print(f"  ⏭️  [dim]{reviewer_label} — skipped (checkpoint)[/dim]")
 
-        # Step 3: Revision loop (skip if disabled)
-        if self.max_prd_revisions == 0:
-            result.add_completed_stage("pm_review_loop")
-            self._tracker.mark_done("pm_review_loop")
-            result.progress_comment_id = self._tracker.comment_id
-            self._save_checkpoint(result)
+        # ── Step 3: revision loop (skip if disabled) ──
+        if max_revisions == 0:
+            self._checkpoint_and_advance(loop_label, result)
             return True
 
         any_round_ran = False
-        for round_num in range(1, self.max_prd_revisions + 1):
-            if result.prd_verdict != PMReviewerAgent.VERDICT_REVISION:
+        for round_num in range(1, max_revisions + 1):
+            if getattr(result, verdict_attr) != expected_verdict_value:
                 break  # Already approved
 
-            key = f"prd_revision_{round_num}"
+            key = f"{revision_key_prefix}_{round_num}"
             if key in result.completed_stages:
-                console.print(f"  ⏭️  [dim]PRD revision round {round_num} — skipped (checkpoint)[/dim]")
+                console.print(f"  ⏭️  [dim]{revision_label} round {round_num} — skipped (checkpoint)[/dim]")
                 continue
 
             any_round_ran = True
-            # PM rewrites PRD
             console.print(
-                f"  🔄 [yellow]PRD NEEDS REVISION (round {round_num}/{self.max_prd_revisions})"
-                f" — sending back to PM...[/yellow]"
+                f"  🔄 [yellow]{revision_label.upper()} NEEDS REVISION (round {round_num}/{max_revisions})"
+                f" — sending back to author...[/yellow]"
             )
-            self._tracker.add_stage(ProgressStage(key, f"🔄 PRD Revision {round_num}"))
+            self._tracker.add_stage(ProgressStage(key, f"🔄 {revision_label} {round_num}"))
             self._tracker.mark_in_progress(key)
+            # Author revises
             self._run_stage(
-                "📋 Product Manager",
-                f"Revising PRD based on reviewer feedback (round {round_num})...",
+                agent_label,
+                f"Revising based on reviewer feedback (round {round_num})...",
                 result,
-                lambda rn=round_num: self._stage_pm_revision(result, requirement, rn),
-                required_output_fields=["prd"],
+                lambda rn=round_num: agent_fn(rn),
+                required_output_fields=agent_output_fields,
             )
             if result.errors:
                 self._tracker.mark_failed(key, str(result.errors[-1]))
@@ -4181,11 +4255,11 @@ class Orchestrator(TestFixLoopMixin):
 
             # Reviewer re-checks
             self._run_stage(
-                "📝 PM Reviewer",
-                f"Re-reviewing revised PRD (round {round_num})...",
+                reviewer_label,
+                f"Re-reviewing revised output (round {round_num})...",
                 result,
-                lambda: self._stage_pm_reviewer(result, requirement),
-                required_output_fields=["prd_review", "prd_verdict"],
+                reviewer_fn,
+                required_output_fields=reviewer_output_fields,
             )
             if result.errors:
                 self._tracker.mark_failed(key, str(result.errors[-1]))
@@ -4193,42 +4267,66 @@ class Orchestrator(TestFixLoopMixin):
                 self._save_checkpoint(result)
                 return False
 
-            result.add_completed_stage(key)
-            self._tracker.mark_done(key)
-            result.progress_comment_id = self._tracker.comment_id
-            self._save_checkpoint(result)
+            self._checkpoint_and_advance(key, result)
         else:
-            # for-else: exited without break → max rounds hit, still NEEDS REVISION
+            # for-else: exited without break → max rounds hit
             if any_round_ran:
                 console.print(
-                    f"  ⚠️  [yellow]Max PRD revisions reached ({self.max_prd_revisions}/"
-                    f"{self.max_prd_revisions}). "
-                    + ("Halting pipeline." if self.stop_on_prd_issues else "Continuing with current best.")
+                    f"  ⚠️  [yellow]Max revisions reached ({max_revisions}/"
+                    f"{max_revisions}). "
+                    + ("Halting pipeline." if stop_on_issues else "Continuing with current best.")
                     + "[/yellow]"
                 )
-                if self.stop_on_prd_issues:
+                if stop_on_issues:
                     if self.github and result.issue_number:
                         self.github.add_issue_comment(
                             result.issue_number,
-                            f"⚠️ PRD revision limit reached after {self.max_prd_revisions} rounds. "
-                            f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
+                            halt_comment_tpl.format(max_revisions=max_revisions),
                         )
-                    result.add_completed_stage("pm_review_loop")
-                    self._tracker.mark_done("pm_review_loop")
-                    result.progress_comment_id = self._tracker.comment_id
-                    self._save_checkpoint(result)
+                    self._checkpoint_and_advance(loop_label, result)
                     return False
 
-        if result.prd_verdict != PMReviewerAgent.VERDICT_REVISION:
-            console.print(
-                f"  ✅ [green]PRD APPROVED (round {result.prd_revision_count})[/green]"
+        if getattr(result, verdict_attr) != expected_verdict_value:
+            count_attr = f"{revision_key_prefix}_count".replace(f"{revision_key_prefix}_", "")
+            # Derive the revision count attribute name (e.g. prd_revision_count)
+            revision_count = sum(
+                1 for s in result.completed_stages
+                if s.startswith(f"{revision_key_prefix}_")
             )
+            console.print(f"  ✅ [green]{revision_label.upper()} APPROVED (round {revision_count})[/green]")
 
-        result.add_completed_stage("pm_review_loop")
-        self._tracker.mark_done("pm_review_loop")
-        result.progress_comment_id = self._tracker.comment_id
-        self._save_checkpoint(result)
+        self._checkpoint_and_advance(loop_label, result)
         return True
+    def _prd_revision_loop(self, result: PipelineResult, requirement: str) -> bool:
+        """Run PM → PM Reviewer revision loop (up to max_prd_revisions rounds).
+
+        Returns True if pipeline should continue, False if it should halt.
+        """
+        return self._run_revision_loop(
+            result,
+            agent_stage_key="pm",
+            agent_label="📋 Product Manager",
+            agent_desc="Analyzing requirements & writing PRD...",
+            agent_fn=lambda rn=0: self._stage_pm_revision(result, requirement, rn) if rn else self._stage_pm(result, requirement),
+            agent_output_fields=["prd"],
+            reviewer_stage_key="pm_reviewer",
+            reviewer_label="📝 PM Reviewer",
+            reviewer_desc="Reviewing PRD for completeness...",
+            reviewer_fn=lambda: self._stage_pm_reviewer(result, requirement),
+            reviewer_output_fields=["prd_review", "prd_verdict"],
+            max_revisions=self.max_prd_revisions,
+            revision_key_prefix="prd_revision",
+            verdict_attr="prd_verdict",
+            expected_verdict_value=PMReviewerAgent.VERDICT_REVISION,
+            stop_on_issues=self.stop_on_prd_issues,
+            loop_label="pm_review_loop",
+            revision_label="PRD Revision",
+            halt_comment_tpl=(
+                "⚠️ PRD revision limit reached after {max_revisions} rounds. "
+                "Human review required. Remove `agent-failed` label and re-trigger to retry."
+            ),
+            catch_clarification=True,
+        )
 
     def _stage_arch_revision(self, result: PipelineResult, round_num: int) -> None:
         """Ask ArchitectAgent to revise the design based on reviewer feedback."""
@@ -4261,145 +4359,31 @@ class Orchestrator(TestFixLoopMixin):
 
         Returns True if pipeline should continue, False if it should halt.
         """
-        # Step 1: Architect
-        if "architect" not in result.completed_stages:
-            self._tracker.mark_in_progress("architect")
-            try:
-                self._run_stage(
-                    "🏗️  Architect",
-                    "Designing system architecture...",
-                    result,
-                    lambda: self._stage_architect(result),
-                    required_output_fields=["design"],
-                )
-            except ClarificationNeeded as exc:
-                self._tracker.mark_failed("architect", "Awaiting clarification")
-                result.progress_comment_id = self._tracker.comment_id
-                self._pause_for_clarification(result, "architect", exc.questions)
-                return False
-            if result.errors:
-                self._tracker.mark_failed("architect", str(result.errors[-1]))
-                result.progress_comment_id = self._tracker.comment_id
-                self._save_checkpoint(result)
-                return False
-            result.add_completed_stage("architect")
-            self._tracker.mark_done("architect")
-            result.progress_comment_id = self._tracker.comment_id
-            self._save_checkpoint(result)
-        else:
-            console.print("  ⏭️  [dim]🏗️  Architect — skipped (checkpoint)[/dim]")
-
-        # Step 2: Initial Architect Reviewer pass
-        if "architect_reviewer" not in result.completed_stages:
-            self._tracker.mark_in_progress("architect_reviewer")
-            self._run_stage(
-                "🔎 Architect Reviewer",
-                "Reviewing system design...",
-                result,
-                lambda: self._stage_architect_reviewer(result),
-                required_output_fields=["design_review", "design_verdict"],
-            )
-            if result.errors:
-                self._tracker.mark_failed("architect_reviewer", str(result.errors[-1]))
-                result.progress_comment_id = self._tracker.comment_id
-                self._save_checkpoint(result)
-                return False
-            result.add_completed_stage("architect_reviewer")
-            self._tracker.mark_done("architect_reviewer")
-            result.progress_comment_id = self._tracker.comment_id
-            self._save_checkpoint(result)
-        else:
-            console.print("  ⏭️  [dim]🔎 Architect Reviewer — skipped (checkpoint)[/dim]")
-
-        # Step 3: Revision loop (skip if disabled)
-        if self.max_design_revisions == 0:
-            result.add_completed_stage("architect_review_loop")
-            self._tracker.mark_done("architect_review_loop")
-            result.progress_comment_id = self._tracker.comment_id
-            self._save_checkpoint(result)
-            return True
-
-        any_round_ran = False
-        for round_num in range(1, self.max_design_revisions + 1):
-            if result.design_verdict != ArchitectReviewerAgent.VERDICT_REVISION:
-                break  # Already approved
-
-            key = f"design_revision_{round_num}"
-            if key in result.completed_stages:
-                console.print(f"  ⏭️  [dim]Design revision round {round_num} — skipped (checkpoint)[/dim]")
-                continue
-
-            any_round_ran = True
-            # Architect rewrites design
-            console.print(
-                f"  🔄 [yellow]DESIGN NEEDS REVISION (round {round_num}/{self.max_design_revisions})"
-                f" — sending back to Architect...[/yellow]"
-            )
-            self._tracker.add_stage(ProgressStage(key, f"🔄 Design Revision {round_num}"))
-            self._tracker.mark_in_progress(key)
-            self._run_stage(
-                "🏗️  Architect",
-                f"Revising design based on reviewer feedback (round {round_num})...",
-                result,
-                lambda rn=round_num: self._stage_arch_revision(result, rn),
-                required_output_fields=["design"],
-            )
-            if result.errors:
-                self._tracker.mark_failed(key, str(result.errors[-1]))
-                result.progress_comment_id = self._tracker.comment_id
-                self._save_checkpoint(result)
-                return False
-
-            # Reviewer re-checks
-            self._run_stage(
-                "🔎 Architect Reviewer",
-                f"Re-reviewing revised design (round {round_num})...",
-                result,
-                lambda: self._stage_architect_reviewer(result),
-                required_output_fields=["design_review", "design_verdict"],
-            )
-            if result.errors:
-                self._tracker.mark_failed(key, str(result.errors[-1]))
-                result.progress_comment_id = self._tracker.comment_id
-                self._save_checkpoint(result)
-                return False
-
-            result.add_completed_stage(key)
-            self._tracker.mark_done(key)
-            result.progress_comment_id = self._tracker.comment_id
-            self._save_checkpoint(result)
-        else:
-            # for-else: exited without break → max rounds hit, still NEEDS REVISION
-            if any_round_ran:
-                console.print(
-                    f"  ⚠️  [yellow]Max design revisions reached ({self.max_design_revisions}/"
-                    f"{self.max_design_revisions}). "
-                    + ("Halting pipeline." if self.stop_on_design_issues else "Continuing with current best.")
-                    + "[/yellow]"
-                )
-                if self.stop_on_design_issues:
-                    if self.github and result.issue_number:
-                        self.github.add_issue_comment(
-                            result.issue_number,
-                            f"⚠️ Design revision limit reached after {self.max_design_revisions} rounds. "
-                            f"Human review required. Remove `agent-failed` label and re-trigger to retry.",
-                        )
-                    result.add_completed_stage("architect_review_loop")
-                    self._tracker.mark_done("architect_review_loop")
-                    result.progress_comment_id = self._tracker.comment_id
-                    self._save_checkpoint(result)
-                    return False
-
-        if result.design_verdict != ArchitectReviewerAgent.VERDICT_REVISION:
-            console.print(
-                f"  ✅ [green]DESIGN APPROVED (round {result.design_revision_count})[/green]"
-            )
-
-        result.add_completed_stage("architect_review_loop")
-        self._tracker.mark_done("architect_review_loop")
-        result.progress_comment_id = self._tracker.comment_id
-        self._save_checkpoint(result)
-        return True
+        return self._run_revision_loop(
+            result,
+            agent_stage_key="architect",
+            agent_label="🏗️  Architect",
+            agent_desc="Designing system architecture...",
+            agent_fn=lambda rn=0: self._stage_arch_revision(result, rn) if rn else self._stage_architect(result),
+            agent_output_fields=["design"],
+            reviewer_stage_key="architect_reviewer",
+            reviewer_label="🔎 Architect Reviewer",
+            reviewer_desc="Reviewing system design...",
+            reviewer_fn=lambda: self._stage_architect_reviewer(result),
+            reviewer_output_fields=["design_review", "design_verdict"],
+            max_revisions=self.max_design_revisions,
+            revision_key_prefix="design_revision",
+            verdict_attr="design_verdict",
+            expected_verdict_value=ArchitectReviewerAgent.VERDICT_REVISION,
+            stop_on_issues=self.stop_on_design_issues,
+            loop_label="architect_review_loop",
+            revision_label="Design Revision",
+            halt_comment_tpl=(
+                "⚠️ Design revision limit reached after {max_revisions} rounds. "
+                "Human review required. Remove `agent-failed` label and re-trigger to retry."
+            ),
+            catch_clarification=True,
+        )
 
     def _stage_architect_reviewer(self, result: PipelineResult) -> None:
         """Review the Architect's design. Store draft; only self-patch when max_design_revisions == 0."""
@@ -4447,7 +4431,6 @@ class Orchestrator(TestFixLoopMixin):
         Raises:
             RuntimeError: if the image API call fails or returns no content.
         """
-        import os
         import requests as _requests
 
         cfg = (self._press_cfg or {}).get("image_api", {})
@@ -4483,6 +4466,94 @@ class Orchestrator(TestFixLoopMixin):
                 image_url = data["output"]["results"][0]["url"]
             except (KeyError, IndexError) as exc:
                 raise RuntimeError(f"DashScope image API returned unexpected response: {data}") from exc
+        elif provider == "comfyui":
+            import copy as _copy
+            import json as _json
+
+            url_base = cfg.get("url", "http://localhost:8188").rstrip("/")
+            max_wait = int(cfg.get("timeout", 300))
+
+            # Load workflow — inline dict takes priority over file path
+            workflow_json = cfg.get("workflow_json")
+            workflow_file = cfg.get("workflow_file")
+            if workflow_json:
+                workflow = _copy.deepcopy(workflow_json)
+            elif workflow_file:
+                with open(workflow_file, "r", encoding="utf-8") as _wf:
+                    workflow = _json.load(_wf)
+            else:
+                raise RuntimeError(
+                    "ComfyUI image_api requires either workflow_json (inline dict) "
+                    "or workflow_file (path to .json) in config"
+                )
+
+            # Inject prompt into the positive CLIPTextEncode node.
+            # Strategy: find KSampler's "positive" input to identify the correct node;
+            # fall back to the first CLIPTextEncode if KSampler is absent.
+            positive_node_id: str | None = None
+            for _nid, _node in workflow.items():
+                if _node.get("class_type") == "KSampler":
+                    _pos = _node.get("inputs", {}).get("positive")
+                    if isinstance(_pos, list) and _pos:
+                        positive_node_id = str(_pos[0])
+                    break
+
+            clip_nodes = {
+                nid: n for nid, n in workflow.items()
+                if n.get("class_type") == "CLIPTextEncode"
+            }
+            if not clip_nodes:
+                raise RuntimeError(
+                    "ComfyUI workflow has no CLIPTextEncode node — cannot inject prompt"
+                )
+            target_id = positive_node_id if positive_node_id in clip_nodes else next(iter(clip_nodes))
+            workflow[target_id]["inputs"]["text"] = prompt
+
+            # Submit workflow to ComfyUI queue
+            client_id = str(uuid.uuid4())
+            submit_resp = _requests.post(
+                f"{url_base}/prompt",
+                json={"prompt": workflow, "client_id": client_id},
+                timeout=30,
+            )
+            submit_resp.raise_for_status()
+            prompt_id: str = submit_resp.json()["prompt_id"]
+
+            # Poll /history/<prompt_id> until the job completes
+            elapsed = 0
+            poll_interval = 2
+            output_filename: str | None = None
+            output_subfolder = ""
+            while elapsed < max_wait:
+                time.sleep(poll_interval)
+                elapsed += poll_interval
+                hist = _requests.get(f"{url_base}/history/{prompt_id}", timeout=10)
+                hist.raise_for_status()
+                history = hist.json()
+                if prompt_id in history:
+                    for _node_out in history[prompt_id].get("outputs", {}).values():
+                        images = _node_out.get("images", [])
+                        if images:
+                            output_filename = images[0]["filename"]
+                            output_subfolder = images[0].get("subfolder", "")
+                            break
+                    if output_filename:
+                        break
+
+            if not output_filename:
+                raise RuntimeError(
+                    f"ComfyUI image generation timed out after {max_wait}s "
+                    f"(prompt_id={prompt_id})"
+                )
+
+            # Download the generated image
+            img_resp = _requests.get(
+                f"{url_base}/view",
+                params={"filename": output_filename, "subfolder": output_subfolder, "type": "output"},
+                timeout=60,
+            )
+            img_resp.raise_for_status()
+            return img_resp.content
         else:
             # Default: OpenAI DALL-E 3
             import openai as _openai
@@ -4500,6 +4571,68 @@ class Orchestrator(TestFixLoopMixin):
         img_resp = _requests.get(image_url, timeout=60)
         img_resp.raise_for_status()
         return img_resp.content
+
+    def _overlay_title_on_image(self, image_bytes: bytes, title: str, cfg: dict) -> bytes:
+        """Render the article title as a semi-transparent banner at the bottom of the image.
+
+        Config keys (all under press.image_api, all optional):
+          overlay_opacity     : 0-255 alpha of the dark banner (default 180)
+          overlay_height_pct  : banner height as % of image height (default 20)
+          overlay_font_size_pct: font size as % of image width (default 4.5)
+
+        Returns JPEG bytes with the overlay applied.
+        """
+        import io as _io
+        import textwrap as _textwrap
+        from PIL import Image as _PILImage, ImageDraw as _Draw, ImageFont as _Font
+
+        img = _PILImage.open(_io.BytesIO(image_bytes)).convert("RGBA")
+        w, h = img.size
+
+        opacity = int(cfg.get("overlay_opacity", 180))
+        banner_h = max(40, int(h * float(cfg.get("overlay_height_pct", 20)) / 100))
+        font_size = max(12, int(w * float(cfg.get("overlay_font_size_pct", 4.5)) / 100))
+
+        # Semi-transparent dark banner at the bottom
+        banner = _PILImage.new("RGBA", (w, banner_h), (0, 0, 0, opacity))
+        img.paste(banner, (0, h - banner_h), banner)
+
+        draw = _Draw.Draw(img)
+
+        # Try common system fonts; fall back to PIL default
+        font = None
+        for _fp in (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        ):
+            try:
+                font = _Font.truetype(_fp, font_size)
+                break
+            except (IOError, OSError):
+                continue
+        if font is None:
+            font = _Font.load_default()
+
+        padding = max(8, int(w * 0.04))
+        # Estimate chars per line from font size; textbbox-based wrapping would be
+        # more accurate but this avoids a binary-search loop on the first commit.
+        chars_per_line = max(10, int((w - 2 * padding) / (font_size * 0.55)))
+        wrapped = _textwrap.fill(title, width=chars_per_line)
+
+        # Vertically centre text within the banner
+        bbox = draw.textbbox((0, 0), wrapped, font=font)
+        text_h = bbox[3] - bbox[1]
+        text_y = h - banner_h + max(4, (banner_h - text_h) // 2)
+
+        # Drop-shadow then white text
+        draw.text((padding + 2, text_y + 2), wrapped, font=font, fill=(0, 0, 0, 200))
+        draw.text((padding, text_y), wrapped, font=font, fill=(255, 255, 255, 255))
+
+        buf = _io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=88, optimize=True)
+        return buf.getvalue()
 
     def _stage_image_generate(self, result: "PipelineResult") -> None:
         """Generate an AI image for the article in result.requirement.
@@ -4612,6 +4745,14 @@ class Orchestrator(TestFixLoopMixin):
             result.add_error(f"image_generate: image API call failed: {exc}")
             return
 
+        # Overlay article title as a banner when configured
+        image_api_cfg = (self._press_cfg or {}).get("image_api", {})
+        if title and image_api_cfg.get("title_overlay"):
+            try:
+                image_bytes = self._overlay_title_on_image(image_bytes, title, image_api_cfg)
+            except Exception as exc:
+                log.warning("image_generate: title overlay failed — using plain image: %s", exc)
+
         # Re-encode as JPEG to reduce file size if > 2 MB
         if len(image_bytes) > 2 * 1024 * 1024:
             try:
@@ -4626,8 +4767,7 @@ class Orchestrator(TestFixLoopMixin):
                 return
 
         # Derive image path from article stem
-        from pathlib import Path as _Path
-        stem = _Path(article_path).stem  # e.g. "20260528-042-linux-6-9-released"
+        stem = Path(article_path).stem  # e.g. "20260528-042-linux-6-9-released"
         image_path = f"articles/images/{stem}.jpg"
         image_fm_value = f"images/{stem}.jpg"  # relative path for frontmatter
 
@@ -4667,14 +4807,19 @@ class Orchestrator(TestFixLoopMixin):
         result.all_files[article_path] = updated_content
 
     def _stage_image_pr(self, result: "PipelineResult") -> None:
-        """Commit the generated image and updated article frontmatter, then open a PR.
+        """Commit the generated image and updated article frontmatter.
 
         Expects result.image_bytes, result.image_path, and result.image_article_path
         to have been populated by _stage_image_generate.
 
-        Sets result.pr_number and result.pr_url on success.
+        Inline mode (result.branch already set by a prior news_article_pr stage):
+          Commits the image and frontmatter update directly to the existing branch.
+          No new branch or PR is created; a comment is added to the existing PR instead.
+
+        Standalone mode (result.branch is None):
+          Creates a new branch image/<stem>, commits, and opens a new PR.
+          Sets result.pr_number and result.pr_url on success.
         """
-        from pathlib import Path as _Path
 
         if not result.image_bytes or not result.image_path or not result.image_article_path:
             result.add_error("image_pr: missing image data from image_generate stage")
@@ -4685,21 +4830,25 @@ class Orchestrator(TestFixLoopMixin):
             result.add_error("image_pr: no target_github configured")
             return
 
-        try:
-            repo_info = gh._request("GET", f"/repos/{gh.repo}")
-            base_branch = repo_info.get("default_branch", "main")
-        except Exception:
-            base_branch = "main"
+        stem = Path(result.image_article_path).stem
+        inline = bool(result.branch)  # True when news_article_pr already ran
 
-        stem = _Path(result.image_article_path).stem
-        branch = f"image/{stem}"
+        if inline:
+            branch = result.branch
+        else:
+            try:
+                repo_info = gh._request("GET", f"/repos/{gh.repo}")
+                base_branch = repo_info.get("default_branch", "main")
+            except Exception:
+                base_branch = "main"
 
-        try:
-            gh.create_branch(branch)
-        except Exception as exc:
-            result.add_error(f"image_pr: branch creation failed: {exc}")
-            return
-        result.branch = branch
+            branch = f"image/{stem}"
+            try:
+                gh.create_branch(branch)
+            except Exception as exc:
+                result.add_error(f"image_pr: branch creation failed: {exc}")
+                return
+            result.branch = branch
 
         # Commit binary image file
         try:
@@ -4713,12 +4862,12 @@ class Orchestrator(TestFixLoopMixin):
             result.add_error(f"image_pr: failed to commit image file: {exc}")
             return
 
-        # Commit updated article frontmatter
+        # Commit updated article frontmatter (image: field injected by image_generate)
         article_content = (result.all_files or {}).get(result.image_article_path, "")
         if not article_content:
             result.add_error(
                 f"image_pr: updated article content missing for {result.image_article_path}; "
-                "cannot open PR without frontmatter update"
+                "cannot update frontmatter without article content"
             )
             return
         try:
@@ -4732,21 +4881,33 @@ class Orchestrator(TestFixLoopMixin):
             result.add_error(f"image_pr: failed to commit article update: {exc}")
             return
 
-        # Open PR
-        title = f"image: {stem} — add generated article image"
-        pr_body = (
-            "## 🖼️ Generated Article Image\n\n"
-            f"Adds AI-generated image for `{result.image_article_path}`.\n\n"
-            f"- Image path: `{result.image_path}`\n\n"
-            "_Generated by AI IT Press image pipeline._"
-        )
-        try:
-            pr = gh.create_pull_request(title=title, body=pr_body, head=branch, base=base_branch)
-            result.pr_number = pr.get("number")
-            result.pr_url = pr.get("html_url")
-        except Exception as exc:
-            result.add_error(f"image_pr: PR creation failed: {exc}")
-            return
+        if inline:
+            # Image added to existing PR branch — post a comment, don't open another PR
+            if result.pr_number:
+                try:
+                    gh.add_pr_comment(
+                        result.pr_number,
+                        f"🖼️ AI-generated image added: `{result.image_path}`",
+                    )
+                except Exception:
+                    pass  # comment failure is non-fatal
+            console.print(f"  🖼️  [green]Image committed to existing branch:[/green] {branch}")
+        else:
+            # Standalone: open a new PR
+            title = f"image: {stem} — add generated article image"
+            pr_body = (
+                "## 🖼️ Generated Article Image\n\n"
+                f"Adds AI-generated image for `{result.image_article_path}`.\n\n"
+                f"- Image path: `{result.image_path}`\n\n"
+                "_Generated by AI IT Press image pipeline._"
+            )
+            try:
+                pr = gh.create_pull_request(title=title, body=pr_body, head=branch, base=base_branch)
+                result.pr_number = pr.get("number")
+                result.pr_url = pr.get("html_url")
+            except Exception as exc:
+                result.add_error(f"image_pr: PR creation failed: {exc}")
+                return
 
     def _stage_scan(self, result: PipelineResult) -> None:
         """Fetch repo file tree and optionally index into RAG.
@@ -4789,7 +4950,7 @@ class Orchestrator(TestFixLoopMixin):
     def _stage_engineer(self, result: PipelineResult) -> None:
         modules = result.modules[: max(self.num_engineers, len(result.modules))]
         # Determine project_dir for framework docs detection
-        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
+        safe = self._safe_project_slug(result.project_name)
         project_dir = (self.workspace_dir / safe).resolve()
         framework_context = self.framework_docs_loader.load(project_dir)
         engineer_context = ""
@@ -4868,7 +5029,7 @@ class Orchestrator(TestFixLoopMixin):
             console.print("  [dim]No junior modules to implement.[/dim]")
             return
 
-        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
+        safe = self._safe_project_slug(result.project_name)
         project_dir = (self.workspace_dir / safe).resolve()
         framework_context = self.framework_docs_loader.load(project_dir)
 
@@ -4960,11 +5121,10 @@ class Orchestrator(TestFixLoopMixin):
             result.all_files = dict(result.junior_files)
             return
 
-        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
+        safe = self._safe_project_slug(result.project_name)
         project_dir = (self.workspace_dir / safe).resolve()
         framework_context = self.framework_docs_loader.load(project_dir)
 
-        from concurrent.futures import ThreadPoolExecutor
 
         senior_results = []
         with ThreadPoolExecutor(max_workers=self.num_senior_engineers) as executor:
@@ -5051,10 +5211,7 @@ class Orchestrator(TestFixLoopMixin):
             # Index test files into RAG so Engineer can search test expectations
             if getattr(self, "repo_auto_indexer", None):
                 try:
-                    safe = "".join(
-                        c if c.isalnum() or c in "-_" else "_"
-                        for c in project_name.lower()
-                    )
+                    safe = self._safe_project_slug(project_name)
                     project_dir = str((self.workspace_dir / safe).resolve())
                     self.repo_auto_indexer.index_local_dir(project_dir)
                     _log.info(
@@ -5089,6 +5246,87 @@ class Orchestrator(TestFixLoopMixin):
         elif result.branch:
             console.print(f"[green]✅ Tests committed to branch: {result.branch}[/green]")
 
+    def _stage_superpowers_ingest(self, result: PipelineResult) -> None:
+        """Map Superpowers spec/plan artifacts onto the normal pipeline contract."""
+        artifacts = getattr(self, "_superpowers_artifacts", None) or {}
+        spec = (artifacts.get("spec") or "").strip()
+        plan = (artifacts.get("plan") or "").strip()
+        if not spec or not plan:
+            raise RuntimeError(
+                "superpowers_ingest requires both Superpowers spec and plan artifacts."
+            )
+
+        result.prd = spec
+        result.design = plan
+        result.project_name = self._infer_superpowers_project_name(spec, plan)
+        result.qa_acceptance_criteria = self._extract_acceptance_criteria(spec)
+        result.modules = self._extract_superpowers_modules(plan)
+        result.design_output = {"source": "superpowers", "artifacts": artifacts.get("sources", {})}
+        console.print(
+            f"[green]✅ Loaded Superpowers spec/plan "
+            f"({len(result.modules)} module/task item(s))[/green]"
+        )
+
+    @staticmethod
+    def _infer_superpowers_project_name(spec: str, plan: str) -> str:
+        """Infer a stable project name from the first markdown H1."""
+        for text in (spec, plan):
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("# "):
+                    title = stripped.removeprefix("# ").strip()
+                    match = re.match(
+                        r"^(.+?)\s+(Spec|Specification|Implementation Plan|Plan)$",
+                        title,
+                        flags=re.I,
+                    )
+                    if match:
+                        title = match.group(1).strip()
+                    if title:
+                        return title
+        return "Superpowers Planned Project"
+
+    @staticmethod
+    def _extract_acceptance_criteria(spec: str) -> list[str]:
+        """Extract bullet items following an acceptance-criteria heading."""
+        criteria: list[str] = []
+        in_section = False
+        heading_re = re.compile(r"^#{1,6}\s+|^[A-Za-z ].*:\s*$")
+        for line in spec.splitlines():
+            stripped = line.strip()
+            if re.search(r"acceptance criteria", stripped, re.I):
+                in_section = True
+                continue
+            if in_section and stripped.startswith(("- ", "* ")):
+                criteria.append(stripped[2:].strip())
+                continue
+            if in_section and stripped and heading_re.match(stripped):
+                break
+        return criteria
+
+    @staticmethod
+    def _extract_superpowers_modules(plan: str) -> list[dict]:
+        """Extract Superpowers task headings as implementation modules."""
+        modules: list[dict] = []
+        lines = plan.splitlines()
+        for idx, line in enumerate(lines):
+            match = re.match(r"^#{2,4}\s+Task\s+\d+\s*:\s*(.+?)\s*$", line.strip(), re.I)
+            if not match:
+                continue
+            description = ""
+            for following in lines[idx + 1:]:
+                text = following.strip()
+                if not text or text.startswith(("**Files:**", "- [ ]")):
+                    continue
+                if text.startswith("#"):
+                    break
+                description = text
+                break
+            modules.append({"name": match.group(1).strip(), "description": description})
+        if modules:
+            return modules
+        return [{"name": "Implementation Plan", "description": plan[:500].strip()}]
+
     def _stage_tdd_review(self, result: PipelineResult) -> None:
         """Review and auto-fix TDD test files before execution."""
         test_files = result.test_files
@@ -5104,9 +5342,14 @@ class Orchestrator(TestFixLoopMixin):
         )
         result.tdd_review_summary = summary
         result.test_files = revised
+        result.last_verdict = "APPROVED"
         if summary:
             _log.info("TDD review summary: %s", summary[:200])
             console.print(f"[green]✅ TDD review complete ({len(revised)} file(s))[/green]")
+
+    def _stage_qa_fix(self, result: PipelineResult) -> None:
+        """Named planned-pipeline alias for TDD test review and auto-fix."""
+        self._stage_tdd_review(result)
 
     def _stage_contract_validate(self, result: PipelineResult) -> None:
         """Validate test files against naming_contract.yaml (if present)."""
@@ -5154,7 +5397,7 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_test_runner(self, result: PipelineResult) -> None:
         """Run pytest on the locally saved test files and post results back to the PR."""
-        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
+        safe = self._safe_project_slug(result.project_name)
         project_dir = (self.workspace_dir / safe).resolve()  # absolute path — avoids doubled --rootdir when cwd changes
 
         # Install test requirements if present
@@ -5308,10 +5551,7 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_test_fix_loop(self, result: PipelineResult) -> None:
         """Run tests and automatically retry engineer fixes on failure."""
-        safe = "".join(
-            c if c.isalnum() or c in "-_" else "_"
-            for c in result.project_name.lower()
-        )
+        safe = self._safe_project_slug(result.project_name)
         project_dir = (self.workspace_dir / safe).resolve()
 
         get_all_files_fn, write_files_fn = self._make_project_file_helpers(project_dir)
@@ -5365,7 +5605,7 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_deploy_test_runner(self, result: PipelineResult) -> None:
         """Run deployment smoke tests via the configured backend."""
-        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in result.project_name.lower())
+        safe = self._safe_project_slug(result.project_name)
         project_dir = self.workspace_dir / safe
 
         deploy_result = self.deployment_tester.run_smoke_tests(
@@ -5435,10 +5675,7 @@ class Orchestrator(TestFixLoopMixin):
             console.print("    ⏭️  Skipping deploy fix loop — unit tests did not pass.")
             return
 
-        safe = "".join(
-            c if c.isalnum() or c in "-_" else "_"
-            for c in result.project_name.lower()
-        )
+        safe = self._safe_project_slug(result.project_name)
         project_dir = (self.workspace_dir / safe).resolve()
 
         get_all_files_fn, write_files_fn = self._make_project_file_helpers(project_dir)
@@ -5856,7 +6093,6 @@ class Orchestrator(TestFixLoopMixin):
 
     def _stage_news_article_pr(self, result: PipelineResult) -> None:
         """Commit the final article as a file and open a PR in the tracker repo."""
-        import re
         import yaml as _yaml
 
         article = result.article or result.article_draft
@@ -6092,6 +6328,7 @@ class Orchestrator(TestFixLoopMixin):
                 if timeout_s is not None:
                     import threading as _threading
                     exc_box: list[BaseException] = []
+                    cancelled = _threading.Event()
 
                     def _run_fn() -> None:
                         try:
@@ -6103,8 +6340,10 @@ class Orchestrator(TestFixLoopMixin):
                     t.start()
                     t.join(timeout=timeout_s)
                     if t.is_alive():
-                        # Thread leaked — it runs until LLM returns, but as a daemon
-                        # thread it will not block interpreter shutdown.
+                        # Thread leaked — set cancelled flag so any result
+                        # mutations from the thread are detected (the stage
+                        # fn should check cancelled.is_set() periodically).
+                        cancelled.set()
                         _record_leaked_thread(name)
                         error_msg = (
                             f"{name} timed out after {timeout_s}s "
@@ -6230,7 +6469,7 @@ class Orchestrator(TestFixLoopMixin):
 
     def _save_files_locally(self, files: dict[str, str], project_name: str) -> None:
         """Save generated files to the local workspace directory."""
-        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in project_name.lower())
+        safe = self._safe_project_slug(project_name)
         project_dir = self.workspace_dir / safe
         project_dir.mkdir(parents=True, exist_ok=True)
         for filepath, content in files.items():
@@ -6240,7 +6479,7 @@ class Orchestrator(TestFixLoopMixin):
 
     def _checkpoint_path(self, result: PipelineResult) -> Path:
         """Return the checkpoint file path for a given pipeline result."""
-        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (result.project_name or result.requirement[:40]).lower())
+        safe = self._safe_project_slug(result.project_name or result.requirement[:40])
         return self.workspace_dir / safe / "checkpoint.json"
 
     def _save_checkpoint(self, result: PipelineResult) -> None:
@@ -6323,6 +6562,7 @@ class Orchestrator(TestFixLoopMixin):
         # ── Save run summary to long-term memory ──────────────────────────────
         active_repo = (self.target_github.repo if self.target_github else
                        (self.github.repo if self.github else "local"))
+        summary_text = ""
         try:
             summary_text = self.summariser.summarise(
                 repo=active_repo,
@@ -6355,7 +6595,7 @@ class Orchestrator(TestFixLoopMixin):
                     model=mb_model,
                     github_token=self._github_token,
                 )
-                summary_for_bank = locals().get("summary_text", getattr(result, "requirement", "")[:200])
+                summary_for_bank = summary_text or getattr(result, "requirement", "")[:200]
                 updated_bank = updater.update(current_bank, summary_for_bank)
                 self._write_memory_bank(updated_bank, self.target_github, result.branch)
             except Exception as exc:
@@ -6434,7 +6674,6 @@ class Orchestrator(TestFixLoopMixin):
         Returns filename -> content for all 6 bank files.
         Files that don't exist yet return empty string (first run).
         """
-        import base64
 
         bank_names = [
             "projectbrief.md", "productContext.md", "systemPatterns.md",

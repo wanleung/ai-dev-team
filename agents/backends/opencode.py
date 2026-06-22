@@ -104,7 +104,6 @@ class OpenCodeBackend(LLMBackend):
                     bin_path, "run",
                     "--model", self.model,
                     "--file", tmp_path,
-                    "--dangerously-skip-permissions",
                     "--",
                     "Follow the instructions in the attached file exactly.",
                 ]

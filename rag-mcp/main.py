@@ -24,8 +24,9 @@ import logging
 import os
 
 from mcp.server.fastmcp import FastMCP
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from db import search_chunks
 from embedder import Embedder, EmbedderError
@@ -34,9 +35,30 @@ log = logging.getLogger(__name__)
 
 _TOP_K = int(os.environ.get("RAG_TOP_K", "5"))
 _MAX_TOP_K = int(os.environ.get("RAG_MAX_TOP_K", "100"))
+_MCP_API_KEY = os.environ.get("RAG_MCP_API_KEY", "")
 _embedder = Embedder()
 
 mcp = FastMCP("rag-mcp-server")
+
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    """Require ``Authorization: Bearer <key>`` when ``RAG_MCP_API_KEY`` is set.
+
+    Health-check endpoint is always open so Docker healthchecks work without a
+    key.  All other requests must present the correct Bearer token.
+    """
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        # Always allow health checks through
+        if request.url.path == "/health":
+            return await call_next(request)
+        # If no key is configured, allow all (dev mode with warning logged once)
+        if not _MCP_API_KEY:
+            return await call_next(request)
+        auth = request.headers.get("authorization", "")
+        if auth == f"Bearer {_MCP_API_KEY}":
+            return await call_next(request)
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -139,7 +161,9 @@ async def search_standards(query: str, top_k: int = _TOP_K) -> str:
 
 
 # ASGI app for uvicorn — used by Dockerfile CMD
-mcp_http_app = mcp.streamable_http_app()
+_base_http_app = mcp.streamable_http_app()
+_base_http_app.add_middleware(APIKeyMiddleware)
+mcp_http_app = _base_http_app
 
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")

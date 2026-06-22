@@ -7,14 +7,14 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from .base_agent import BaseAgent
+from .tool_capable import ToolCapableAgentMixin
 
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
 
 _log = logging.getLogger(__name__)
 
-
-class QAEngineerAgent(BaseAgent):
+class QAEngineerAgent(ToolCapableAgentMixin, BaseAgent):
     """QA Engineer Agent — writes pytest tests and validates acceptance criteria.
 
     Input:  dict of {filepath: content} + PRD (for acceptance criteria)
@@ -47,7 +47,7 @@ class QAEngineerAgent(BaseAgent):
                 - tests_ran (bool): False only when write_only=True
         """
         prompt = self._build_qa_prompt(prd, project_name, test_plan, write_only, files)
-        response = self._call_llm_with_tools(prompt, write_only)
+        response = self._call_llm_with_tools(prompt, write_only=write_only)
         test_files = self._parse_test_files(response)
         test_files = self._fix_syntax_errors(prompt, test_files)
         test_files = self._fix_generation_rule_errors(prompt, test_files)
@@ -99,6 +99,30 @@ class QAEngineerAgent(BaseAgent):
         return result
 
     @staticmethod
+    def _sanitize_path(path: str) -> str | None:
+        """Validate and normalise a file path from LLM output.
+
+        Returns the normalised path, or *None* if the path is unsafe
+        (directory traversal, absolute path, or outside project root).
+        """
+        import posixpath
+        # Reject absolute paths
+        if path.startswith("/") or path.startswith("\\"):
+            return None
+        # Normalise to collapse ``..``, ``.``, double slashes
+        normalised = posixpath.normpath(path)
+        # Reject traversal — normpath resolves ``..`` at the start as ``..``
+        if normalised.startswith("..") or "/../" in normalised:
+            return None
+        # Reject Windows-style traversal
+        if "..\\" in path or normalised.startswith("..\\"):
+            return None
+        # Reject empty or current-dir-only
+        if normalised in ("", "."):
+            return None
+        return normalised
+
+    @staticmethod
     def _parse_test_files(response: str) -> dict[str, str]:
         """Parse '### FILE: tests/...' sections from the QA response.
         Also captures conftest.py and requirements-test.txt.
@@ -110,7 +134,8 @@ class QAEngineerAgent(BaseAgent):
             if line.strip().startswith("### FILE:"):
                 if current_path and current_lines:
                     files[current_path] = "\n".join(current_lines).strip()
-                current_path = line.strip().removeprefix("### FILE:").strip()
+                raw_path = line.strip().removeprefix("### FILE:").strip()
+                current_path = QAEngineerAgent._sanitize_path(raw_path)
                 current_lines, in_code_block, saw_fence = [], False, False
                 continue
             if current_path is not None:
@@ -255,6 +280,7 @@ class QAEngineerAgent(BaseAgent):
         self, original_prompt: str, files: dict[str, str], issues: list[str]
     ) -> dict[str, str]:
         """Ask the LLM to fix deterministic pytest generation rule violations."""
+        self._cap_history(max_exchanges=3)  # Prevent context blow-up in fix loops
         issue_list = "\n".join(f"  - {issue}" for issue in issues)
         files_section = "\n\n".join(
             f"### FILE: {path}\n```python\n{content}\n```"
@@ -277,55 +303,23 @@ class QAEngineerAgent(BaseAgent):
         revised_response = self.call(fix_prompt)
         return self._parse_test_files(revised_response)
 
-    def _call_llm_with_tools(self, prompt: str, write_only: bool) -> str:
-        """Call LLM with optional tool registry support."""
-        if self._tool_registry is not None and not write_only:
-            rag_hint = (
-                "\n\nYou have access to the `search_codebase` RAG tool. "
-                "Use it to find relevant existing code patterns before writing tests."
-            )
-            try:
-                return self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
-            except NotImplementedError:
-                return self.call(prompt)
-        return self.call(prompt)
-
-    def _enforce_function_size_rule(self, original_prompt: str, files: dict[str, str]) -> dict[str, str]:
-        """Validate test files against the 80-line rule and retry once if violations found.
-
-        Returns the (possibly revised) files dict. Never raises.
-        """
-        violations = self._validate_code_strings(files)
-        if not violations:
-            return files
-        _log.info("80-line violations in test files, requesting fix: %s", violations)
-        try:
-            revised = self._request_function_size_fix(original_prompt, files, violations)
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("80-line retry failed: %s — keeping original test output", exc)
-            return files
-        remaining = self._validate_code_strings(revised)
-        if remaining:
-            _log.warning("80-line violations persist in test files after retry: %s", remaining)
-        return revised
-
-    def _request_function_size_fix(
-        self, original_prompt: str, files: dict[str, str], violations: list[str]
-    ) -> dict[str, str]:
-        """Ask the LLM to split oversized test helper functions and return revised files."""
-        violation_list = "\n".join(f"  - {v}" for v in violations)
-        fix_prompt = (
-            f"{original_prompt}\n\n"
-            f"---\n"
-            f"The following test helper functions exceed the 80-line rule:\n"
-            f"{violation_list}\n\n"
-            f"Please rewrite ONLY these functions, extracting shared setup into pytest fixtures "
-            f"or small helpers (≤80 lines each). "
-            f"Output ALL test files again using the '### FILE: tests/...' format."
+    @property
+    def _rag_hint(self) -> str:
+        """RAG tool hint for QA agent — only search_codebase."""
+        return (
+            "\n\nYou have access to the `search_codebase` RAG tool. "
+            "Use it to find relevant existing code patterns before writing tests."
         )
-        revised_response = self.call(fix_prompt)
-        revised = self._parse_test_files(revised_response)
-        return revised or files
+
+    @property
+    def _file_parser(self) -> callable:
+        """Parse ``### FILE: tests/...`` sections from LLM output."""
+        return self._parse_test_files
+
+    @property
+    def _size_fix_label(self) -> str:
+        """Label for 80-line violation prompts."""
+        return "test helper functions"
 
     @staticmethod
     def _normalize_test_paths(files: dict[str, str]) -> dict[str, str]:

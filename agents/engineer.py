@@ -11,14 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Optional
 
 from .base_agent import BaseAgent
-
+from .tool_capable import ToolCapableAgentMixin
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
 
 _log = logging.getLogger(__name__)
 
 
-class EngineerAgent(BaseAgent):
+class EngineerAgent(ToolCapableAgentMixin, BaseAgent):
     """Engineer Agent — writes code for assigned modules.
 
     Input:  system design + specific module to implement
@@ -164,6 +164,30 @@ class EngineerAgent(BaseAgent):
         return self._parse_files(response)
 
     @staticmethod
+    def _sanitize_path(path: str) -> str | None:
+        """Validate and normalise a file path from LLM output.
+
+        Returns the normalised path, or *None* if the path is unsafe
+        (directory traversal, absolute path, or outside project root).
+        """
+        import posixpath
+        # Reject absolute paths
+        if path.startswith("/") or path.startswith("\\"):
+            return None
+        # Normalise to collapse ``..``, ``.``, double slashes
+        normalised = posixpath.normpath(path)
+        # Reject traversal — normpath resolves ``..`` at the start as ``..``
+        if normalised.startswith("..") or "/../" in normalised:
+            return None
+        # Reject Windows-style traversal
+        if "..\\" in path or normalised.startswith("..\\"):
+            return None
+        # Reject empty or current-dir-only
+        if normalised in ("", "."):
+            return None
+        return normalised
+
+    @staticmethod
     def _parse_files(response: str) -> dict[str, str]:
         """Parse '### FILE: path' sections from the LLM response into a dict."""
         files, current_path, current_lines = {}, None, []
@@ -173,7 +197,8 @@ class EngineerAgent(BaseAgent):
             if line.strip().startswith("### FILE:"):
                 if current_path and current_lines:
                     files[current_path] = "\n".join(current_lines).strip()
-                current_path = line.strip().removeprefix("### FILE:").strip()
+                raw_path = line.strip().removeprefix("### FILE:").strip()
+                current_path = EngineerAgent._sanitize_path(raw_path)
                 current_lines, in_code_block, saw_fence = [], False, False
                 continue
             if current_path is not None:
@@ -233,55 +258,10 @@ class EngineerAgent(BaseAgent):
             f"{scaffold_hint}"
         )
 
-    def _call_llm_with_tools(self, prompt: str) -> str:
-        """Call LLM with optional tool registry support."""
-        if self._tool_registry is not None:
-            rag_hint = (
-                "\n\nYou have access to RAG search tools: `search_codebase` and `search_docs`. "
-                "Use them to find relevant existing code patterns and documentation before implementing."
-            )
-            try:
-                return self.call_with_tools(prompt + rag_hint, tools=self._tool_registry)
-            except NotImplementedError:
-                return self.call(prompt)
-        return self.call(prompt)
-
-    def _enforce_function_size_rule(self, original_prompt: str, files: dict[str, str]) -> dict[str, str]:
-        """Validate generated files against the 80-line rule and retry once if violations found.
-
-        Returns the (possibly revised) files dict. Never raises — if validation or
-        the retry itself fails, returns the original files and logs a warning.
-        """
-        violations = self._validate_code_strings(files)
-        if not violations:
-            return files
-        _log.info("80-line violations found, requesting fix: %s", violations)
-        try:
-            revised = self._request_function_size_fix(original_prompt, files, violations)
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("80-line retry failed: %s — keeping original output", exc)
-            return files
-        remaining = self._validate_code_strings(revised)
-        if remaining:
-            _log.warning("80-line violations persist after retry: %s", remaining)
-        return revised
-
-    def _request_function_size_fix(
-        self, original_prompt: str, files: dict[str, str], violations: list[str]
-    ) -> dict[str, str]:
-        """Ask the LLM to split functions that exceed 80 lines and return revised files."""
-        violation_list = "\n".join(f"  - {v}" for v in violations)
-        fix_prompt = (
-            f"{original_prompt}\n\n"
-            f"---\n"
-            f"The following functions in your output exceed the 80-line rule:\n"
-            f"{violation_list}\n\n"
-            f"Please rewrite ONLY these functions, splitting each into smaller helpers "
-            f"(≤80 lines each) with clear, descriptive names. "
-            f"Output ALL files again using the '### FILE: path' format, including the revised functions."
-        )
-        revised_response = self._call_llm_with_tools(fix_prompt)
-        return self._parse_files(revised_response) or files
+    @property
+    def _file_parser(self) -> callable:
+        """Parse ``### FILE: path`` sections from LLM output."""
+        return self._parse_files
 
     def _submit_module_futures(
         self, modules: list[dict], design: str, project_name: str, 

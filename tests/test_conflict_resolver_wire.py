@@ -63,11 +63,13 @@ def test_conflict_resolver_called_on_409(orch, pr_ctx):
     MockResolver.assert_called_once()
 
     # resolve() must have been called with the correct branches and pr_context
+    # resolve() must have been called with clean URL and separate github_token
     instance.resolve.assert_called_once_with(
-        repo_url="https://ghp_test@github.com/owner/repo.git",
+        repo_url="https://github.com/owner/repo.git",
         head_branch="feature/my-branch",
         base_branch="main",
         pr_context=pr_ctx,
+        github_token="ghp_test",
     )
 
     # After resolution the retry merge was called and we got "merged"

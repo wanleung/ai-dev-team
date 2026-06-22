@@ -37,6 +37,7 @@ services:
       # VLLM_MODEL: BAAI/bge-m3
       RAG_TOP_K: ${RAG_TOP_K:-5}
       RAG_MAX_TOP_K: ${RAG_MAX_TOP_K:-100}
+      RAG_MCP_API_KEY: ${RAG_MCP_API_KEY:-}
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]

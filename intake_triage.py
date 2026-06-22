@@ -48,7 +48,7 @@ _ITEM_VERDICT_NO_NOTES_RE = re.compile(
 def _parse_batch_verdicts(text: str, item_count: int) -> list[tuple[str, str]]:
     """Parse moderator synthesis into per-item (verdict, notes) tuples.
 
-    Fail-open: any unparseable or missing item defaults to ("PUBLISH", "").
+    Fail-safe: any unparseable or missing item defaults to ("SKIP", "unparseable LLM output").
     """
     results: dict[int, tuple[str, str]] = {}
 
@@ -65,7 +65,7 @@ def _parse_batch_verdicts(text: str, item_count: int) -> list[tuple[str, str]]:
         if idx not in results:
             results[idx] = (m.group(2).upper(), "")
 
-    return [(results.get(i, ("PUBLISH", ""))) for i in range(1, item_count + 1)]
+    return [(results.get(i, ("SKIP", "unparseable LLM output"))) for i in range(1, item_count + 1)]
 
 
 def _build_batch_context(

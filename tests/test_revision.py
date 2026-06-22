@@ -456,10 +456,11 @@ def test_update_branch_conflict_ai_resolves(orch):
     MockResolver.assert_called_once()
     # resolve() was invoked with the right branches and pr_context
     instance.resolve.assert_called_once_with(
-        repo_url="https://ghp_test@github.com/owner/repo.git",
+        repo_url="https://github.com/owner/repo.git",
         head_branch="feature/agent/1-my-pr",
         base_branch="master",
         pr_context=pr_ctx,
+        github_token="ghp_test",
     )
     # Retry merge was attempted after resolution
     assert orch.target_github.merge_base_into_branch.call_count == 2

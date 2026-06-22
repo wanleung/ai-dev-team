@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 # ── config.yaml models ──────────────────────────────────────────────────────
 
 class LLMConfig(BaseModel):
-    model_config = {"extra": "allow"}   # allow unknown agent override keys
+    model_config = {"extra": "ignore"}   # allow unknown agent override keys
 
     model: str = "gpt-4.1"
     fallback: Optional[List[str]] = None
@@ -23,21 +23,21 @@ class LLMConfig(BaseModel):
 
 
 class GithubConfig(BaseModel):
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     repo: str = ""
     token: Optional[str] = None
 
 
 class PipelineChainingConfig(BaseModel):
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     on_test_failure: Optional[str] = None
     on_review_issues: Optional[str] = None
 
 
 class PipelineConfig(BaseModel):
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     num_engineers: int = 2
     max_revisions: int = 3
@@ -46,7 +46,7 @@ class PipelineConfig(BaseModel):
 
 
 class OllamaConfig(BaseModel):
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     url: str = "http://localhost:11434"
     api_key: Optional[str] = None
@@ -158,7 +158,7 @@ class ReliabilityConfig(BaseModel):
 
 
 class TriageConfig(BaseModel):
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     scope: str = (
         "Focus areas: AI, software development tools, cybersecurity, Hong Kong tech scene, "
@@ -171,7 +171,7 @@ class TriageConfig(BaseModel):
 
 
 class PressConfig(BaseModel):
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     triage: TriageConfig = Field(default_factory=TriageConfig)
 
@@ -179,7 +179,7 @@ class PressConfig(BaseModel):
 # ── intake triage config ──────────────────────────────────────────────────────
 
 class IntakeTriggerConfig(BaseModel):
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     min_count: Optional[int] = 5
     max_age_hours: Optional[float] = 6.0
@@ -187,14 +187,14 @@ class IntakeTriggerConfig(BaseModel):
 
 
 class IntakeBatchConfig(BaseModel):
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     max_size: int = 10
     body_preview_chars: int = 300
 
 
 class IntakeVerdictConfig(BaseModel):
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     mode: str = "binary"
     score_threshold: Optional[float] = 6.0
@@ -211,7 +211,7 @@ class IntakeVerdictConfig(BaseModel):
 
 
 class IntakeTriageConfig(BaseModel):
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     enabled: bool = False
     tracker: str = "github"
@@ -234,7 +234,7 @@ class IntakeTriageConfig(BaseModel):
 
 class WatcherSettings(BaseModel):
     """Global watcher settings (config.yaml `settings:` block)."""
-    model_config = {"extra": "allow"}   # forward-compatibility: unknown keys are warnings, not errors
+    model_config = {"extra": "ignore"}   # forward-compatibility: unknown keys are warnings, not errors
 
     log_dir: str = "logs/watcher"
     max_parallel: int = 3
@@ -280,14 +280,14 @@ class AppConfig(BaseModel):
 
 class LabelConfig(BaseModel):
     """Extended label config that supports multi-run and other per-label options."""
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     pipeline: Optional[str] = None
     multi_run: bool = False
 
 
 class RepoWatcherEntry(BaseModel):
-    model_config = {"extra": "allow"}   # allow custom keys for future expansion
+    model_config = {"extra": "ignore"}   # allow custom keys for future expansion
 
     tracker_repo: str
     default_target: Optional[str] = None
