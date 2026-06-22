@@ -42,7 +42,6 @@ from tenacity import (
     retry,
     retry_if_exception,
     stop_after_attempt,
-    wait_exponential,
     before_sleep_log,
 )
 from utils import sanitise as _sanitise, deep_merge as _deep_merge
@@ -241,7 +240,7 @@ def _get_open_issues_raw(
                 continue  # skip PRs
             if issue["number"] in seen:
                 continue  # already added via another label
-            issue_labels = {l["name"] for l in issue.get("labels", [])}
+            issue_labels = {lbl_d["name"] for lbl_d in issue.get("labels", [])}
             if issue_labels & effective_skip:
                 continue  # already processed or in progress
             seen.add(issue["number"])

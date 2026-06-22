@@ -243,7 +243,7 @@ class EngineerAgent(ToolCapableAgentMixin, BaseAgent):
         )
 
     def _build_module_prompt(
-        self, module: dict, design: str, project_name: str, 
+        self, module: dict, design: str, project_name: str,
         framework_section: str, test_section: str, scaffold_hint: str
     ) -> str:
         """Build the complete module implementation prompt."""
@@ -264,7 +264,7 @@ class EngineerAgent(ToolCapableAgentMixin, BaseAgent):
         return self._parse_files
 
     def _submit_module_futures(
-        self, modules: list[dict], design: str, project_name: str, 
+        self, modules: list[dict], design: str, project_name: str,
         framework_context: str, test_files: dict[str, str] | None, max_workers: int
     ) -> list[dict]:
         """Submit module implementation tasks to thread pool and collect results."""
@@ -306,7 +306,7 @@ class EngineerAgent(ToolCapableAgentMixin, BaseAgent):
 
     @staticmethod
     def _open_implementation_pr(
-        github_client, project_name: str, modules: list[dict], 
+        github_client, project_name: str, modules: list[dict],
         branch_name: str, issue_number: Optional[int], file_count: int
     ) -> dict:
         """Create and return the implementation PR."""
@@ -326,7 +326,7 @@ class EngineerAgent(ToolCapableAgentMixin, BaseAgent):
         )
 
     def _build_fix_prompt(
-        self, failure_output: str, all_files: dict[str, str], 
+        self, failure_output: str, all_files: dict[str, str],
         design: str, project_name: str, framework_context: str
     ) -> str:
         """Build the fix failures prompt."""

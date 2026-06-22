@@ -111,7 +111,7 @@ class ConflictResolverAgent(BaseAgent):
         """Fetch base branch and attempt merge.
         
         Returns:
-            (success, error_reason): success=True if clean merge, False if conflicts, 
+            (success, error_reason): success=True if clean merge, False if conflicts,
                                      error_reason set only if git operation failed
         """
         r = self._run(["git", "fetch", "origin", base_branch], cwd=tmpdir)

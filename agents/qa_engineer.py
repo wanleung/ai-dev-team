@@ -168,7 +168,7 @@ class QAEngineerAgent(ToolCapableAgentMixin, BaseAgent):
         return "\n".join(plan_lines).strip() if plan_lines else response.strip()
 
     def _build_qa_prompt(
-        self, prd: str, project_name: str, test_plan: str, 
+        self, prd: str, project_name: str, test_plan: str,
         write_only: bool, files: dict[str, str]
     ) -> str:
         """Build the QA prompt based on mode (TDD write-only or normal)."""
@@ -359,7 +359,7 @@ class QAEngineerAgent(ToolCapableAgentMixin, BaseAgent):
 
     @staticmethod
     def _close_tracker_issue(
-        tracker_client, issue_number: int, project_name: str, 
+        tracker_client, issue_number: int, project_name: str,
         file_count: int, test_file_count: int
     ) -> None:
         """Close the tracker issue with a completion summary."""

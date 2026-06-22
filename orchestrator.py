@@ -1237,7 +1237,6 @@ class Orchestrator(TestFixLoopMixin):
         Supports both string overrides (model name only) and dict overrides
         (full per-agent settings).
         """
-        from agents.backends.factory import create_backend
         from agents.backends.base import LLMBackend as _LLMBackend  # noqa: F401
 
         # Merge global cfg with per-agent override
@@ -6316,7 +6315,6 @@ class Orchestrator(TestFixLoopMixin):
                 ))
                 return
 
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
         with Progress(
             SpinnerColumn(),
             TextColumn(f"[bold blue]{name}[/bold blue] {description}"),
