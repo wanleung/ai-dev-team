@@ -1308,7 +1308,7 @@ def _find_checkpoint_for_issue(workspace_dir: str, issue_number: int) -> Optiona
     pattern = os.path.join(workspace_dir, "**", "checkpoint_*.json")
     for path in glob.glob(pattern, recursive=True):
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             if data.get("issue_number") == issue_number:
                 return path
@@ -1368,7 +1368,7 @@ def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_
                 continue
 
             try:
-                with open(checkpoint_path) as f:
+                with open(checkpoint_path, encoding="utf-8") as f:
                     data = json.load(f)
                 result = PipelineResult.from_dict(data)
             except Exception as exc:
@@ -1412,7 +1412,7 @@ def check_waiting_issues(github_token: str, tracker_repos: list[str], workspace_
             result.pending_clarification = None
 
             # Save updated checkpoint
-            with open(checkpoint_path, "w") as f:
+            with open(checkpoint_path, "w", encoding="utf-8") as f:
                 json.dump(result.to_dict(), f, indent=2)
 
             # Switch labels: remove agent-waiting, add agent-running
@@ -1456,7 +1456,7 @@ def _process_resume_queue(workspace_dir: str, tracker_repos: list[str], default_
     tasks = []
     for trigger_path in glob.glob(os.path.join(trigger_dir, "resume_*.json")):
         try:
-            with open(trigger_path) as f:
+            with open(trigger_path, encoding="utf-8") as f:
                 try:
                     fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:

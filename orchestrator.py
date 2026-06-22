@@ -4889,8 +4889,8 @@ class Orchestrator(TestFixLoopMixin):
                         result.pr_number,
                         f"🖼️ AI-generated image added: `{result.image_path}`",
                     )
-                except Exception:
-                    pass  # comment failure is non-fatal
+                except Exception as exc:
+                    log.debug("image_generate: PR comment failed (non-fatal): %s", exc)
             console.print(f"  🖼️  [green]Image committed to existing branch:[/green] {branch}")
         else:
             # Standalone: open a new PR
@@ -6041,8 +6041,8 @@ class Orchestrator(TestFixLoopMixin):
                 import yaml as _yaml
                 fm = _yaml.safe_load(fm_match.group(1)) or {}
                 source_url = str(fm.get("source_url", ""))
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Frontmatter parse failed (non-critical): %s", exc)
 
         for attempt in range(max_retries + 1):
             out = self.news_reviewer.run(
@@ -6528,7 +6528,8 @@ class Orchestrator(TestFixLoopMixin):
                 candidate = PipelineResult.from_dict(data)
                 if best is None or len(candidate.completed_stages) > len(best.completed_stages):
                     best = candidate
-            except Exception:
+            except Exception as exc:
+                log.debug("Skipping corrupt checkpoint %s: %s", checkpoint_file, exc)
                 continue
         return best
 
@@ -6538,8 +6539,8 @@ class Orchestrator(TestFixLoopMixin):
             path = self._checkpoint_path(result)
             try:
                 path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Checkpoint deletion failed: %s", exc)
 
     def _ensure_github_labels(self) -> None:
         """Create standard labels in the repo if they don't exist."""
@@ -6552,8 +6553,8 @@ class Orchestrator(TestFixLoopMixin):
         ]
         try:
             self.github.ensure_labels(labels)
-        except Exception:
-            pass  # Label setup is non-critical
+        except Exception as exc:
+            log.debug("Label setup failed (non-critical): %s", exc)
 
     def _finish(self, result: PipelineResult, start_time: float) -> PipelineResult:
         """Print summary, save memory, and return the final result."""
