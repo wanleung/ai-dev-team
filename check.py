@@ -58,7 +58,7 @@ def cmd_validate_config(config: str, repos: str) -> int:
         console.print(f"  [yellow]⚠️  File not found: {repos} (optional)[/yellow]")
     else:
         try:
-            with open(repos) as f:
+            with open(repos, encoding="utf-8") as f:
                 raw = yaml.safe_load(f) or {}
             watchers = raw.get("watchers", [])
             if not watchers:

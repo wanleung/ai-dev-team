@@ -1747,7 +1747,7 @@ class Orchestrator(TestFixLoopMixin):
                     continue
                 dest = os.path.join(tmpdir, safe_rel)
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with open(dest, "w") as f:
+                with open(dest, "w", encoding="utf-8") as f:
                     f.write(content)
 
             # Step 1: syntax check
@@ -5003,7 +5003,7 @@ class Orchestrator(TestFixLoopMixin):
             for filepath, content in files.items():
                 dest = os.path.join(tmpdir, filepath)
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with open(dest, "w") as f:
+                with open(dest, "w", encoding="utf-8") as f:
                     f.write(content)
             test_paths = [os.path.join(tmpdir, p) for p in test_files]
             proc = subprocess.run(

@@ -27,7 +27,7 @@ def _get_conn():
 
 def apply_migration(sql_path: str) -> None:
     """Run a SQL file against the database (idempotent — uses IF NOT EXISTS)."""
-    with open(sql_path) as f:
+    with open(sql_path, encoding="utf-8") as f:
         sql = f.read()
     conn = _get_conn()
     try:
