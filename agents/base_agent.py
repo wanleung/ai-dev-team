@@ -132,6 +132,9 @@ def _truncate_to_budget(
     return result
 
 
+class ContentFilteredError(RuntimeError):
+    """Raised when the LLM returns a content-filter rejection instead of a valid response."""
+    pass
 class BaseAgent:
     """Base class for all software house agents.
 
@@ -551,6 +554,23 @@ class BaseAgent:
 
     # ── Core LLM interface ─────────────────────────────────────────────────────
 
+    # ── Content filter detection ──────────────────────────────────────────────
+
+    _CONTENT_FILTER_PATTERNS: tuple[str, ...] = (
+        "the request was rejected because it was considered high risk",
+        "i can't assist with",
+        "i'm not able to help with",
+        "content_policy_violation",
+        "content policy violation",
+        "this request has been blocked by content filter",
+    )
+
+    @staticmethod
+    def _is_content_filter_rejection(text: str) -> bool:
+        """Return True if *text* looks like an LLM content-filter rejection."""
+        lower = text.lower().strip()
+        return any(pattern in lower for pattern in BaseAgent._CONTENT_FILTER_PATTERNS)
+
     def call(self, user_message: str, context: Optional[str] = None) -> str:
         """Send a message to the LLM and return the response.
 
@@ -564,16 +584,22 @@ class BaseAgent:
 
         Returns:
             The assistant's reply text.
+
+        Raises:
+            ContentFilteredError: If the LLM response is a content-filter rejection.
         """
         full_message = f"{context}\n\n{user_message}" if context else user_message
         if self._backend in ("anthropic",) or self._is_anthropic_zen_go_backend():
-            return self._call_anthropic(full_message)
-        if self._backend == "opencode":
-            return self._call_opencode(full_message)
-        messages = self._build_messages(full_message)
-        from llm_pool import get_pool
-        with get_pool().acquire(self._backend):
-            reply = self._llm.call(messages)
+            reply = self._call_anthropic(full_message)
+        elif self._backend == "opencode":
+            reply = self._call_opencode(full_message)
+        else:
+            messages = self._build_messages(full_message)
+            from llm_pool import get_pool
+            with get_pool().acquire(self._backend):
+                reply = self._llm.call(messages)
+        if self._is_content_filter_rejection(reply):
+            raise ContentFilteredError(reply[:200])
         self._record_exchange(full_message, reply)
         return reply
 

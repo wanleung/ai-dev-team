@@ -1,5 +1,5 @@
 """agents package — all software house agent classes."""
-from .base_agent import BaseAgent
+from .base_agent import BaseAgent, ContentFilteredError
 from .product_manager import ProductManagerAgent
 from .pm_reviewer import PMReviewerAgent
 from .architect import ArchitectAgent
@@ -19,6 +19,7 @@ from .news_reviewer import NewsReviewerAgent
 
 __all__ = [
     "BaseAgent",
+    "ContentFilteredError",
     "ProductManagerAgent",
     "PMReviewerAgent",
     "ArchitectAgent",

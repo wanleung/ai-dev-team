@@ -31,6 +31,7 @@ from agents import (
     ArchitectAgent,
     ArchitectReviewerAgent,
     CodeReviewerAgent,
+    ContentFilteredError,
     ContractValidatorAgent,
     DeploymentTesterAgent,
     EngineerAgent,
