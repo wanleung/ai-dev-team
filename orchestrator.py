@@ -5968,28 +5968,51 @@ class Orchestrator(TestFixLoopMixin):
         return stripped
 
     def _stage_news_writer(self, result: PipelineResult) -> None:
-        """Write a first-draft news article from the issue brief."""
+        """Write a first-draft news article from the issue brief.
+
+        Retries up to 2 times on content-filter rejections or truncated responses.
+        """
         from datetime import datetime as _datetime
+        from agents.base_agent import ContentFilteredError
+
         issue_body = getattr(result, "issue_body", "") or result.requirement
         synthesis = result.discussion_synthesis or ""
-        # Prepend editorial triage notes so the writer knows the agreed angle
         if result.editorial_notes:
             issue_body = f"[EDITORIAL NOTES]\n{result.editorial_notes}\n\n" + issue_body
-        # Inject today's publication date so the writer uses it in frontmatter,
-        # not the source article's original publication date.
         pub_date = _datetime.utcnow().strftime("%Y-%m-%dT%H:%M:00")
         issue_body = f"[PUBLICATION DATE: {pub_date}]\n\n" + issue_body
-        wr = self.news_writer.run(issue_body, discussion_synthesis=synthesis)
-        draft = self._strip_article_code_fence(wr.get("article_draft", "") or "")
-        if not draft:
-            raise RuntimeError("NewsWriter produced an empty draft — LLM may have returned no content.")
-        fm_err = self._validate_article_frontmatter(draft, "NewsWriter")
-        if fm_err:
-            raise RuntimeError(fm_err)
-        result.article_draft = draft
-        # Do NOT clear discussion_synthesis here — if discuss_news_draft runs next it
-        # will overwrite it; if it doesn't run the editor should still see the
-        # pre-write analysis synthesis from discuss_news_analysis.
+
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                wr = self.news_writer.run(issue_body, discussion_synthesis=synthesis)
+            except ContentFilteredError as exc:
+                if attempt < max_retries:
+                    console.print(f"  ⚠️  [yellow]Content filter triggered, retrying ({attempt + 1}/{max_retries})...[/yellow]")
+                    continue
+                raise RuntimeError(f"NewsWriter: content filter triggered after {max_retries} retries: {exc}") from exc
+
+            draft = self._strip_article_code_fence(wr.get("article_draft", "") or "")
+            if not draft:
+                if attempt < max_retries:
+                    console.print(f"  ⚠️  [yellow]Empty draft, retrying ({attempt + 1}/{max_retries})...[/yellow]")
+                    continue
+                raise RuntimeError("NewsWriter: empty draft after retries.")
+
+            fm_err = self._validate_article_frontmatter(draft, "NewsWriter")
+            if fm_err:
+                if attempt < max_retries and (
+                    "content filter" in fm_err.lower()
+                    or "closing '---' is missing" in fm_err
+                ):
+                    console.print(f"  ⚠️  [yellow]{fm_err[:80]}... retrying ({attempt + 1}/{max_retries})[/yellow]")
+                    continue
+                raise RuntimeError(fm_err)
+
+            result.article_draft = draft
+            if attempt > 0:
+                console.print(f"  ✅ [green]News Writer succeeded on retry {attempt}[/green]")
+            return
 
     def _stage_news_editor(self, result: PipelineResult, reviewer_notes: str = "") -> None:
         """Edit the article draft to publication standard."""
@@ -6015,7 +6038,12 @@ class Orchestrator(TestFixLoopMixin):
     _TRANSLATE_VALID_FIELDS = frozenset({"article_zh_hk", "article_zh_tw"})
 
     def _stage_translate(self, result: "PipelineResult", target_language: str, result_field: str, reviewer_notes: str = "") -> None:
-        """Translate the final article into a target language."""
+        """Translate the final article into a target language.
+
+        Retries up to 2 times on content-filter rejections or truncated responses.
+        """
+        from agents.base_agent import ContentFilteredError
+
         if target_language not in self._TRANSLATE_VALID_LANGUAGES:
             raise ValueError(
                 f"translate: unknown target_language {target_language!r}. "
@@ -6032,14 +6060,38 @@ class Orchestrator(TestFixLoopMixin):
                 f"translate ({target_language}): no source article found — "
                 "run news_writer or news_editor before translation stages"
             )
-        out = self.translator.run(source, target_language=target_language, reviewer_notes=reviewer_notes)
-        translated = self._strip_article_code_fence(out.get("translated_article", "") or "")
-        if not translated:
-            raise RuntimeError(f"translate ({target_language}): empty output from translator")
-        fm_err = self._validate_article_frontmatter(translated, f"translate ({target_language})", require_date=False)
-        if fm_err:
-            raise RuntimeError(fm_err)
-        setattr(result, result_field, translated)
+
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                out = self.translator.run(source, target_language=target_language, reviewer_notes=reviewer_notes)
+            except ContentFilteredError as exc:
+                if attempt < max_retries:
+                    console.print(f"  ⚠️  [yellow]Translate: content filter, retrying ({attempt + 1}/{max_retries})...[/yellow]")
+                    continue
+                raise RuntimeError(f"translate ({target_language}): content filter after {max_retries} retries: {exc}") from exc
+
+            translated = self._strip_article_code_fence(out.get("translated_article", "") or "")
+            if not translated:
+                if attempt < max_retries:
+                    console.print(f"  ⚠️  [yellow]Translate: empty output, retrying ({attempt + 1}/{max_retries})...[/yellow]")
+                    continue
+                raise RuntimeError(f"translate ({target_language}): empty output after retries")
+
+            fm_err = self._validate_article_frontmatter(translated, f"translate ({target_language})", require_date=False)
+            if fm_err:
+                if attempt < max_retries and (
+                    "content filter" in fm_err.lower()
+                    or "closing '---' is missing" in fm_err
+                ):
+                    console.print(f"  ⚠️  [yellow]Translate: {fm_err[:80]}... retrying ({attempt + 1}/{max_retries})[/yellow]")
+                    continue
+                raise RuntimeError(fm_err)
+
+            setattr(result, result_field, translated)
+            if attempt > 0:
+                console.print(f"  ✅ [green]Translate ({target_language}) succeeded on retry {attempt}[/green]")
+            return
 
     def _stage_news_reviewer(self, result: PipelineResult) -> None:
         """Review article quality and translation correctness; retry on issues."""
