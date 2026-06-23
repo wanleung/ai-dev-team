@@ -678,9 +678,10 @@ class BaseAgent:
         from llm_pool import get_pool
         with get_pool().acquire(self._backend):
             reply = self._llm.call_with_tools(messages, tools, max_turns)
+        if self._is_content_filter_rejection(reply):
+            raise ContentFilteredError(reply[:200])
         self._record_exchange(full_message, reply)
         return reply
-
     def _assert_tools_supported(self) -> None:
         """Raise NotImplementedError if the current backend does not support tool calling."""
         if self._llm.supports_tools():

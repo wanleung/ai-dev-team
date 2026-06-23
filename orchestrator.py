@@ -5914,11 +5914,25 @@ class Orchestrator(TestFixLoopMixin):
         import yaml as _yaml
 
         stripped = text.strip()
+        # Check for embedded content-filter rejections (LLM started generating,
+        # then safety filter kicked in mid-response)
+        from agents.base_agent import BaseAgent as _BA
+        if _BA._is_content_filter_rejection(stripped):
+            return (
+                f"{label}: LLM content filter triggered — response rejected as high-risk. "
+                f"Preview: {stripped[:120]!r}"
+            )
         m = _re.match(r"^---\s*\n(.*?)\n---", stripped, _re.DOTALL)
         if not m:
+            if stripped.startswith("---"):
+                return (
+                    f"{label}: YAML frontmatter block not found "
+                    f"(opening '---' exists but closing '---' is missing). "
+                    f"Preview: {stripped[:120]!r}"
+                )
             return (
                 f"{label}: YAML frontmatter block not found "
-                f"(opening '---' exists but closing '---' is missing). "
+                f"(response does not start with '---'). "
                 f"Preview: {stripped[:120]!r}"
             )
         try:
