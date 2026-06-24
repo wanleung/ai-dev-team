@@ -5937,8 +5937,21 @@ class Orchestrator(TestFixLoopMixin):
             )
         try:
             fm = _yaml.safe_load(m.group(1)) or {}
-        except Exception as exc:  # noqa: BLE001
-            return f"{label}: YAML frontmatter parse error: {exc}"
+        except Exception:
+            # YAML parse failed (common: unescaped quotes in title).
+            # Fall back to regex extraction of key fields.
+            fm = {}
+            for line in m.group(1).splitlines():
+                line = line.strip()
+                if line.startswith("title:"):
+                    # Strip surrounding quotes (single or double) then inner quotes
+                    val = line[len("title:"):].strip().strip("\"'")
+                    fm["title"] = val
+                elif line.startswith("date:"):
+                    val = line[len("date:"):].strip().strip("\"'")
+                    fm["date"] = val
+            if not fm.get("title"):
+                return f"{label}: YAML frontmatter parse error and regex fallback failed. Preview: {m.group(1)[:120]!r}"
         if not str(fm.get("title") or "").strip():
             return f"{label}: frontmatter missing required field 'title'"
         if require_date and not str(fm.get("date") or "").strip():
