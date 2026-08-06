@@ -50,6 +50,57 @@ def test_dispatch_uses_pipeline_for_label(monkeypatch, tmp_path):
     )
     assert captured["label"] == "ai-feature"
     assert captured["stages"] == ["pm", "engineer"]
+    assert captured["run"][1]["planning_artifacts"] is None
+
+
+def test_resolve_superpowers_artifacts_from_issue_blocks():
+    body = """
+Target repo: owner/app
+
+```superpowers-spec
+# Spec
+Acceptance Criteria:
+- Login works
+```
+
+```superpowers-plan
+# Plan
+### Task 1: Auth
+Build login.
+```
+"""
+
+    artifacts = watcher._resolve_superpowers_artifacts(body, "", None, None)
+
+    assert artifacts["spec"].startswith("# Spec")
+    assert artifacts["plan"].startswith("# Plan")
+    assert artifacts["sources"] == {"spec": "issue-block", "plan": "issue-block"}
+
+
+def test_resolve_superpowers_artifacts_from_referenced_files():
+    body = """
+Superpowers-Spec: docs/superpowers/specs/auth.md
+Superpowers-Plan: docs/superpowers/plans/auth.md
+"""
+
+    class FakeGH:
+        def __init__(self, files):
+            self.files = files
+
+        def get_file_content(self, path):
+            return self.files[path]
+
+    target = FakeGH({
+        "docs/superpowers/specs/auth.md": "# Auth Spec",
+        "docs/superpowers/plans/auth.md": "# Auth Plan",
+    })
+
+    artifacts = watcher._resolve_superpowers_artifacts(body, "", MagicMock(), target)
+
+    assert artifacts["spec"] == "# Auth Spec"
+    assert artifacts["plan"] == "# Auth Plan"
+    assert artifacts["sources"]["spec"] == "target-repo:docs/superpowers/specs/auth.md"
+    assert artifacts["sources"]["plan"] == "target-repo:docs/superpowers/plans/auth.md"
 
 
 def test_dispatch_uses_llm_cfg_when_provided(monkeypatch, tmp_path):
@@ -121,6 +172,7 @@ def _dispatch_with_pipeline_config(monkeypatch, tmp_path, pipeline_cfg):
             return None
 
         def run(self, *a, **kw):
+            captured["run_kwargs"] = kw
             return MagicMock(success=True)
 
     fake_mod = types.ModuleType("orchestrator")
@@ -220,6 +272,60 @@ def test_dispatch_allows_zero_reviewer_max_retries(monkeypatch, tmp_path):
     )
 
     assert captured["reviewer_max_retries"] == 0
+
+
+def test_dispatch_passes_superpowers_artifacts_from_issue(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeOrch:
+        def __init__(self, **kwargs):
+            self._pipeline_yaml_stages = None
+
+        def load_pipeline_for_label(self, label):
+            return ["superpowers_ingest"]
+
+        def run(self, *a, **kw):
+            captured["run_kwargs"] = kw
+            return MagicMock(success=True)
+
+    fake_mod = types.ModuleType("orchestrator")
+    fake_mod.Orchestrator = FakeOrch
+    monkeypatch.setitem(sys.modules, "orchestrator", fake_mod)
+
+    class FakeGH:
+        def __init__(self, repo, token):
+            pass
+
+        def get_issue(self, n):
+            return {
+                "title": "planned",
+                "body": "```superpowers-spec\n# Spec\n```\n```superpowers-plan\n# Plan\n```",
+            }
+
+        def get_issue_comments(self, n):
+            return []
+
+    fake_gh_mod = types.ModuleType("github_client")
+    fake_gh_mod.GitHubClient = FakeGH
+    fake_gh_mod.parse_target_repo = lambda b: None
+    monkeypatch.setitem(sys.modules, "github_client", fake_gh_mod)
+    monkeypatch.setattr(watcher, "_load_pipeline_config", lambda: {"llm": {}, "pipeline": {}})
+
+    from watcher import _dispatch
+    _dispatch(
+        label="planned",
+        tracker_repo="owner/tracker",
+        target_repo="owner/target",
+        issue_number=1,
+        model="gpt-4.1",
+        num_engineers=1,
+        log_file=tmp_path / "run.log",
+        logger=None,
+    )
+
+    artifacts = captured["run_kwargs"]["planning_artifacts"]
+    assert artifacts["spec"] == "# Spec"
+    assert artifacts["plan"] == "# Plan"
 
 
 def test_concurrent_dispatch_does_not_redirect_global_stdout(tmp_path):

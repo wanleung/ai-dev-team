@@ -259,7 +259,65 @@ A feature PR with PM spec, architecture notes, implementation, tests, and deploy
 
 ---
 
-## Scenario 4 — Onboard an Existing Repo
+## Scenario 4 — Planned Pipeline from Superpowers Spec/Plan
+
+Use this when the spec and plan are already written outside the main pipeline, and you want ai-software-house to execute the build loop from those artifacts.
+
+### Path A — Via GitHub label and watcher
+
+1. **Write or commit the Superpowers artifacts** somewhere in the repo, or paste them directly into the issue body/comments.
+2. **Map a label to the `planned` pipeline** in `repos-available/<repo>.yaml`:
+
+```yaml
+labels:
+  ai-planned:
+    pipeline: planned
+```
+
+3. **Create the issue** and include either fenced blocks:
+
+```md
+```superpowers-spec
+# Spec
+...
+```
+
+```superpowers-plan
+# Plan
+...
+```
+```
+
+or file references:
+
+```md
+Superpowers-Spec: docs/superpowers/specs/auth.md
+Superpowers-Plan: docs/superpowers/plans/auth.md
+```
+
+4. **Apply the label** `ai-planned`.
+5. The watcher resolves the artifacts and runs:
+   `Superpowers Ingest → QA Planner → QA Write → TDD Review/Fix → Tier Review → Engineers → Tests → Reviewer → Deploy`
+
+### Path B — Direct CLI
+
+```bash
+python main.py --pipeline planned \
+  --spec docs/superpowers/specs/auth.md \
+  --plan docs/superpowers/plans/auth.md \
+  --repo owner/repo \
+  "Build auth feature"
+```
+
+### Notes
+
+- `--spec` and `--plan` must be provided together.
+- `config.local.yaml` usually does not need a special setting for this flow.
+- The planned pipeline fills the normal PRD/design slots from your Superpowers artifacts, so the rest of the pipeline behaves like a standard feature run.
+
+---
+
+## Scenario 5 — Onboard an Existing Repo
 
 You have a codebase you wrote yourself (or inherited). You want agents to start maintaining and extending it without guessing method names or patterns.
 

@@ -1,0 +1,10 @@
+# pipelines/image-article.yaml
+# Image generation pipeline: scans ai-it-press for merged articles without images,
+# generates an AI image for each article, updates the article frontmatter, and opens a PR.
+#
+# Stages are resolved against ai-software-house's stage registry.
+
+stages:
+  - scan
+  - image_generate
+  - image_pr

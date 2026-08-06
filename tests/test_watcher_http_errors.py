@@ -46,6 +46,19 @@ def test_get_open_prs_raises_runtime_error_on_http_failure(monkeypatch):
             get_open_prs("owner/repo")
 
 
+def test_github_api_calls_fail_fast_without_token(monkeypatch):
+    """Missing GITHUB_TOKEN fails locally instead of sending unauthenticated API calls."""
+    from watcher import ensure_label
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    with patch("watcher.requests.get") as get:
+        with pytest.raises(RuntimeError, match="GITHUB_TOKEN environment variable is required"):
+            ensure_label("owner/repo", "ai-feature", "0075ca")
+
+    get.assert_not_called()
+
+
 def test_get_pr_comments_raises_runtime_error_on_http_failure(monkeypatch):
     """get_pr_comments raises RuntimeError on HTTP failure, not HTTPError.
 

@@ -18,10 +18,7 @@
 14. [Batch Intake Triage Module](#14-batch-intake-triage-module)
 15. [Pipeline Builder — Inline Discuss Block](#15-pipeline-builder--inline-discuss-block)
 16. [Social Posting Agent — X, Instagram & Threads](#16-social-posting-agent--x-instagram--threads)
-11. [Cantonese & Traditional Chinese Translation Stages](#11-cantonese--traditional-chinese-translation-stages)
-12. [News Reviewer Agent](#12-news-reviewer-agent)
-13. [Editorial Triage Stage](#13-editorial-triage-stage)
-14. [Batch Intake Triage Module](#14-batch-intake-triage-module)
+17. [Planned Pipeline Mode (Superpowers Spec/Plan)](#17-planned-pipeline-mode-superpowers-specplan)
 
 ---
 
@@ -1743,3 +1740,88 @@ Set `enabled: false` on the relevant `mcp_servers:` entry. The credentials stay 
 | Auth error on X | Verify app has Read+Write permissions; regenerate tokens |
 | Instagram "requires business account" | Personal Instagram accounts are not supported |
 | Posts appear but agent reports error | Check `agent-failed` label on the issue; read the error comment |
+
+---
+
+## 17. Planned Pipeline Mode (Superpowers Spec/Plan)
+
+Planned mode is for runs where the spec and implementation plan already exist outside the main pipeline. The watcher or CLI reads those artifacts, maps them into the normal PRD/design slots, then runs the usual TDD review/fix and implementation stages.
+
+### When to use it
+
+- You already wrote a spec and plan with the Superpowers workflow.
+- You want ai-software-house to execute the build loop from those artifacts instead of regenerating them.
+- You want the watcher to trigger the run from an issue label.
+
+### Repo setup
+
+Add a label mapping in `repos-available/<repo>.yaml`:
+
+```yaml
+labels:
+  ai-planned:
+    pipeline: planned
+```
+
+This keeps the repo config simple. `config.local.yaml` usually does not need a special override for planned mode.
+
+### Issue format
+
+The watcher reads planned artifacts from the issue body, comments, or referenced files.
+
+Use fenced blocks:
+
+```md
+```superpowers-spec
+# Spec
+...
+```
+
+```superpowers-plan
+# Plan
+...
+```
+```
+
+Or use file references:
+
+```md
+Superpowers-Spec: docs/superpowers/specs/auth.md
+Superpowers-Plan: docs/superpowers/plans/auth.md
+```
+
+The watcher checks the target repo first, then the tracker repo, when resolving referenced files.
+
+### Direct CLI
+
+Run the pipeline directly with local spec/plan files:
+
+```bash
+python main.py --pipeline planned \
+  --spec docs/superpowers/specs/auth.md \
+  --plan docs/superpowers/plans/auth.md \
+  --repo owner/repo \
+  "Build auth feature"
+```
+
+`--spec` and `--plan` must be provided together.
+
+### What the pipeline does
+
+`planned` mode runs:
+
+1. `superpowers_ingest` to map the spec into `prd` and the plan into `design`
+2. `qa_planner` and `qa_write` to generate tests
+3. `tdd_review` / `qa_fix` in a loop until the reviewer marks the tests `APPROVED`
+4. `contract_validate`, `tier_review`, `junior_engineer`, `senior_engineer`
+5. `test_fix` until tests pass
+6. `reviewer` and the deploy stages
+
+### Example issue
+
+```md
+Superpowers-Spec: docs/superpowers/specs/auth.md
+Superpowers-Plan: docs/superpowers/plans/auth.md
+
+If you prefer, the full spec and plan can also be pasted here in fenced blocks.
+```

@@ -25,3 +25,17 @@ def test_pipeline_flag_parses():
     parser = _build_arg_parser()
     args = parser.parse_args(["something", "--pipeline", "ai-fix"])
     assert args.pipeline == "ai-fix"
+
+
+def test_superpowers_spec_plan_flags_parse():
+    """CLI can accept local Superpowers spec and plan files for planned mode."""
+    from main import _build_arg_parser
+    parser = _build_arg_parser()
+    args = parser.parse_args([
+        "build it",
+        "--pipeline", "planned",
+        "--spec", "docs/superpowers/specs/feature.md",
+        "--plan", "docs/superpowers/plans/feature.md",
+    ])
+    assert args.spec == "docs/superpowers/specs/feature.md"
+    assert args.plan == "docs/superpowers/plans/feature.md"

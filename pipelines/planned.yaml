@@ -1,0 +1,32 @@
+# Planned pipeline: Superpowers spec/plan -> reviewed TDD tests -> implementation.
+#
+# The issue body/comments provide either fenced superpowers-spec/superpowers-plan
+# blocks or Superpowers-Spec/Superpowers-Plan file references. The watcher
+# resolves those artifacts and passes them into superpowers_ingest.
+stages:
+  - superpowers_ingest
+  - qa_planner
+  - qa_write
+  - loop:
+      max: 3
+      until: APPROVED
+      stages:
+        - tdd_review
+        - qa_fix
+  - contract_validate
+  - tier_review
+  - junior_engineer
+  - senior_engineer
+  - loop:
+      max: 10
+      until: TESTS_PASS
+      stages:
+        - test_fix
+  - loop:
+      max: 5
+      until: APPROVED
+      stages:
+        - reviewer
+        - senior_engineer
+  - deploy_tester
+  - deploy_fix

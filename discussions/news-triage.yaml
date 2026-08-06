@@ -14,20 +14,20 @@ early_exit: CONSENSUS_REACHED
 participants:
   - role: editorial_director
     persona_file: roles/editorial_director.md
-    llm: "mimo/mimo-v2.5-pro"
-    homework_llm: "mimo/mimo-v2.5-pro"
+    llm: "opencode-zen/mimo-v2.5-free"
+    homework_llm: "opencode-zen/mimo-v2.5-free"
     #homework_llm: "dashscope/qwen3-32b"  # research round: fetch/search source URLs
 
   - role: audience_specialist
     persona_file: roles/audience_specialist.md
-    llm: "mimo/mimo-v2.5-pro"
-    homework_llm: "mimo/mimo-v2.5-pro"
+    llm: "opencode-zen/mimo-v2.5-free"
+    homework_llm: "opencode-zen/mimo-v2.5-free"
     #homework_llm: "dashscope/qwen3-32b"
 
   - role: news_editor
     persona_file: roles/news_editor.md
-    llm: "mimo/mimo-v2.5-pro"
-    homework_llm: "mimo/mimo-v2.5-pro"
+    llm: "opencode-zen/mimo-v2.5-free"
+    homework_llm: "opencode-zen/mimo-v2.5-free"
     #homework_llm: "dashscope/qwen3-32b"
 
 homework_round: true

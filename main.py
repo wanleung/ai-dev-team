@@ -161,6 +161,18 @@ Setup:
         help="Pipeline name (resolves to pipelines/<name>.yaml)",
     )
     parser.add_argument(
+        "--spec",
+        default=None,
+        metavar="PATH",
+        help="Read a Superpowers spec markdown file and pass it to planned pipelines.",
+    )
+    parser.add_argument(
+        "--plan",
+        default=None,
+        metavar="PATH",
+        help="Read a Superpowers implementation plan markdown file and pass it to planned pipelines.",
+    )
+    parser.add_argument(
         "--list-pipelines",
         action="store_true",
         help="List available built-in pipelines and exit",
@@ -352,7 +364,27 @@ def main() -> int:
                 console.print(f"[red]⚠️ Unexpected revision status: {status}[/red]")
                 return 1
             return 0
-        result = orch.run(requirement, resume=not args.no_resume)
+        planning_artifacts = None
+        if args.spec or args.plan:
+            if not args.spec or not args.plan:
+                console.print("[red]--spec and --plan must be provided together.[/red]")
+                return 1
+            try:
+                spec_text = open(args.spec, encoding="utf-8").read().strip()
+                plan_text = open(args.plan, encoding="utf-8").read().strip()
+            except OSError as exc:
+                console.print(f"[red]Cannot read Superpowers artifact: {exc}[/red]")
+                return 1
+            planning_artifacts = {
+                "spec": spec_text,
+                "plan": plan_text,
+                "sources": {"spec": args.spec, "plan": args.plan},
+            }
+        result = orch.run(
+            requirement,
+            resume=not args.no_resume,
+            planning_artifacts=planning_artifacts,
+        )
     except KeyboardInterrupt:
         console.print("\n[yellow]Pipeline interrupted.[/yellow]")
         return 130

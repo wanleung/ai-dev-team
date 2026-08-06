@@ -17,20 +17,20 @@ participants:
   - role: product_manager
     persona_file: roles/product_manager.md
     #llm: "opencode-go/qwen3.6-plus"
-    llm: "mimo/mimo-v2.5-pro"
-    homework_llm: "mimo/mimo-v2.5-pro"
+    llm: "opencode-zen/mimo-v2.5-free"
+    homework_llm: "opencode-zen/mimo-v2.5-free"
 
   - role: pm_reviewer
     persona_file: roles/pm_reviewer.md
     #llm: "opencode-go/qwen3.6-plus"
-    llm: "mimo/mimo-v2.5-pro"
-    homework_llm: "mimo/mimo-v2.5-pro"
+    llm: "opencode-zen/mimo-v2.5-free"
+    homework_llm: "opencode-zen/mimo-v2.5-free"
 
   - role: architect
     persona_file: roles/architect.md
     #llm: "opencode-go/qwen3.6-plus"
-    llm: "mimo/mimo-v2.5-pro"
-    homework_llm: "mimo/mimo-v2.5-pro"
+    llm: "opencode-zen/mimo-v2.5-free"
+    homework_llm: "opencode-zen/mimo-v2.5-free"
 
 homework_round: false   # pure reasoning — no research phase needed
 max_rounds: 2

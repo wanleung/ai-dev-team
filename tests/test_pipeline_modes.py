@@ -152,6 +152,18 @@ def test_modes_dict_tdd_has_no_qa_engineer():
     assert "qa_engineer" not in MODES["tdd"]
 
 
+def test_modes_dict_planned_has_superpowers_tdd_review_before_engineers():
+    """Planned mode ingests Superpowers artifacts and gates TDD tests before implementation."""
+    from orchestrator import MODES
+    planned = MODES["planned"]
+    assert planned[:2] == ["superpowers_ingest", "qa_planner"]
+    assert "qa_write" in planned
+    assert "tdd_review" in planned
+    assert "qa_fix" in planned
+    assert planned.index("tdd_review") < planned.index("junior_engineer")
+    assert planned.index("qa_fix") < planned.index("junior_engineer")
+
+
 def test_pipeline_stage_defaults_skip_stop_to_false():
     from orchestrator import PipelineStage, PipelineResult
     stage = PipelineStage(
@@ -219,6 +231,16 @@ def test_build_stage_list_tdd_order():
     names = [s.name for s in stages]
     assert names.index("qa_write") < names.index("junior_engineer")
     assert names.index("test_fix") < names.index("reviewer")
+    assert "qa_engineer" not in names
+
+
+def test_build_stage_list_planned_order():
+    o = _make_minimal_orch(mode="planned")
+    stages = o._build_stage_list()
+    names = [s.name for s in stages]
+    assert names[0] == "superpowers_ingest"
+    assert names.index("tdd_review") < names.index("junior_engineer")
+    assert names.index("qa_fix") < names.index("junior_engineer")
     assert "qa_engineer" not in names
 
 
@@ -337,6 +359,36 @@ def test_stage_qa_write_indexes_tests_without_logger_name_error(tmp_path):
     orch._stage_qa_write(result)
 
     orch.repo_auto_indexer.index_local_dir.assert_called_once()
+
+
+def test_stage_superpowers_ingest_maps_artifacts_to_pipeline_result():
+    """Superpowers spec/plan becomes the PRD/design contract used by downstream agents."""
+    orch = _make_minimal_orch()
+    orch._superpowers_artifacts = {
+        "spec": "# Spec\n\nAcceptance Criteria:\n- Login works\n- Logout works",
+        "plan": "# Plan\n\n### Task 1: Auth API\nBuild login/logout endpoints.",
+        "sources": {"spec": "issue", "plan": "issue"},
+    }
+
+    result = PipelineResult(requirement="Build auth")
+    orch._stage_superpowers_ingest(result)
+
+    assert result.prd.startswith("# Spec")
+    assert result.design.startswith("# Plan")
+    assert result.project_name == "Spec"
+    assert result.qa_acceptance_criteria == ["Login works", "Logout works"]
+    assert result.modules == [{"name": "Auth API", "description": "Build login/logout endpoints."}]
+
+
+def test_stage_qa_fix_aliases_tdd_review():
+    """qa_fix is a named pipeline stage for reviewing/fixing generated TDD tests."""
+    orch = _make_minimal_orch()
+    orch._stage_tdd_review = MagicMock()
+    result = PipelineResult(test_files={"tests/test_app.py": "def test_x(): pass"})
+
+    orch._stage_qa_fix(result)
+
+    orch._stage_tdd_review.assert_called_once_with(result)
 
 
 def test_stage_test_runner_stops_on_pytest_collection_failure(monkeypatch, tmp_path):

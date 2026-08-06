@@ -13,22 +13,22 @@
 participants:
   - role: analyst
     persona_file: roles/analyst.md
-    llm: "mimo/mimo-v2.5-pro"
-    homework_llm: "mimo/mimo-v2.5-pro"
+    llm: "opencode-zen/mimo-v2.5-free"
+    homework_llm: "opencode-zen/mimo-v2.5-free"
     #llm: "opencode-go/qwen3.6-plus"          # fast model for discussion rounds
     #homework_llm: "dashscope/qwen3.5-plus"  # slow+tools model for homework research
 
   - role: skeptic
     persona_file: roles/skeptic.md
-    llm: "mimo/mimo-v2.5-pro"
-    homework_llm: "mimo/mimo-v2.5-pro"
+    llm: "opencode-zen/mimo-v2.5-free"
+    homework_llm: "opencode-zen/mimo-v2.5-free"
     #llm: "opencode-go/qwen3.6-plus"
     #homework_llm: "dashscope/qwen3.5-plus"
 
   - role: optimist
     persona_file: roles/optimist.md
-    llm: "mimo/mimo-v2.5-pro"
-    homework_llm: "mimo/mimo-v2.5-pro"
+    llm: "opencode-zen/mimo-v2.5-free"
+    homework_llm: "opencode-zen/mimo-v2.5-free"
     #llm: "opencode-go/qwen3.6-plus"
     #homework_llm: "dashscope/qwen3.5-plus"
 

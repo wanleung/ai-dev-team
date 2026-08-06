@@ -114,14 +114,14 @@ llm:
   # Alternatively set env var MIMO_API_KEY.
   # Get your key at: https://platform.xiaomimimo.com/#/console/api-keys
   #
-  # Token-plan keys (tp-...) must use the SGP endpoint (default).
+  # Token-plan keys (tp-...) use the AMS endpoint (default).
   # Standard keys use: https://api.xiaomimimo.com/v1
   #
   # Example usage:
   #   model: "mimo/mimo-v2.5-pro"
   #   mimo_api_key: "your-key-here"
   #
-  # Optional base URL override (default: https://token-plan-sgp.xiaomimimo.com/v1):
+  # Optional base URL override (default: https://token-plan-ams.xiaomimimo.com/v1):
   # mimo_url: "https://api.xiaomimimo.com/v1"
 
   # ── Global fallback chain ─────────────────────────────────────────────────
@@ -261,6 +261,9 @@ pipeline:
   # tdd: test-driven order — QA writes tests before engineers implement
   #   PM → Architect → QA Planner → QA Write → Tier → Engineers → Tests → Reviewer → Deploy
   #
+  # planned: issue-driven spec/plan order — watcher/main ingest Superpowers artifacts
+  #   Superpowers Ingest → QA Planner → QA Write → TDD Review/Fix → Tier → Engineers → Tests → Reviewer → Deploy
+  #
   # Custom pipeline stages can be defined in pipeline.yaml (same directory as this file).
   # pipeline.yaml takes precedence over the mode setting below.
   # Run: python main.py --config-builder  to launch the browser GUI builder.
@@ -277,9 +280,10 @@ pipeline:
 
   # ── Per-stage skip overrides ────────────────────────────────────────────────
   # Set skip: true for any named stage to remove it from the active pipeline.
-  # Stage names: tier_review, junior_engineer, senior_engineer, reviewer,
-  #              qa_planner, qa_engineer, qa_write, test_fix,
-  #              deploy_tester, deploy_fix
+  # Stage names: superpowers_ingest, tier_review, junior_engineer,
+  #              senior_engineer, reviewer, qa_planner, qa_engineer,
+  #              qa_write, tdd_review, qa_fix, contract_validate,
+  #              test_fix, deploy_tester, deploy_fix
   #
   # Example: skip Code Reviewer in TDD mode (tests already validate quality)
   # stages:
@@ -355,23 +359,50 @@ press:
       Audience: HK Cantonese-speaking tech professionals.
     skip_if_trigger_label: true   # skip editorial triage when 'press' label already applied
 
+  # ── Image generation API ──────────────────────────────────────────────────
+  # Uncomment one block below and set provider accordingly.
+  #
+  # Option A: ComfyUI (local server)
+  # image_api:
+  #   provider: comfyui
+  #   url: "http://10.100.1.50:8188"
+  #   timeout: 300                          # seconds to wait for generation
+  #   workflow_file: "./comfyui-workflow.json"   # path to exported API workflow JSON
+  #   # OR inline workflow:
+  #   # workflow_json:
+  #   #   "6": {class_type: CLIPTextEncode, inputs: {text: "placeholder", clip: ["4", 1]}}
+  #   #   ... (full workflow nodes)
+  #
+  # Option B: OpenAI DALL-E 3
+  # image_api:
+  #   provider: openai
+  #   size: "1024x1024"
+  #
+  # Option C: Alibaba DashScope
+  # image_api:
+  #   provider: dashscope
+  #   model: "wanx2.1-t2i-turbo"
+  #   size: "1024x1024"
+
 # ── Token usage & cost tracking ────────────────────────────────────────────
 # Tracks LLM token consumption per pipeline run for client chargeback.
 # Persisted to a local SQLite database; optionally posted to the GitHub issue.
 cost_tracking:
-  enabled: false                  # set true to enable tracking
+  enabled: true                  # set true to enable tracking
   db_path: "./token_usage.db"     # SQLite file path (relative to project root)
-  post_to_github: false           # post usage summary comment to the GitHub issue
+  post_to_github: true           # post usage summary comment to the GitHub issue
 
   # Pricing per 1M tokens: [input_price_usd, output_price_usd]
   # Set to [0.00, 0.00] for local/free models (Ollama, etc.)
   # Unlisted models fall back to "default".
   pricing:
+    mimo-v2.5-pro:     [0.435, 0.87]
+    mimo-v2.5:         [0.14, 0.28]
     gpt-4.1:           [2.00, 8.00]
     gpt-4.1-mini:      [0.40, 1.60]
     gpt-4o:            [2.50, 10.00]
-    qwen3.6-plus:      [0.50, 1.50]
-    qwen3.5-plus:      [0.30, 1.20]
+    qwen3.6-plus:      [0.50, 2.00]
+    qwen3.5-plus:      [0.50, 2.00]
     thinker:           [0.00, 0.00]
     thinker-best:      [0.00, 0.00]
     coder:             [0.00, 0.00]
@@ -524,7 +555,7 @@ intake_triage:
   scope: >
     Tech news relevant to HK Cantonese-speaking professionals in IT,
     software development, cybersecurity, Linux, Linux Distro related, and open source. Must have
-    enough substance to write a 600-word article. If the topic is about "OpenSource Hong Kong" or "Hong Kong OpenSource Conference", it is a must for the choice and is ok for 100-word article.
+    enough substance to write a 300-word article. If the topic is about "OpenSource Hong Kong" or "Hong Kong OpenSource Conference", it is a must for the choice and is ok for 100-word article.
 
   labels:
     pending:  triage-pending

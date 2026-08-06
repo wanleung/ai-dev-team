@@ -14,14 +14,14 @@ early_exit: CONSENSUS_REACHED
 participants:
   - role: news_writer
     persona_file: roles/news_writer.md
-    llm: "mimo/mimo-v2.5-pro"
-    homework_llm: "mimo/mimo-v2.5-pro"
+    llm: "opencode-zen/mimo-v2.5-free"
+    homework_llm: "opencode-zen/mimo-v2.5-free"
     #homework_llm: "dashscope/qwen3-32b"  # research round: fetch source, search related stories
 
   - role: news_editor
     persona_file: roles/news_editor.md
-    llm: "mimo/mimo-v2.5-pro"
-    homework_llm: "mimo/mimo-v2.5-pro"
+    llm: "opencode-zen/mimo-v2.5-free"
+    homework_llm: "opencode-zen/mimo-v2.5-free"
     #homework_llm: "dashscope/qwen3-32b"
 
 homework_round: true    # participants research the story independently first

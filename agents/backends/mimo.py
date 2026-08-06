@@ -1,11 +1,11 @@
 """Xiaomi MiMo API backend — OpenAI-compatible.
 
 MiMo uses the standard OpenAI chat completions protocol with a Xiaomi-specific
-base URL (https://api.xiaomimimo.com/v1).
+base URL (https://token-plan-ams.xiaomimimo.com/v1).
 
 Config keys (in llm: section of config.yaml / config.local.yaml):
   mimo_api_key  — API key (falls back to MIMO_API_KEY env var)
-  mimo_url      — optional base URL override (default: https://api.xiaomimimo.com/v1)
+  mimo_url      — optional base URL override (default: https://token-plan-ams.xiaomimimo.com/v1)
   mimo_think    — True/False to force thinking on/off; omit to use model default
                   (mimo-v2.5-pro/mimo-v2.5/mimo-v2-pro/mimo-v2-omni: default ON)
                   (mimo-v2-flash: default OFF)
@@ -34,7 +34,7 @@ from agents.backends.base import (
     _DEFAULT_MAX_RETRIES,
 )
 
-_MIMO_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1"
+_MIMO_BASE_URL = "https://token-plan-ams.xiaomimimo.com/v1"
 
 
 class MiMoBackend(OpenAICompatibleBackend):

@@ -10,7 +10,7 @@
 tracker_repo: wanleung/ai-it-press
 default_target: ~
 pipeline_file: pipelines/news-article.yaml
-parallel_issues: 5
+parallel_issues: 2
 enabled: true
 
 labels:

@@ -14,3 +14,5 @@ stages:
   - translate_zh_traditional    # translate to Traditional Chinese (Hong Kong)
   - news_reviewer               # review article quality and translation correctness
   - news_article_pr             # commit all articles, open PR in this repo
+  # - image_generate              # generate AI image via ComfyUI (or other provider)
+  # - image_pr                    # commit image + frontmatter to the same PR branch

@@ -315,6 +315,52 @@ class TestDiscussionAgentRun:
 
         assert "[Round 0 — Homework]" in result.discussion_transcript
 
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_homework_failure_does_not_store_raw_provider_error(self, mock_backend, tmp_path):
+        backend = MagicMock()
+        backend.call.side_effect = [
+            RuntimeError("InternalError.Algo.DataInspectionFailed: Output data may contain inappropriate content."),
+            "Synthesis.",
+        ]
+        mock_backend.return_value = backend
+
+        cfg = self._make_cfg(
+            tmp_path,
+            participants=[{"role": "analyst", "persona": "You are an analyst."}],
+            homework_round=True,
+            max_rounds=0,
+        )
+        agent = DiscussionAgent(cfg, model="gpt-4.1")
+        result = self._make_result()
+        agent.run(result)
+
+        assert "Participant unavailable" in result.discussion_transcript
+        assert "DataInspectionFailed" not in result.discussion_transcript
+        assert "inappropriate content" not in result.discussion_transcript
+
+    @patch("agents.discussion_agent.DiscussionAgent._make_backend")
+    def test_discussion_failure_does_not_store_raw_provider_error(self, mock_backend, tmp_path):
+        backend = MagicMock()
+        backend.call.side_effect = [
+            RuntimeError("InternalError.Algo.DataInspectionFailed: Output data may contain inappropriate content."),
+            "Synthesis.",
+        ]
+        mock_backend.return_value = backend
+
+        cfg = self._make_cfg(
+            tmp_path,
+            participants=[{"role": "analyst", "persona": "You are an analyst."}],
+            homework_round=False,
+            max_rounds=1,
+        )
+        agent = DiscussionAgent(cfg, model="gpt-4.1")
+        result = self._make_result()
+        agent.run(result)
+
+        assert "Participant unavailable" in result.discussion_transcript
+        assert "DataInspectionFailed" not in result.discussion_transcript
+        assert "inappropriate content" not in result.discussion_transcript
+
 
 class TestDiscussionMemory:
     """Tests for memory persistence in DiscussionAgent."""

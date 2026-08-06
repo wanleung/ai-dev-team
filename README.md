@@ -27,6 +27,7 @@ Built on the **GitHub Models API** — the same AI backbone that powers GitHub C
 - **Pluggable skill system** — skills are markdown files in `skills/` that inject domain-specific guidance into agent prompts; auto-detected from project context (issue body, repo languages) or always-loaded from config
 - 🧩 **Custom pipeline stages** — define any stage sequence (including review loops) in a `pipeline.yaml` file; use the built-in browser GUI (`--config-builder`) to build and save it without editing YAML by hand
 - 🏷️ **Label → pipeline dispatch** — each GitHub label maps to a `pipelines/<label>.yaml` file; add a new pipeline type by creating one YAML file, no Python or new workflow required
+- 🧭 **Planned pipelines** — issue-driven runs that ingest a Superpowers spec + implementation plan from issue comments or referenced files, then run TDD review/fix before implementation
 - **Fully customisable** — add agents, skills, and tools by editing markdown role files and Python tool functions
 - 🧠 **Agent memory** — tiered SQLite memory (run → monthly → quarterly), conversation history within each run, auto-summariser after every pipeline
 - 🌙 **Refactor / dream mode** — `--refactor` flag analyses and cleans up workspace code, opens a cleanup PR
@@ -196,6 +197,47 @@ Edit `config.yaml`:
 github:
   repo: "your-username/your-repo"   # where code will be pushed
 ```
+
+#### Planned pipelines (Superpowers spec/plan)
+
+Use this mode when you already wrote a spec and implementation plan with the Superpowers workflow, and want ai-software-house to execute the rest of the loop from those artifacts.
+
+1. Map a repo label to the `planned` pipeline in `repos-available/<repo>.yaml`:
+   ```yaml
+   labels:
+     ai-planned:
+       pipeline: planned
+   ```
+
+2. Put the spec and plan in the issue body or in issue comments.
+   The watcher accepts either fenced blocks:
+   ```md
+   ```superpowers-spec
+   # Spec
+   ...
+   ```
+
+   ```superpowers-plan
+   # Plan
+   ...
+   ```
+   ```
+   Or file references:
+   ```md
+   Superpowers-Spec: docs/superpowers/specs/auth.md
+   Superpowers-Plan: docs/superpowers/plans/auth.md
+   ```
+
+3. Run the watcher or the CLI:
+   ```bash
+   python watcher.py
+   python main.py --pipeline planned \
+     --spec docs/superpowers/specs/auth.md \
+     --plan docs/superpowers/plans/auth.md \
+     "Build auth feature"
+   ```
+
+The planned pipeline loads the spec into the PRD slot, the plan into the design slot, writes tests, runs a `tdd_review` / `qa_fix` loop, and then proceeds through the normal engineer, review, and deploy stages.
 
 #### Using Ollama (Local LLM)
 
