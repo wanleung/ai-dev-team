@@ -1,7 +1,12 @@
 """Unit tests for OpenCode Zen API backend in ai-software-house."""
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
+
+_EXPECTED_SESSION_HEADERS = {
+    "x-opencode-session": ANY,
+    "x-opencode-client": "ai-software-house",
+}
 
 
 # ── _is_opencode_zen_model ────────────────────────────────────────────────────
@@ -59,6 +64,7 @@ def test_opencode_zen_claude_anthropic_client_uses_zen_base_url():
     mock_cls.assert_called_once_with(
         api_key="zen-test-key",
         base_url="https://opencode.ai/zen/v1",
+        default_headers=_EXPECTED_SESSION_HEADERS,
     )
 
 
@@ -75,6 +81,7 @@ def test_opencode_zen_custom_base_url():
     mock_cls.assert_called_once_with(
         api_key="zen-test-key",
         base_url="https://custom.example.com/v1",
+        default_headers=_EXPECTED_SESSION_HEADERS,
     )
 
 
@@ -89,6 +96,7 @@ def test_opencode_zen_gpt_uses_openai_client():
     mock_cls.assert_called_once_with(
         base_url="https://opencode.ai/zen/v1",
         api_key="zen-test-key",
+        default_headers=_EXPECTED_SESSION_HEADERS,
     )
     assert agent._anthropic_client is None
 
@@ -128,6 +136,7 @@ def test_opencode_zen_falls_back_to_opencode_api_key():
     mock_cls.assert_called_once_with(
         base_url="https://opencode.ai/zen/v1",
         api_key="fallback-key",
+        default_headers=_EXPECTED_SESSION_HEADERS,
     )
 
 

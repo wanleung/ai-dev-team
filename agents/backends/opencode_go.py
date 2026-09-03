@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from typing import TYPE_CHECKING
 
 _log = logging.getLogger(__name__)
@@ -68,15 +69,25 @@ class OpenCodeGoBackend(LLMBackend):
         self._max_retries = max_retries
         self._retry_delay = retry_delay
 
+        # OpenCode requires x-opencode-session on every request so it can route
+        # a session's calls to the same upstream provider for prompt-cache reuse.
+        # One id per backend instance (stable for the agent's lifetime).
+        session_headers = {
+            "x-opencode-session": str(uuid.uuid4()),
+            "x-opencode-client": "ai-software-house",
+        }
+
         if bare_model in _OPENCODE_GO_ANTHROPIC_MODELS:
             if anthropic is None:
                 raise ImportError("anthropic package required: pip install anthropic")
-            self._anthropic_client = anthropic.Anthropic(api_key=key, base_url=base)
+            self._anthropic_client = anthropic.Anthropic(
+                api_key=key, base_url=base, default_headers=session_headers,
+            )
             self._oai_backend: OpenAICompatibleBackend | None = None
         else:
             if OpenAI is None:
                 raise ImportError("openai package required: pip install openai")
-            client = OpenAI(base_url=base, api_key=key)
+            client = OpenAI(base_url=base, api_key=key, default_headers=session_headers)
             self._oai_backend = OpenAICompatibleBackend(
                 model=bare_model, client=client,
                 inter_call_delay=inter_call_delay, max_retries=max_retries, retry_delay=retry_delay,

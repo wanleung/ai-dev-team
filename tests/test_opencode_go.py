@@ -1,7 +1,12 @@
 """Unit tests for OpenCode Go plan API backend in ai-software-house."""
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
+
+_EXPECTED_SESSION_HEADERS = {
+    "x-opencode-session": ANY,
+    "x-opencode-client": "ai-software-house",
+}
 
 
 # ── _is_opencode_go_model ─────────────────────────────────────────────────────
@@ -46,6 +51,7 @@ def test_opencode_go_uses_openai_client_for_chat_models():
     mock_cls.assert_called_once_with(
         base_url="https://opencode.ai/zen/go/v1",
         api_key="zen-key",
+        default_headers=_EXPECTED_SESSION_HEADERS,
     )
     assert agent._anthropic_client is None
 
@@ -59,6 +65,7 @@ def test_opencode_go_qwen_uses_chat_completions():
     mock_cls.assert_called_once_with(
         base_url="https://opencode.ai/zen/go/v1",
         api_key="zen-key",
+        default_headers=_EXPECTED_SESSION_HEADERS,
     )
 
 
@@ -70,6 +77,7 @@ def test_opencode_go_glm_uses_chat_completions():
     mock_cls.assert_called_once_with(
         base_url="https://opencode.ai/zen/go/v1",
         api_key="zen-key",
+        default_headers=_EXPECTED_SESSION_HEADERS,
     )
 
 
@@ -83,6 +91,7 @@ def test_opencode_go_minimax_uses_anthropic_client():
     mock_cls.assert_called_once_with(
         api_key="zen-key",
         base_url="https://opencode.ai/zen/go/v1",
+        default_headers=_EXPECTED_SESSION_HEADERS,
     )
     assert agent.client is None
 
@@ -109,6 +118,7 @@ def test_opencode_go_custom_base_url():
     mock_cls.assert_called_once_with(
         base_url="https://custom-go.example.com/v1",
         api_key="zen-key",
+        default_headers=_EXPECTED_SESSION_HEADERS,
     )
 
 
