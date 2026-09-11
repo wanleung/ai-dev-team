@@ -36,6 +36,26 @@ def test_factory_ollama():
     assert b.model == "llama3.2"
 
 
+def test_factory_ollama_ignores_other_provider_keys():
+    from agents.backends.factory import create_backend
+    from agents.backends.ollama import OllamaBackend
+    with patch("agents.backends.ollama.OpenAI", return_value=MagicMock()):
+        b = create_backend({
+            "model": "ollama/qwen3.8:latest",
+            "ollama_url": "http://10.100.1.30:11434",
+            "dashscope_api_key": "dashscope-key",
+            "dashscope_url": "https://dashscope.invalid/v1",
+            "mimo_api_key": "mimo-key",
+            "mimo_url": "https://mimo.invalid/v1",
+            "mimo_think": True,
+            "think": False,
+            "preserve_thinking": False,
+            "stream": False,
+        })
+    assert isinstance(b, OllamaBackend)
+    assert b.model == "qwen3.8:latest"
+
+
 def test_factory_copilot():
     from agents.backends.factory import create_backend
     from agents.backends.copilot import CopilotBackend

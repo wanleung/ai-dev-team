@@ -22,7 +22,8 @@ def _make_single_backend(cfg: dict, github_token: str | None = None) -> "LLMBack
 
     if model.startswith("ollama/"):
         from agents.backends.ollama import OllamaBackend
-        return OllamaBackend(model=model, **kwargs)
+        ck = {k: v for k, v in kwargs.items() if k not in (_DASHSCOPE_ONLY | _MIMO_ONLY)}
+        return OllamaBackend(model=model, **ck)
 
     if model.startswith("copilot/"):
         from agents.backends.copilot import CopilotBackend
