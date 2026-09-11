@@ -91,6 +91,34 @@ def _make_result(requirement: str = "test requirement"):
     return PipelineResult(requirement=requirement)
 
 
+def test_initialize_run_sets_issue_body_from_trigger_issue_body(tmp_path):
+    """Watcher issue body must be available to discussion context fields."""
+    orch = _make_orchestrator(tmp_path)
+    issue_body = (
+        "Source: Phoronix\n"
+        "URL: https://www.phoronix.com/news/kde-plasma-6.8-beta\n\n"
+        "KDE Plasma 6.8 beta was released with compositor and backup changes."
+    )
+
+    with patch.object(orch, "_resolve_target_repo"), \
+         patch.object(orch, "_inject_repo_context"), \
+         patch.object(orch, "_inject_memory"), \
+         patch.object(orch, "_inject_skills"), \
+         patch.object(orch, "_setup_progress_tracker"), \
+         patch.object(orch, "_load_or_init_result", return_value=PipelineResult(requirement="Article: KDE Plasma 6.8 Beta")):
+        result = orch._initialize_run(
+            requirement="Article: KDE Plasma 6.8 Beta",
+            trigger_issue_body=issue_body,
+            resume=True,
+            issue_number=5585,
+            run_id="run-123",
+            start_time=0.0,
+        )
+
+    assert result.issue_body == issue_body
+    assert result.issue_number == 5585
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage ordering tests
 # ─────────────────────────────────────────────────────────────────────────────

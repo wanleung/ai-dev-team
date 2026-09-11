@@ -52,9 +52,27 @@ def test_checkpoint_save_and_load(tmp_path: Path) -> None:
     loaded = orch._load_checkpoint("build a todo app")
     assert loaded is not None, "_load_checkpoint returned None — checkpoint was not persisted"
     assert loaded.requirement == "build a todo app"
+    assert loaded.issue_body == ""
     assert loaded.project_name == "todo-app"
     assert loaded.prd == "some prd text"
     assert loaded.completed_stages == ["pm"]
+
+
+def test_checkpoint_preserves_issue_body(tmp_path: Path) -> None:
+    """Discussion stages need the original issue body after a checkpoint resume."""
+    orch = _make_orchestrator(tmp_path)
+    result = _result(
+        requirement="Article: KDE Plasma 6.8 Beta Released",
+        project_name="kde-plasma-news",
+        stages=["news_triage"],
+    )
+    result.issue_body = "Source: Phoronix\nURL: https://example.com/kde\n\nStory brief."
+
+    orch._save_checkpoint(result)
+
+    loaded = orch._load_checkpoint("Article: KDE Plasma 6.8 Beta Released")
+    assert loaded is not None
+    assert loaded.issue_body == "Source: Phoronix\nURL: https://example.com/kde\n\nStory brief."
 
 
 # ---------------------------------------------------------------------------

@@ -154,6 +154,42 @@ class TestNewsReviewerAgent:
         assert "returned boilerplate" in captured["prompt"]
         assert captured["tools"] is agent._tool_registry
 
+    def test_article_html_is_converted_to_readable_source_text(self):
+        from agents.news_reviewer import NewsReviewerAgent
+        agent = _make_agent(NewsReviewerAgent, "news_reviewer")
+        captured = {}
+
+        def capture(prompt):
+            captured["prompt"] = prompt
+            return PASS_OUTPUT
+
+        html = """
+        <html>
+          <head>
+            <style>.hidden { display: none; }</style>
+            <script>function hydratePhoronixPage(){ window.__payload = { ads: true }; }</script>
+          </head>
+          <body>
+            <article>
+              <h1>systemd 262-rc2 Adds An AI Canary</h1>
+              <p>systemd 262-rc2 includes an AI canary mechanism intended to identify
+              unreviewed AI-generated code contributions during review.</p>
+              <p>The release candidate also contains maintenance changes and bug fixes
+              discussed by the maintainers for Linux distributions.</p>
+            </article>
+          </body>
+        </html>
+        """
+        with patch.object(agent, "call", side_effect=capture):
+            with patch("agents.news_reviewer._fetch_source", return_value=html):
+                result = agent.run("# Article", "# 文章", source_url="https://example.com/story")
+
+        assert result["verdict"] == "PASS"
+        assert "systemd 262-rc2 Adds An AI Canary" in captured["prompt"]
+        assert "AI canary mechanism" in captured["prompt"]
+        assert "hydratePhoronixPage" not in captured["prompt"]
+        assert "<script>" not in captured["prompt"]
+
     def test_exports_from_agents_package(self):
         from agents import NewsReviewerAgent
         assert NewsReviewerAgent

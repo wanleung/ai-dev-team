@@ -365,6 +365,7 @@ class PipelineResult:
     """Holds the full output of a completed pipeline run."""
 
     requirement: str = ""
+    issue_body: str = ""
     project_name: str = ""
     prd: str = ""
     prd_review: str = ""
@@ -470,6 +471,7 @@ class PipelineResult:
     def to_dict(self) -> dict:
         return {
             "requirement": self.requirement,
+            "issue_body": self.issue_body,
             "project_name": self.project_name,
             "prd": self.prd,
             "prd_review": self.prd_review,
@@ -564,7 +566,8 @@ class PipelineResult:
     @classmethod
     def from_dict(cls, data: dict) -> "PipelineResult":
         r = cls(requirement=data.get("requirement", ""))
-        for key in ["project_name", "prd", "prd_review", "prd_verdict", "design", "design_review", "design_verdict",
+        for key in ["issue_body",
+                    "project_name", "prd", "prd_review", "prd_verdict", "design", "design_review", "design_verdict",
                     "modules", "all_files", "junior_files", "tier_classifications", "test_files",
                     "deploy_files", "review", "verdict", "qa_plan", "qa_acceptance_criteria",
                     "test_plan", "deploy_plan",
@@ -3712,6 +3715,7 @@ class Orchestrator(TestFixLoopMixin):
 
         result = self._load_or_init_result(requirement, resume)
         self._extract_prior_context(trigger_issue_body)
+        result.issue_body = (trigger_issue_body or result.issue_body or requirement or "").strip()
 
         # Set run_id on result (new run or restored checkpoint)
         if not result.run_id:

@@ -10,6 +10,7 @@ Output: dict with 'verdict' (PASS|NEEDS_REVISION), 'issues' (list[str]), 'confid
 """
 from __future__ import annotations
 
+import html
 import ipaddress
 import logging
 import re
@@ -70,10 +71,30 @@ def _fetch_source(url: str) -> str:
         return ""
 
 
+def _readable_source_text(content: str) -> str:
+    """Convert fetched HTML into visible text suitable for fact checking."""
+    if not content:
+        return ""
+    if "<" not in content or ">" not in content:
+        return re.sub(r"\s+", " ", content).strip()
+
+    article_match = re.search(r"(?is)<article\b[^>]*>(.*?)</article>", content)
+    candidate = article_match.group(1) if article_match else content
+    candidate = re.sub(r"(?is)<(script|style|noscript|svg)\b[^>]*>.*?</\1>", " ", candidate)
+    candidate = re.sub(r"(?is)<!--.*?-->", " ", candidate)
+    candidate = re.sub(r"(?is)<br\s*/?>", "\n", candidate)
+    candidate = re.sub(r"(?is)</(p|div|li|h[1-6]|section|article)>", "\n", candidate)
+    text = re.sub(r"(?is)<[^>]+>", " ", candidate)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n\s+", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 def _source_unusable_reason(content: str) -> str:
     """Return a reason if fetched source is not useful article text."""
     raw_lower = content.lower()
-    text = re.sub(r"<[^>]+>", " ", content)
+    text = _readable_source_text(content)
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
         return "empty"
@@ -102,6 +123,8 @@ def _source_unusable_reason(content: str) -> str:
     markup_hits = sum(1 for term in markup_terms if term in raw_lower)
     word_count = len(re.findall(r"\b\w+\b", text))
     if boilerplate_hits >= 2 and (word_count < 120 or markup_hits >= 2):
+        return "boilerplate"
+    if markup_hits >= 3 and word_count < 120:
         return "boilerplate"
     if word_count < 40:
         return "too little article text"
@@ -158,7 +181,7 @@ class NewsReviewerAgent(BaseAgent):
         Returns:
             dict with 'verdict' (PASS|NEEDS_REVISION), 'issues' (list), 'confidence' (str)
         """
-        source_content = _fetch_source(source_url)
+        source_content = _readable_source_text(_fetch_source(source_url))
         unusable_reason = _source_unusable_reason(source_content) if source_content else ""
         source_fetched = bool(source_content) and not unusable_reason
         source_section = self._build_source_section(
