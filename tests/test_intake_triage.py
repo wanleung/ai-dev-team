@@ -370,3 +370,43 @@ def test_run_dry_run_returns_batch_size():
     assert result["fired"] is True
     assert result["dry_run"] is True
     assert result["batch_size"] == 3
+
+
+def test_run_records_intake_token_usage(tmp_path):
+    from intake_triage import run
+    from unittest.mock import MagicMock, patch
+    from agents.token_ledger import TokenLedger, set_ledger
+
+    cfg = IntakeTriageConfig(trigger={"min_count": 1})
+    ledger = TokenLedger(pricing={"gpt-4.1": [2.0, 8.0]})
+    set_ledger(ledger)
+
+    mock_adapter = MagicMock()
+    mock_adapter.list_pending.return_value = _make_items(1)
+    mock_disc_result = MagicMock(synthesis="ITEM 1: PUBLISH\nNOTES: Relevant.")
+    mock_agent = MagicMock()
+    mock_agent.run.return_value = mock_disc_result
+
+    with patch("intake_triage._make_adapter", return_value=mock_adapter), \
+         patch("agents.discussion_agent.DiscussionAgent.from_file", return_value=mock_agent):
+        result = run(
+            cfg,
+            repo="wanleung/ai-it-press",
+            model="gpt-4.1",
+            force=True,
+            script_dir=tmp_path,
+            cost_tracking={"enabled": True, "db_path": str(tmp_path / "usage.db")},
+            run_id="intake-run",
+        )
+
+    assert result["fired"] is True
+    summary = ledger.summary("intake-run")
+    assert summary["project_name"] == "Intake triage: wanleung/ai-it-press"
+
+    import sqlite3
+    conn = sqlite3.connect(tmp_path / "usage.db")
+    row = conn.execute(
+        "SELECT github_repo, pipeline_label, job_type FROM runs WHERE run_id='intake-run'"
+    ).fetchone()
+    conn.close()
+    assert row == ("wanleung/ai-it-press", "intake-triage", "intake_triage")

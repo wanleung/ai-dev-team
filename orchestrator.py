@@ -3698,18 +3698,22 @@ class Orchestrator(TestFixLoopMixin):
         start_time: float,
     ) -> "PipelineResult":
         """Set up ledger, inject context, load checkpoint, configure tracker; return result."""
-        ct = self._cost_tracking
-        if ct.get("enabled", False):
-            active_repo = str(
-                self.target_github.repo if self.target_github else
-                (self.github.repo if self.github else "local")
-            )
-            get_ledger().start_run(run_id, "", active_repo)  # project_name updated in _finish
-
         self._resolve_target_repo(trigger_issue_body)
         self._inject_repo_context()
         active_repo = str(self.target_github.repo if self.target_github else
                           (self.github.repo if self.github else "local"))
+        ct = self._cost_tracking
+        if ct.get("enabled", False):
+            issue_url = f"https://github.com/{active_repo}/issues/{issue_number}" if issue_number and active_repo != "local" else ""
+            get_ledger().start_run(
+                run_id,
+                "",
+                active_repo,
+                issue_number=issue_number,
+                issue_url=issue_url,
+                pipeline_label=getattr(self, "_pipeline_label", ""),
+                job_type="pipeline",
+            )
         self._inject_memory(active_repo)
         self._inject_skills(trigger_issue_body, requirement, active_repo)
 
@@ -6690,7 +6694,12 @@ class Orchestrator(TestFixLoopMixin):
             ledger = get_ledger()
             # Update project name now that it's known
             if result.run_id in ledger._runs:
-                ledger._runs[result.run_id]["project_name"] = result.project_name or ""
+                ledger.update_run(
+                    result.run_id,
+                    project_name=result.project_name or "",
+                    issue_number=result.issue_number,
+                    pr_url=result.pr_url or "",
+                )
             ledger.finish_run(result.run_id)
             # Flush to SQLite
             db_path = ct.get("db_path", "./token_usage.db")

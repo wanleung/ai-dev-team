@@ -81,6 +81,99 @@ def test_flush_to_db_creates_rows(tmp_path):
     assert len(events) == 1
 
 
+def test_flush_to_db_persists_ticket_metadata(tmp_path):
+    """Runs should be queryable by repo, issue, pipeline label and job type."""
+    import sqlite3
+
+    db_path = str(tmp_path / "usage.db")
+    ledger = TokenLedger(pricing=PRICING)
+    ledger.start_run(
+        "run-ticket",
+        "Article: test",
+        "wanleung/ai-it-press",
+        issue_number=5580,
+        issue_url="https://github.com/wanleung/ai-it-press/issues/5580",
+        pipeline_label="news-article",
+        job_type="pipeline",
+    )
+    ledger.update_run(
+        "run-ticket",
+        pr_url="https://github.com/wanleung/ai-it-press/pull/5753",
+        project_name="Article: final",
+    )
+    ledger.record("run-ticket", "news_writer", "gpt-4.1", 100, 50)
+    ledger.finish_run("run-ticket")
+    ledger.flush_to_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        """SELECT project_name, github_repo, issue_number, issue_url,
+                  pipeline_label, job_type, pr_url
+           FROM runs WHERE run_id='run-ticket'"""
+    ).fetchone()
+    conn.close()
+
+    assert row == (
+        "Article: final",
+        "wanleung/ai-it-press",
+        5580,
+        "https://github.com/wanleung/ai-it-press/issues/5580",
+        "news-article",
+        "pipeline",
+        "https://github.com/wanleung/ai-it-press/pull/5753",
+    )
+
+
+def test_flush_to_db_migrates_existing_runs_table(tmp_path):
+    """Old token_usage.db files without issue columns should be upgraded in place."""
+    import sqlite3
+
+    db_path = str(tmp_path / "usage.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE runs (
+            run_id TEXT PRIMARY KEY,
+            project_name TEXT,
+            github_repo TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            total_prompt_tokens INTEGER,
+            total_completion_tokens INTEGER,
+            total_cost_usd REAL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE usage_events (
+            event_id TEXT PRIMARY KEY,
+            run_id TEXT,
+            stage TEXT,
+            model TEXT,
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            cost_usd REAL,
+            timestamp TEXT
+        )"""
+    )
+    conn.commit()
+    conn.close()
+
+    ledger = TokenLedger(pricing=PRICING)
+    ledger.start_run("run-migrate", "Proj", "org/repo", issue_number=7, job_type="intake_triage")
+    ledger.record("run-migrate", "intake_triage", "gpt-4.1", 10, 5)
+    ledger.finish_run("run-migrate")
+    ledger.flush_to_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    row = conn.execute(
+        "SELECT issue_number, job_type FROM runs WHERE run_id='run-migrate'"
+    ).fetchone()
+    conn.close()
+
+    assert {"issue_number", "issue_url", "pipeline_label", "job_type", "pr_url"} <= columns
+    assert row == (7, "intake_triage")
+
+
 def test_flush_to_db_idempotent(tmp_path):
     """Calling flush_to_db twice must not duplicate event rows."""
     import sqlite3

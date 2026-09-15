@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import sys
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -203,6 +204,8 @@ def run(
     dashscope_stream: bool = True,
     fallbacks: Optional[list] = None,
     mcp_servers: Optional[list] = None,
+    cost_tracking: Optional[dict] = None,
+    run_id: Optional[str] = None,
 ) -> dict:
     """Run one intake triage cycle.
 
@@ -252,6 +255,22 @@ def run(
         log.info("intake_triage: --dry-run, would process %d items:\n%s", len(batch), context)
         return {"fired": True, "dry_run": True, "batch_size": len(batch)}
 
+    ct = cost_tracking or {}
+    intake_run_id = run_id or f"intake-{uuid.uuid4()}"
+    ledger = None
+    stage_token = None
+    if ct.get("enabled", False):
+        from agents.token_ledger import current_stage, get_ledger
+        ledger = get_ledger()
+        ledger.start_run(
+            intake_run_id,
+            f"Intake triage: {repo}",
+            repo,
+            pipeline_label="intake-triage",
+            job_type="intake_triage",
+        )
+        stage_token = current_stage.set("intake_triage")
+
     # Run discussion
     preset_path = script_dir / cfg.discussion.get("preset", "discussions/intake-triage.yaml")
     # Deferred to avoid loading the full agents package during config-only import paths.
@@ -280,8 +299,13 @@ def run(
         dashscope_stream=dashscope_stream,
         fallbacks=fallbacks,
     )
-    disc_result = agent.run(context=context)
-    synthesis = disc_result.synthesis or ""
+    try:
+        disc_result = agent.run(context=context)
+        synthesis = disc_result.synthesis or ""
+    finally:
+        if stage_token is not None:
+            from agents.token_ledger import current_stage
+            current_stage.reset(stage_token)
 
     verdicts = _parse_batch_verdicts(synthesis, item_count=len(batch))
 
@@ -367,6 +391,13 @@ def run(
                         except Exception as exc:
                             log.warning("intake_triage: failed to post score comment on item %s: %s", item.id, exc)
 
+            if ledger is not None:
+                ledger.finish_run(intake_run_id)
+                db_path = ct.get("db_path", "./token_usage.db")
+                try:
+                    ledger.flush_to_db(db_path)
+                except Exception as exc:
+                    log.warning("intake_triage: token DB flush failed: %s", exc)
             log.info("intake_triage: done. approved=%d skipped=%d", len(approved), len(skipped))
             return {"fired": True, "approved": approved, "skipped": skipped}
 
@@ -388,6 +419,13 @@ def run(
             except Exception as exc:
                 log.warning("intake_triage: failed to approve item %s: %s", item.id, exc)
 
+    if ledger is not None:
+        ledger.finish_run(intake_run_id)
+        db_path = ct.get("db_path", "./token_usage.db")
+        try:
+            ledger.flush_to_db(db_path)
+        except Exception as exc:
+            log.warning("intake_triage: token DB flush failed: %s", exc)
     log.info("intake_triage: done. approved=%d skipped=%d", len(approved), len(skipped))
     return {"fired": True, "approved": approved, "skipped": skipped}
 
@@ -552,6 +590,16 @@ def _main_locked(args, cfg_path: Path) -> None:
         log.debug("intake_triage: could not install LLM pool: %s", exc)
 
     global_llm = merged_cfg.get("llm") or {}
+    cost_tracking = merged_cfg.get("cost_tracking") or {}
+    if cost_tracking.get("enabled", False):
+        try:
+            from agents.token_ledger import TokenLedger, set_ledger
+            max_cost = None
+            if cost_tracking.get("max_cost_usd") is not None:
+                max_cost = float(cost_tracking["max_cost_usd"])
+            set_ledger(TokenLedger(pricing=cost_tracking.get("pricing", {}), max_cost_usd=max_cost))
+        except Exception as exc:
+            log.warning("intake_triage: token ledger init failed: %s", exc)
 
     # ── Resolve target repos ──────────────────────────────────────────────────
     # Each entry is (tracker_repo, repo_llm_override, repo_intake_override)
@@ -610,6 +658,7 @@ def _main_locked(args, cfg_path: Path) -> None:
             dashscope_stream=effective_llm.get("dashscope_stream", True),
             fallbacks=effective_llm.get("fallbacks") or None,
             mcp_servers=mcp_servers,
+            cost_tracking=cost_tracking,
         )
 
     if len(repo_entries) == 1:

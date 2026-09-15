@@ -119,6 +119,42 @@ def test_initialize_run_sets_issue_body_from_trigger_issue_body(tmp_path):
     assert result.issue_number == 5585
 
 
+def test_initialize_run_starts_token_ledger_with_ticket_metadata(tmp_path):
+    """Cost tracking should persist enough metadata for per-ticket reports."""
+    orch = _make_orchestrator(tmp_path)
+    orch._cost_tracking = {"enabled": True}
+    orch.target_github = MagicMock(repo="wanleung/ai-it-press")
+    orch.github = None
+    orch._pipeline_label = "news-article"
+    ledger = MagicMock()
+
+    with patch.object(orch, "_resolve_target_repo"), \
+         patch.object(orch, "_inject_repo_context"), \
+         patch.object(orch, "_inject_memory"), \
+         patch.object(orch, "_inject_skills"), \
+         patch.object(orch, "_setup_progress_tracker"), \
+         patch.object(orch, "_load_or_init_result", return_value=PipelineResult(requirement="Article")), \
+         patch("orchestrator.get_ledger", return_value=ledger):
+        orch._initialize_run(
+            requirement="Article",
+            trigger_issue_body="Body",
+            resume=True,
+            issue_number=5585,
+            run_id="run-ticket",
+            start_time=0.0,
+        )
+
+    ledger.start_run.assert_called_once_with(
+        "run-ticket",
+        "",
+        "wanleung/ai-it-press",
+        issue_number=5585,
+        issue_url="https://github.com/wanleung/ai-it-press/issues/5585",
+        pipeline_label="news-article",
+        job_type="pipeline",
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage ordering tests
 # ─────────────────────────────────────────────────────────────────────────────

@@ -41,18 +41,44 @@ class TokenLedger:
 
     # ── Public API ─────────────────────────────────────────────────────────
 
-    def start_run(self, run_id: str, project_name: str, repo: str) -> None:
+    def start_run(
+        self,
+        run_id: str,
+        project_name: str,
+        repo: str,
+        *,
+        issue_number: int | None = None,
+        issue_url: str = "",
+        pipeline_label: str = "",
+        job_type: str = "pipeline",
+        pr_url: str = "",
+    ) -> None:
         """Register a new pipeline run and prepare it for recording."""
         with self._lock:
             self._runs[run_id] = {
                 "run_id": run_id,
                 "project_name": project_name,
                 "repo": repo,
+                "issue_number": issue_number,
+                "issue_url": issue_url,
+                "pipeline_label": pipeline_label,
+                "job_type": job_type,
+                "pr_url": pr_url,
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "finished_at": None,
             }
             self._events[run_id] = []
             self._totals[run_id] = 0.0
+
+    def update_run(self, run_id: str, **metadata) -> None:
+        """Update run metadata after fields such as project/pr URL become known."""
+        allowed = {"project_name", "repo", "issue_number", "issue_url", "pipeline_label", "job_type", "pr_url"}
+        with self._lock:
+            if run_id not in self._runs:
+                return
+            for key, value in metadata.items():
+                if key in allowed and value is not None:
+                    self._runs[run_id][key] = value
 
     def record(
         self,
@@ -120,6 +146,12 @@ class TokenLedger:
         return {
             "run_id": run_id,
             "project_name": run_meta.get("project_name", ""),
+            "github_repo": run_meta.get("repo", ""),
+            "issue_number": run_meta.get("issue_number"),
+            "issue_url": run_meta.get("issue_url", ""),
+            "pipeline_label": run_meta.get("pipeline_label", ""),
+            "job_type": run_meta.get("job_type", ""),
+            "pr_url": run_meta.get("pr_url", ""),
             "total_events": len(events),
             "total_prompt_tokens": total_prompt,
             "total_completion_tokens": total_completion,
@@ -158,9 +190,12 @@ class TokenLedger:
         Each event is identified by a stable event_id and inserted with
         INSERT OR IGNORE so re-flushing is safe.
         """
+        with self._lock:
+            runs_snapshot = list(self._runs.items())
+
         with sqlite3.connect(db_path) as conn:
             self._create_tables(conn)
-            for run_id, meta in self._runs.items():
+            for run_id, meta in runs_snapshot:
                 self._insert_run_record(conn, run_id, meta)
                 self._insert_usage_events(conn, run_id)
 
@@ -208,6 +243,11 @@ class TokenLedger:
                 run_id TEXT PRIMARY KEY,
                 project_name TEXT,
                 github_repo TEXT,
+                issue_number INTEGER,
+                issue_url TEXT,
+                pipeline_label TEXT,
+                job_type TEXT,
+                pr_url TEXT,
                 started_at TEXT,
                 finished_at TEXT,
                 total_prompt_tokens INTEGER,
@@ -225,6 +265,21 @@ class TokenLedger:
                 timestamp TEXT
             );
         """)
+        self._ensure_run_columns(conn)
+
+    def _ensure_run_columns(self, conn: sqlite3.Connection) -> None:
+        """Add newer metadata columns when flushing to an older token DB."""
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+        columns = {
+            "issue_number": "INTEGER",
+            "issue_url": "TEXT",
+            "pipeline_label": "TEXT",
+            "job_type": "TEXT",
+            "pr_url": "TEXT",
+        }
+        for name, sql_type in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {sql_type}")
 
     def _insert_run_record(self, conn: sqlite3.Connection, run_id: str, meta: dict) -> None:
         """Insert or replace a run record in the database."""
@@ -232,8 +287,9 @@ class TokenLedger:
         conn.execute(
             """INSERT OR REPLACE INTO runs
                (run_id, project_name, github_repo, started_at, finished_at,
-                total_prompt_tokens, total_completion_tokens, total_cost_usd)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                total_prompt_tokens, total_completion_tokens, total_cost_usd,
+                issue_number, issue_url, pipeline_label, job_type, pr_url)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 run_id,
                 meta["project_name"],
@@ -243,6 +299,11 @@ class TokenLedger:
                 s["total_prompt_tokens"],
                 s["total_completion_tokens"],
                 s["total_cost_usd"],
+                meta.get("issue_number"),
+                meta.get("issue_url", ""),
+                meta.get("pipeline_label", ""),
+                meta.get("job_type", ""),
+                meta.get("pr_url", ""),
             ),
         )
 

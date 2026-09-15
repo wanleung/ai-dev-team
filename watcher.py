@@ -1005,6 +1005,7 @@ def _dispatch(
             llm_fallbacks=_llm.get("fallbacks") or None,
             mcp_servers=mcp_servers or None,
             press_cfg=pipeline_cfg.get("press", {}),
+            cost_tracking=pipeline_cfg.get("cost_tracking", {}),
         )
 
         # pipeline_file: fetch pipeline YAML from tracker repo via GitHub API
@@ -1037,6 +1038,7 @@ def _dispatch(
             _log.info("    Using pipelines/%s.yaml (%d stages)", label, len(stages))
         else:
             _log.info("    Using built-in default pipeline (no pipelines/%s.yaml)", label)
+        orch._pipeline_label = label
 
         result = orch.run(
             requirement,

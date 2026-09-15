@@ -105,6 +105,32 @@ class TestDispatchFeature:
 
         assert log_file.exists()
 
+    def test_dispatch_passes_cost_tracking_to_orchestrator(self, tmp_path: Path, monkeypatch) -> None:
+        """Watcher-launched pipelines must use configured token/cost tracking."""
+        cost_tracking = {
+            "enabled": True,
+            "db_path": str(tmp_path / "token_usage.db"),
+            "pricing": {"mimo-v2.5": [0.14, 0.28]},
+        }
+        monkeypatch.setattr("watcher._load_pipeline_config", lambda: {"cost_tracking": cost_tracking})
+        mock_orch_instance = MagicMock()
+        mock_orch_instance.load_pipeline_for_label.return_value = None
+        mock_orch_class = MagicMock(return_value=mock_orch_instance)
+        mock_gh_client = MagicMock()
+        mock_gh_client.return_value.get_issue.return_value = {
+            "title": "Article",
+            "body": "Write this article",
+        }
+
+        with patch.dict("sys.modules", {
+            "orchestrator": MagicMock(Orchestrator=mock_orch_class),
+            "github_client": MagicMock(GitHubClient=mock_gh_client, parse_target_repo=lambda b: None),
+        }):
+            _dispatch(**_stub_dispatch_args("news-article", tmp_path))
+
+        call_kwargs = mock_orch_class.call_args.kwargs
+        assert call_kwargs.get("cost_tracking") == cost_tracking
+
 
 # ── _dispatch: bug pipeline ───────────────────────────────────────────────────
 
@@ -1042,4 +1068,3 @@ def test_get_open_issues_returns_issue_with_agent_complete_when_multi_run_allowe
     issues = w.get_open_issues("owner/repo", "image-article", allow_completed=True)
     assert len(issues) == 1, "should return issue when allow_completed=True"
     assert issues[0]["number"] == 5
-
