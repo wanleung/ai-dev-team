@@ -566,3 +566,21 @@ def test_extract_and_save_facts_never_raises_on_extraction_failure(tmp_path):
         orch._extract_and_save_facts("owner/repo", result, "a run summary")  # must not raise
 
     orch.memory.save_facts.assert_not_called()
+
+
+def test_extract_and_save_facts_passes_existing_facts_for_supersession(tmp_path):
+    """memory.list_facts() is fetched and handed to extract() so it can supersede a known fact."""
+    orch = _make_orchestrator(tmp_path)
+    orch.model_overrides = {}
+    result = _make_result()
+    existing = [{"id": 17, "type": "issue", "entity": "RSS watcher", "fact": "403 errors"}]
+    orch.memory.list_facts.return_value = existing
+
+    with patch("orchestrator.FactExtractorAgent") as mock_extractor_cls, \
+         patch("orchestrator.console"):
+        mock_extractor_cls.return_value.extract.return_value = []
+        orch._extract_and_save_facts("owner/repo", result, "a run summary")
+
+    orch.memory.list_facts.assert_called_once_with("owner/repo", limit=30)
+    _, kwargs = mock_extractor_cls.return_value.extract.call_args
+    assert kwargs["existing_facts"] == existing

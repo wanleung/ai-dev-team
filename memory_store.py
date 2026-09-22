@@ -91,13 +91,15 @@ class MemoryStore:
                 indexed         INTEGER DEFAULT 0,
                 fact_type       TEXT DEFAULT '',
                 entity          TEXT DEFAULT '',
-                resolved        INTEGER DEFAULT 0
+                resolved        INTEGER DEFAULT 0,
+                is_latest       INTEGER DEFAULT 1,
+                supersedes_id   INTEGER DEFAULT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_runs_repo  ON runs(repo);
             CREATE INDEX IF NOT EXISTS idx_runs_tier  ON runs(repo, tier);
             CREATE INDEX IF NOT EXISTS idx_runs_cons  ON runs(repo, tier, consolidated);
             CREATE INDEX IF NOT EXISTS idx_runs_idx   ON runs(indexed);
-            CREATE INDEX IF NOT EXISTS idx_runs_fact  ON runs(repo, tier, fact_type, resolved);
+            CREATE INDEX IF NOT EXISTS idx_runs_fact  ON runs(repo, tier, fact_type, resolved, is_latest);
         """)
         # Migrate existing DB that may lack the new columns
         existing = {row[1] for row in self._conn.execute("PRAGMA table_info(runs)")}
@@ -109,6 +111,8 @@ class MemoryStore:
             ("fact_type", "''", "TEXT"),
             ("entity", "''", "TEXT"),
             ("resolved", "0", "INTEGER"),
+            ("is_latest", "1", "INTEGER"),
+            ("supersedes_id", "NULL", "INTEGER"),
         ]:
             if col not in existing:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type} DEFAULT {dflt}")
@@ -226,6 +230,12 @@ class MemoryStore:
     # instead of a hope that the last compression pass kept the sentence.
     # Populated by FactExtractorAgent; tier='fact' keeps these out of the
     # run/monthly/quarterly consolidation cycle the same way tier='static' does.
+    #
+    # Contradiction handling (supermemory calls this the "updates" relation):
+    # a new fact can name an older one it supersedes via supersedes_id. The
+    # old row is marked is_latest=0 rather than deleted or rewritten — the
+    # history stays queryable (list_facts(include_superseded=True)) while
+    # list_facts()'s default view only ever shows the current truth.
 
     def save_fact(
         self,
@@ -236,6 +246,7 @@ class MemoryStore:
         resolved: bool = True,
         run_id: Optional[str] = None,
         tags: Optional[list[str]] = None,
+        supersedes_id: Optional[int] = None,
     ) -> int:
         """Persist one atomic fact. Returns the row ID.
 
@@ -249,14 +260,21 @@ class MemoryStore:
             run_id: The originating pipeline run's run_id, for traceability
                 back to the source run this fact was extracted from.
             tags: Optional tags.
+            supersedes_id: ID of an older fact this one updates/replaces.
+                When given and the target exists (same repo, tier='fact'),
+                the target is marked is_latest=0 — its content stays in the
+                table for history, but list_facts()'s default view no
+                longer returns it. Silently ignored if the target doesn't
+                exist or belongs to a different repo — the new fact is
+                still saved either way.
         """
         with self._lock:
             with self._conn:
                 cur = self._conn.execute(
                     """INSERT INTO runs
                        (repo, run_id, created_at, summary, tags, mode, tier,
-                        fact_type, entity, resolved)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        fact_type, entity, resolved, supersedes_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         repo,
                         run_id or "",
@@ -268,16 +286,25 @@ class MemoryStore:
                         fact_type,
                         entity,
                         1 if resolved else 0,
+                        supersedes_id,
                     ),
                 )
-            return cur.lastrowid
+                new_id = cur.lastrowid
+                if supersedes_id is not None:
+                    self._conn.execute(
+                        """UPDATE runs SET is_latest=0, indexed=0
+                           WHERE id=? AND repo=? AND tier='fact'""",
+                        (supersedes_id, repo),
+                    )
+            return new_id
 
     def save_facts(self, repo: str, facts: list[dict], run_id: Optional[str] = None) -> list[int]:
         """Persist multiple atomic facts from one extraction pass. Returns row IDs.
 
         Args:
-            facts: list of {"type", "entity", "fact", "resolved"} dicts —
-                the shape FactExtractorAgent.extract() returns.
+            facts: list of {"type", "entity", "fact", "resolved"} dicts,
+                optionally with a "supersedes" int key — the shape
+                FactExtractorAgent.extract() returns.
             run_id: originating pipeline run_id, applied to every fact.
         """
         return [
@@ -288,6 +315,7 @@ class MemoryStore:
                 entity=f.get("entity", ""),
                 resolved=f.get("resolved", True),
                 run_id=run_id,
+                supersedes_id=f.get("supersedes"),
             )
             for f in facts
         ]
@@ -298,6 +326,7 @@ class MemoryStore:
         fact_type: Optional[str] = None,
         entity: Optional[str] = None,
         resolved: Optional[bool] = None,
+        include_superseded: bool = False,
         limit: int = 100,
     ) -> list[dict]:
         """Query atomic facts with optional filters, newest first.
@@ -305,9 +334,16 @@ class MemoryStore:
         This is the structured-query payoff of atomic extraction:
         list_facts(repo, fact_type="issue", resolved=False) answers
         "what's still open" directly instead of grepping prose summaries.
+
+        By default only returns is_latest=1 rows — the current truth, with
+        anything a newer fact superseded left out. Pass
+        include_superseded=True for the full history, e.g. to show how a
+        fact's stated value changed over time.
         """
         conditions = ["repo=?", "tier='fact'"]
         params: list = [repo]
+        if not include_superseded:
+            conditions.append("is_latest=1")
         if fact_type:
             conditions.append("fact_type=?")
             params.append(fact_type)
@@ -320,7 +356,8 @@ class MemoryStore:
         params.append(limit)
 
         rows = self._conn.execute(
-            f"""SELECT id, run_id, fact_type, entity, summary, resolved, created_at
+            f"""SELECT id, run_id, fact_type, entity, summary, resolved,
+                       created_at, is_latest, supersedes_id
                 FROM runs WHERE {' AND '.join(conditions)}
                 ORDER BY id DESC LIMIT ?""",
             params,
@@ -329,6 +366,7 @@ class MemoryStore:
             {
                 "id": r[0], "run_id": r[1], "type": r[2], "entity": r[3],
                 "fact": r[4], "resolved": bool(r[5]), "created_at": r[6],
+                "is_latest": bool(r[7]), "supersedes_id": r[8],
             }
             for r in rows
         ]
@@ -585,7 +623,8 @@ Output plain text only."""
         # to surface a short, current punch list, not the entire backlog.
         open_issues = self._conn.execute(
             """SELECT entity, summary FROM runs
-               WHERE repo=? AND tier='fact' AND fact_type='issue' AND resolved=0
+               WHERE repo=? AND tier='fact' AND fact_type='issue'
+                     AND resolved=0 AND is_latest=1
                ORDER BY id DESC LIMIT 10""",
             (repo,),
         ).fetchall()
@@ -647,7 +686,8 @@ Output plain text only."""
         """
         fact_rows = self._conn.execute(
             """SELECT created_at, entity, summary FROM runs
-               WHERE repo=? AND tier='fact' AND fact_type='issue' AND resolved=0
+               WHERE repo=? AND tier='fact' AND fact_type='issue'
+                     AND resolved=0 AND is_latest=1
                ORDER BY id DESC LIMIT ?""",
             (repo, limit),
         ).fetchall()

@@ -40,6 +40,59 @@ def test_extract_returns_empty_list_when_nothing_fact_worthy():
     assert facts == []
 
 
+# ── extract() — existing_facts / supersedes wiring ──────────────────────────
+
+class TestExtractSupersedes:
+    def test_supersedes_referencing_a_known_existing_id_is_kept(self):
+        raw = json.dumps([
+            {"type": "issue", "entity": "RSS watcher", "fact": "fixed the 403s",
+             "resolved": True, "supersedes": 17},
+        ])
+        existing = [{"id": 17, "type": "issue", "entity": "RSS watcher", "fact": "403 errors"}]
+        with patch.object(FactExtractorAgent, "call", return_value=raw):
+            agent = _make_agent()
+            facts = agent.extract(
+                repo="owner/repo", requirement="", prd="", design="", review="", summary="",
+                existing_facts=existing,
+            )
+        assert facts[0]["supersedes"] == 17
+
+    def test_supersedes_referencing_an_unknown_id_is_dropped(self):
+        """extract() validates the LLM's supersedes claim against existing_facts — never trusts blindly."""
+        raw = json.dumps([
+            {"type": "issue", "entity": "x", "fact": "y", "resolved": True, "supersedes": 999},
+        ])
+        existing = [{"id": 17, "type": "issue", "entity": "RSS watcher", "fact": "403 errors"}]
+        with patch.object(FactExtractorAgent, "call", return_value=raw):
+            agent = _make_agent()
+            facts = agent.extract(
+                repo="owner/repo", requirement="", prd="", design="", review="", summary="",
+                existing_facts=existing,
+            )
+        assert "supersedes" not in facts[0]
+
+    def test_no_existing_facts_means_no_valid_supersede_targets(self):
+        raw = json.dumps([{"type": "issue", "entity": "x", "fact": "y", "resolved": True, "supersedes": 1}])
+        with patch.object(FactExtractorAgent, "call", return_value=raw):
+            agent = _make_agent()
+            facts = agent.extract(
+                repo="owner/repo", requirement="", prd="", design="", review="", summary="",
+            )  # existing_facts omitted entirely
+        assert "supersedes" not in facts[0]
+
+    def test_existing_facts_are_included_in_the_prompt(self):
+        existing = [{"id": 17, "type": "issue", "entity": "RSS watcher", "fact": "403 errors"}]
+        agent = _make_agent()
+        prompt = agent._build_prompt("owner/repo", "req", "prd", "design", "review", "summary", existing)
+        assert "id=17" in prompt
+        assert "403 errors" in prompt
+
+    def test_no_existing_facts_omits_that_prompt_section(self):
+        agent = _make_agent()
+        prompt = agent._build_prompt("owner/repo", "req", "prd", "design", "review", "summary", None)
+        assert "Existing facts" not in prompt
+
+
 # ── _parse_facts() — validation and normalisation ───────────────────────────
 
 class TestParseFacts:
@@ -119,3 +172,33 @@ class TestParseFacts:
         raw = json.dumps([{"type": "status", "entity": "  RSS watcher  ", "fact": "shipped", "resolved": True}])
         result = agent._parse_facts(raw)
         assert result[0]["entity"] == "RSS watcher"
+
+    def test_valid_supersede_id_is_kept(self):
+        agent = _make_agent()
+        raw = json.dumps([{"type": "issue", "entity": "x", "fact": "y", "resolved": True, "supersedes": 5}])
+        result = agent._parse_facts(raw, valid_supersede_ids={5, 9})
+        assert result[0]["supersedes"] == 5
+
+    def test_supersede_id_not_in_valid_set_is_dropped(self):
+        agent = _make_agent()
+        raw = json.dumps([{"type": "issue", "entity": "x", "fact": "y", "resolved": True, "supersedes": 5}])
+        result = agent._parse_facts(raw, valid_supersede_ids={9})
+        assert "supersedes" not in result[0]
+
+    def test_non_numeric_supersede_value_is_dropped_not_raised(self):
+        agent = _make_agent()
+        raw = json.dumps([{"type": "issue", "entity": "x", "fact": "y", "resolved": True, "supersedes": "not-a-number"}])
+        result = agent._parse_facts(raw, valid_supersede_ids={5})
+        assert "supersedes" not in result[0]
+
+    def test_facts_with_no_supersedes_key_have_no_supersedes_in_output(self):
+        agent = _make_agent()
+        raw = json.dumps([{"type": "status", "entity": "x", "fact": "shipped", "resolved": True}])
+        result = agent._parse_facts(raw, valid_supersede_ids={5})
+        assert "supersedes" not in result[0]
+
+    def test_string_supersede_id_coerces_to_int(self):
+        agent = _make_agent()
+        raw = json.dumps([{"type": "issue", "entity": "x", "fact": "y", "resolved": True, "supersedes": "5"}])
+        result = agent._parse_facts(raw, valid_supersede_ids={5})
+        assert result[0]["supersedes"] == 5

@@ -254,6 +254,93 @@ class TestFactsExcludedFromConsolidation:
         assert facts[0]["fact"] == "a standing fact"
 
 
+# ── Supersession (isLatest / supersedes_id) ─────────────────────────────────
+# Contradiction handling: a new fact can name an older one it updates. The
+# old row is marked is_latest=0 rather than rewritten or deleted, so history
+# stays queryable while the default view only ever shows current truth.
+
+class TestSupersession:
+    def test_new_fact_is_latest_by_default(self, store):
+        row_id = store.save_fact("owner/repo", "a fact")
+        facts = store.list_facts("owner/repo", include_superseded=True)
+        assert facts[0]["is_latest"] is True
+        assert facts[0]["supersedes_id"] is None
+
+    def test_supersede_marks_old_fact_not_latest(self, store):
+        old_id = store.save_fact("owner/repo", "DB is Postgres 16")
+        store.save_fact("owner/repo", "DB is Postgres 17 + pgvector", supersedes_id=old_id)
+
+        all_facts = store.list_facts("owner/repo", include_superseded=True)
+        old_row = next(f for f in all_facts if f["id"] == old_id)
+        assert old_row["is_latest"] is False
+
+    def test_default_list_facts_excludes_superseded(self, store):
+        old_id = store.save_fact("owner/repo", "DB is Postgres 16")
+        new_id = store.save_fact("owner/repo", "DB is Postgres 17", supersedes_id=old_id)
+
+        current = store.list_facts("owner/repo")
+        assert [f["id"] for f in current] == [new_id]
+
+    def test_include_superseded_returns_full_history(self, store):
+        old_id = store.save_fact("owner/repo", "DB is Postgres 16")
+        new_id = store.save_fact("owner/repo", "DB is Postgres 17", supersedes_id=old_id)
+
+        full = store.list_facts("owner/repo", include_superseded=True)
+        assert {f["id"] for f in full} == {old_id, new_id}
+
+    def test_new_fact_records_supersedes_id(self, store):
+        old_id = store.save_fact("owner/repo", "DB is Postgres 16")
+        new_id = store.save_fact("owner/repo", "DB is Postgres 17", supersedes_id=old_id)
+
+        new_row = next(f for f in store.list_facts("owner/repo", include_superseded=True) if f["id"] == new_id)
+        assert new_row["supersedes_id"] == old_id
+
+    def test_supersede_resets_old_facts_indexed_flag(self, store):
+        """A superseded fact's changed is_latest status should re-enter the pgvector index sweep."""
+        old_id = store.save_fact("owner/repo", "DB is Postgres 16")
+        store.mark_indexed([old_id])
+        assert store.unindexed() == []
+
+        store.save_fact("owner/repo", "DB is Postgres 17", supersedes_id=old_id)
+        assert old_id in {r["id"] for r in store.unindexed()}
+
+    def test_nonexistent_supersede_target_does_not_raise(self, store):
+        """A hallucinated/stale supersedes_id must not block saving the new fact."""
+        new_id = store.save_fact("owner/repo", "a fact", supersedes_id=999999)
+        assert new_id is not None
+        assert len(store.list_facts("owner/repo")) == 1
+
+    def test_supersede_scoped_to_repo(self, store):
+        """A supersedes_id from a different repo must not mark that row is_latest=0."""
+        other_repo_id = store.save_fact("owner/repo-a", "fact in repo A")
+        store.save_fact("owner/repo-b", "unrelated fact", supersedes_id=other_repo_id)
+
+        facts_a = store.list_facts("owner/repo-a", include_superseded=True)
+        assert facts_a[0]["is_latest"] is True
+
+    def test_open_issue_recall_excludes_superseded_issue_facts(self, store):
+        """recall()'s open-issues section only shows the current version of an issue."""
+        old_id = store.save_fact("owner/repo", "vague issue description", fact_type="issue", resolved=False)
+        store.save_fact("owner/repo", "precise issue description", fact_type="issue",
+                         resolved=False, supersedes_id=old_id)
+
+        result = store.recall("owner/repo")
+        assert "precise issue description" in result
+        assert "vague issue description" not in result
+
+    def test_save_facts_passes_through_supersedes_key(self, store):
+        """save_facts() honors a 'supersedes' key on individual fact dicts (FactExtractorAgent's output shape)."""
+        old_id = store.save_fact("owner/repo", "DB is Postgres 16")
+        store.save_facts("owner/repo", [
+            {"type": "decision", "entity": "db", "fact": "DB is Postgres 17", "resolved": True, "supersedes": old_id},
+        ])
+
+        current = store.list_facts("owner/repo")
+        assert len(current) == 1
+        assert current[0]["fact"] == "DB is Postgres 17"
+        assert current[0]["supersedes_id"] == old_id
+
+
 # ── consolidate_monthly ───────────────────────────────────────────────────────
 
 class TestConsolidateMonthly:

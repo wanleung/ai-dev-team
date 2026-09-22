@@ -6837,6 +6837,7 @@ class Orchestrator(TestFixLoopMixin):
         the pipeline the way a summary or consolidation failure wouldn't.
         """
         try:
+            existing_facts = self.memory.list_facts(repo, limit=30)
             extractor = FactExtractorAgent(model=self._resolve_agent_model("fact_extractor"))
             facts = extractor.extract(
                 repo=repo,
@@ -6845,10 +6846,13 @@ class Orchestrator(TestFixLoopMixin):
                 design=result.design,
                 review=result.review,
                 summary=summary_text,
+                existing_facts=existing_facts,
             )
             if facts:
                 self.memory.save_facts(repo, facts, run_id=result.run_id)
-                console.print(f"  🧩 [dim]Extracted {len(facts)} atomic fact(s)[/dim]")
+                superseded = sum(1 for f in facts if f.get("supersedes"))
+                note = f" ({superseded} superseding a prior fact)" if superseded else ""
+                console.print(f"  🧩 [dim]Extracted {len(facts)} atomic fact(s){note}[/dim]")
         except Exception as exc:
             console.print(f"  [yellow]⚠️  Fact extraction failed: {exc}[/yellow]")
 

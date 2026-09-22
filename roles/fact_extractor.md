@@ -57,6 +57,24 @@ before or after):
 
 If nothing in this run is atomic-fact-worthy, return an empty array: `[]`
 
+## Updating an existing fact
+
+If your prompt includes an "Existing facts for this repo" section, some of
+this run's facts may update one of them rather than being brand new — the
+same issue getting fixed, a decision getting revised, a status changing.
+When that happens, add `"supersedes": <id>` to the new fact, using the `id`
+shown next to the existing fact it replaces:
+
+```
+[
+  {"type": "issue", "entity": "RSS watcher", "fact": "GitHub Search API rate-limited dedup calls with 403s under load", "resolved": true, "supersedes": 17}
+]
+```
+
+Only use `supersedes` when the new fact is genuinely about the same thing as
+an existing one — don't force a match. A new fact with no real predecessor
+just omits the field. Never invent an id that wasn't shown to you.
+
 ## Rules
 
 - `entity` is what/who the fact is about — a component, module, stage, or
