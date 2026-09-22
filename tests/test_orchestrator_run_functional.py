@@ -518,3 +518,51 @@ def test_run_pauses_on_clarification_needed_from_prd(tmp_path):
     mock_design.assert_not_called()
     # _finish should be called to wrap up the pipeline
     mock_finish.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _extract_and_save_facts — atomic fact extraction wiring in _finish()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_extract_and_save_facts_saves_returned_facts(tmp_path):
+    """Facts from FactExtractorAgent.extract() are saved via memory.save_facts()."""
+    orch = _make_orchestrator(tmp_path)
+    orch.model_overrides = {}
+    result = _make_result()
+    result.run_id = "run-42"
+    facts = [{"type": "issue", "entity": "RSS watcher", "fact": "403 errors", "resolved": False}]
+
+    with patch("orchestrator.FactExtractorAgent") as mock_extractor_cls, \
+         patch("orchestrator.console"):
+        mock_extractor_cls.return_value.extract.return_value = facts
+        orch._extract_and_save_facts("owner/repo", result, "a run summary")
+
+    orch.memory.save_facts.assert_called_once_with("owner/repo", facts, run_id="run-42")
+
+
+def test_extract_and_save_facts_skips_save_when_no_facts(tmp_path):
+    """An empty extraction result never calls save_facts()."""
+    orch = _make_orchestrator(tmp_path)
+    orch.model_overrides = {}
+    result = _make_result()
+
+    with patch("orchestrator.FactExtractorAgent") as mock_extractor_cls, \
+         patch("orchestrator.console"):
+        mock_extractor_cls.return_value.extract.return_value = []
+        orch._extract_and_save_facts("owner/repo", result, "a run summary")
+
+    orch.memory.save_facts.assert_not_called()
+
+
+def test_extract_and_save_facts_never_raises_on_extraction_failure(tmp_path):
+    """A FactExtractorAgent/LLM failure must never propagate out of _finish()."""
+    orch = _make_orchestrator(tmp_path)
+    orch.model_overrides = {}
+    result = _make_result()
+
+    with patch("orchestrator.FactExtractorAgent") as mock_extractor_cls, \
+         patch("orchestrator.console"):
+        mock_extractor_cls.return_value.extract.side_effect = RuntimeError("backend down")
+        orch._extract_and_save_facts("owner/repo", result, "a run summary")  # must not raise
+
+    orch.memory.save_facts.assert_not_called()

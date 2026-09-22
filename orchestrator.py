@@ -49,6 +49,7 @@ from agents.summariser import SummaryAgent
 from agents.memory_bank_updater import MemoryBankUpdaterAgent
 from agents.refactor_agent import RefactorAgent
 from agents.memory_consolidator import MemoryConsolidatorAgent
+from agents.fact_extractor import FactExtractorAgent
 from agents.conflict_resolver import ConflictResolverAgent, PRContext
 from agents.deploy_backends import build_deploy_backend
 from agents.news_writer import NewsWriterAgent
@@ -6672,6 +6673,13 @@ class Orchestrator(TestFixLoopMixin):
         except Exception as exc:
             console.print(f"  [yellow]⚠️  Memory save failed: {exc}[/yellow]")
 
+        # ── Extract atomic facts from this run ──────────────────────────────────
+        # A paragraph summary compresses badly across two consolidation passes;
+        # pull out the individual decisions/issues/learnings/status facts as
+        # their own rows before that happens. Best-effort — never fails the run.
+        if summary_text:
+            self._extract_and_save_facts(active_repo, result, summary_text)
+
         # ── Embed the new run into pgvector for the search_memory MCP tool ─────
         # Incremental — rag-mcp/indexer.py only processes indexed=0 rows, so this
         # is cheap even though it runs after every pipeline finish. Best-effort:
@@ -6815,6 +6823,34 @@ class Orchestrator(TestFixLoopMixin):
                 console.print(f"  🧠 [dim]Memory bank updated: {name}[/dim]")
             except Exception as exc:
                 console.print(f"  [yellow]⚠️  Failed to update memory-bank/{name}: {exc}[/yellow]")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # ATOMIC FACT EXTRACTION
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _extract_and_save_facts(self, repo: str, result: PipelineResult, summary_text: str) -> None:
+        """Extract atomic facts from the completed run and save them.
+
+        Best-effort. FactExtractorAgent._parse_facts() already returns []
+        rather than raising on bad LLM output; this guards the LLM call
+        itself (backend errors, timeouts) so a failure here never fails
+        the pipeline the way a summary or consolidation failure wouldn't.
+        """
+        try:
+            extractor = FactExtractorAgent(model=self._resolve_agent_model("fact_extractor"))
+            facts = extractor.extract(
+                repo=repo,
+                requirement=result.requirement,
+                prd=result.prd,
+                design=result.design,
+                review=result.review,
+                summary=summary_text,
+            )
+            if facts:
+                self.memory.save_facts(repo, facts, run_id=result.run_id)
+                console.print(f"  🧩 [dim]Extracted {len(facts)} atomic fact(s)[/dim]")
+        except Exception as exc:
+            console.print(f"  [yellow]⚠️  Fact extraction failed: {exc}[/yellow]")
 
     # ──────────────────────────────────────────────────────────────────────────
     # TIERED MEMORY CONSOLIDATION

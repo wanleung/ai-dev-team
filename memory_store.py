@@ -88,12 +88,16 @@ class MemoryStore:
                 tier            TEXT DEFAULT 'run',
                 period_label    TEXT DEFAULT '',
                 consolidated    INTEGER DEFAULT 0,
-                indexed         INTEGER DEFAULT 0
+                indexed         INTEGER DEFAULT 0,
+                fact_type       TEXT DEFAULT '',
+                entity          TEXT DEFAULT '',
+                resolved        INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_runs_repo  ON runs(repo);
             CREATE INDEX IF NOT EXISTS idx_runs_tier  ON runs(repo, tier);
             CREATE INDEX IF NOT EXISTS idx_runs_cons  ON runs(repo, tier, consolidated);
             CREATE INDEX IF NOT EXISTS idx_runs_idx   ON runs(indexed);
+            CREATE INDEX IF NOT EXISTS idx_runs_fact  ON runs(repo, tier, fact_type, resolved);
         """)
         # Migrate existing DB that may lack the new columns
         existing = {row[1] for row in self._conn.execute("PRAGMA table_info(runs)")}
@@ -102,6 +106,9 @@ class MemoryStore:
             ("period_label", "''", "TEXT"),
             ("consolidated", "0", "INTEGER"),
             ("indexed", "0", "INTEGER"),
+            ("fact_type", "''", "TEXT"),
+            ("entity", "''", "TEXT"),
+            ("resolved", "0", "INTEGER"),
         ]:
             if col not in existing:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type} DEFAULT {dflt}")
@@ -209,6 +216,130 @@ class MemoryStore:
                 cur = self._conn.execute(
                     "DELETE FROM runs WHERE repo=? AND tier='static' AND run_id=?",
                     (repo, key),
+                )
+            return cur.rowcount > 0
+
+    # ── Atomic facts ──────────────────────────────────────────────────────────
+    # The structured counterpart to the prose run summary — one row per fact
+    # instead of a clause buried in a paragraph, so "is this tech debt still
+    # open?" is a query (list_facts(fact_type="issue", resolved=False))
+    # instead of a hope that the last compression pass kept the sentence.
+    # Populated by FactExtractorAgent; tier='fact' keeps these out of the
+    # run/monthly/quarterly consolidation cycle the same way tier='static' does.
+
+    def save_fact(
+        self,
+        repo: str,
+        fact: str,
+        fact_type: str = "status",
+        entity: str = "",
+        resolved: bool = True,
+        run_id: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+    ) -> int:
+        """Persist one atomic fact. Returns the row ID.
+
+        Args:
+            repo: Repo slug this fact applies to.
+            fact: The fact text — one sentence, self-contained.
+            fact_type: One of "decision", "issue", "learning", "status".
+            entity: What/who the fact is about (a component, module, stage).
+            resolved: For fact_type="issue", whether it's already fixed.
+                Ignored in spirit (but still stored) for other types.
+            run_id: The originating pipeline run's run_id, for traceability
+                back to the source run this fact was extracted from.
+            tags: Optional tags.
+        """
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(
+                    """INSERT INTO runs
+                       (repo, run_id, created_at, summary, tags, mode, tier,
+                        fact_type, entity, resolved)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        repo,
+                        run_id or "",
+                        datetime.now(timezone.utc).isoformat(),
+                        fact,
+                        json.dumps(tags or []),
+                        "fact",
+                        "fact",
+                        fact_type,
+                        entity,
+                        1 if resolved else 0,
+                    ),
+                )
+            return cur.lastrowid
+
+    def save_facts(self, repo: str, facts: list[dict], run_id: Optional[str] = None) -> list[int]:
+        """Persist multiple atomic facts from one extraction pass. Returns row IDs.
+
+        Args:
+            facts: list of {"type", "entity", "fact", "resolved"} dicts —
+                the shape FactExtractorAgent.extract() returns.
+            run_id: originating pipeline run_id, applied to every fact.
+        """
+        return [
+            self.save_fact(
+                repo=repo,
+                fact=f["fact"],
+                fact_type=f.get("type", "status"),
+                entity=f.get("entity", ""),
+                resolved=f.get("resolved", True),
+                run_id=run_id,
+            )
+            for f in facts
+        ]
+
+    def list_facts(
+        self,
+        repo: str,
+        fact_type: Optional[str] = None,
+        entity: Optional[str] = None,
+        resolved: Optional[bool] = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Query atomic facts with optional filters, newest first.
+
+        This is the structured-query payoff of atomic extraction:
+        list_facts(repo, fact_type="issue", resolved=False) answers
+        "what's still open" directly instead of grepping prose summaries.
+        """
+        conditions = ["repo=?", "tier='fact'"]
+        params: list = [repo]
+        if fact_type:
+            conditions.append("fact_type=?")
+            params.append(fact_type)
+        if entity:
+            conditions.append("entity=?")
+            params.append(entity)
+        if resolved is not None:
+            conditions.append("resolved=?")
+            params.append(1 if resolved else 0)
+        params.append(limit)
+
+        rows = self._conn.execute(
+            f"""SELECT id, run_id, fact_type, entity, summary, resolved, created_at
+                FROM runs WHERE {' AND '.join(conditions)}
+                ORDER BY id DESC LIMIT ?""",
+            params,
+        ).fetchall()
+        return [
+            {
+                "id": r[0], "run_id": r[1], "type": r[2], "entity": r[3],
+                "fact": r[4], "resolved": bool(r[5]), "created_at": r[6],
+            }
+            for r in rows
+        ]
+
+    def resolve_fact(self, fact_id: int) -> bool:
+        """Mark an issue-type fact as resolved. Returns True if a row was updated."""
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(
+                    "UPDATE runs SET resolved=1, indexed=0 WHERE id=? AND tier='fact'",
+                    (fact_id,),
                 )
             return cur.rowcount > 0
 
@@ -425,13 +556,14 @@ Output plain text only."""
 
         Strategy:
           1. All static facts           (always known — the profile half of memory)
-          2. Latest quarterly snapshot   (big-picture, ~400 words)
-          3. Latest monthly snapshot     (recent theme, ~600 words)
-          4. Last `recent_runs` run-tier entries (exact detail)
+          2. Unresolved issue facts     (up to 10 — precise, not a lucky substring match)
+          3. Latest quarterly snapshot   (big-picture, ~400 words)
+          4. Latest monthly snapshot     (recent theme, ~600 words)
+          5. Last `recent_runs` run-tier entries (exact detail)
 
         Total injected context stays bounded regardless of total run count —
-        static facts are meant to stay few and curated, not to grow with
-        every run the way the tiered dynamic history does.
+        static facts and open issues are meant to stay few and curated, not
+        to grow with every run the way the tiered dynamic history does.
         """
         parts: list[str] = []
 
@@ -447,6 +579,21 @@ Output plain text only."""
         if static_rows:
             facts = "\n".join(f"- {r[0]}" for r in static_rows)
             parts.append(f"### 📌 Static facts (always apply)\n{facts}")
+
+        # Unresolved issue facts — the atomic-extraction counterpart to a
+        # paragraph mentioning a bug in passing. Capped at 10: this is meant
+        # to surface a short, current punch list, not the entire backlog.
+        open_issues = self._conn.execute(
+            """SELECT entity, summary FROM runs
+               WHERE repo=? AND tier='fact' AND fact_type='issue' AND resolved=0
+               ORDER BY id DESC LIMIT 10""",
+            (repo,),
+        ).fetchall()
+        if open_issues:
+            issue_lines = "\n".join(
+                f"- {(entity + ': ') if entity else ''}{summary}" for entity, summary in open_issues
+            )
+            parts.append(f"### ⚠️ Known open issues\n{issue_lines}")
 
         # Quarterly
         quarterly = self._conn.execute(
@@ -489,7 +636,28 @@ Output plain text only."""
         return "## 📚 Memory: previous work on this repo\n\n" + "\n\n---\n\n".join(parts)
 
     def recall_issues(self, repo: str, limit: int = 10) -> str:
-        """Return known issues from past runs to help agents avoid repeating them."""
+        """Return known unresolved issues to help agents avoid repeating them.
+
+        Prefers atomic issue-type facts (tier='fact', fact_type='issue',
+        resolved=False) — precise and structured, unlike a substring that
+        has to have survived intact through prose compression. Falls back
+        to the older tag-based convention (a "issue" tag on a run-tier
+        summary) when no fact-tier data exists yet, so repos saved before
+        atomic fact extraction still get something.
+        """
+        fact_rows = self._conn.execute(
+            """SELECT created_at, entity, summary FROM runs
+               WHERE repo=? AND tier='fact' AND fact_type='issue' AND resolved=0
+               ORDER BY id DESC LIMIT ?""",
+            (repo, limit),
+        ).fetchall()
+        if fact_rows:
+            parts = ["## ⚠️ Known issues from previous runs\n"]
+            for created_at, entity, summary in fact_rows:
+                label = f"{entity}: " if entity else ""
+                parts.append(f"- [{created_at[:10]}] {label}{summary[:300]}")
+            return "\n".join(parts)
+
         rows = self._conn.execute(
             "SELECT created_at, summary FROM runs WHERE repo=? AND tags LIKE '%issue%' ORDER BY id DESC LIMIT ?",
             (repo, limit),

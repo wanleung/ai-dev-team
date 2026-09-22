@@ -46,6 +46,9 @@ class TestDbMigration:
         assert "period_label" in cols
         assert "consolidated" in cols
         assert "indexed" in cols
+        assert "fact_type" in cols
+        assert "entity" in cols
+        assert "resolved" in cols
         ms.close()
 
 
@@ -127,6 +130,128 @@ class TestSaveStatic:
 
         assert [f["fact"] for f in store.list_static("owner/repo-a")] == ["fact for repo A"]
         assert [f["fact"] for f in store.list_static("owner/repo-b")] == ["fact for repo B"]
+
+
+# ── save_fact / save_facts / list_facts / resolve_fact ─────────────────────
+# Atomic fact extraction: the structured counterpart to the prose run
+# summary — one row per fact (tier='fact') instead of a clause buried in a
+# paragraph that might not survive two rounds of LLM compression.
+
+class TestSaveFact:
+    def test_creates_a_fact_row(self, store):
+        """save_fact() persists a fact with tier='fact' and the given metadata."""
+        row_id = store.save_fact(
+            "owner/repo", "403 errors from GitHub Search API", fact_type="issue",
+            entity="RSS watcher", resolved=False, run_id="run-1",
+        )
+        facts = store.list_facts("owner/repo")
+        assert len(facts) == 1
+        assert facts[0]["id"] == row_id
+        assert facts[0]["fact"] == "403 errors from GitHub Search API"
+        assert facts[0]["type"] == "issue"
+        assert facts[0]["entity"] == "RSS watcher"
+        assert facts[0]["resolved"] is False
+        assert facts[0]["run_id"] == "run-1"
+
+    def test_defaults_to_status_type_and_resolved_true(self, store):
+        """save_fact() with no explicit type/resolved uses sensible defaults."""
+        store.save_fact("owner/repo", "ComfyUI integration shipped")
+        facts = store.list_facts("owner/repo")
+        assert facts[0]["type"] == "status"
+        assert facts[0]["resolved"] is True
+
+    def test_save_facts_persists_a_batch_with_shared_run_id(self, store):
+        """save_facts() saves a list of facts (FactExtractorAgent's output shape)."""
+        facts_in = [
+            {"type": "issue", "entity": "RSS watcher", "fact": "403 errors", "resolved": False},
+            {"type": "decision", "entity": "database", "fact": "Switched to raw SQL", "resolved": True},
+        ]
+        ids = store.save_facts("owner/repo", facts_in, run_id="run-42")
+        assert len(ids) == 2
+
+        saved = store.list_facts("owner/repo")
+        assert {f["run_id"] for f in saved} == {"run-42"}
+        assert {f["fact"] for f in saved} == {"403 errors", "Switched to raw SQL"}
+
+
+class TestListFacts:
+    def test_filters_by_type(self, store):
+        store.save_fact("owner/repo", "an issue", fact_type="issue")
+        store.save_fact("owner/repo", "a decision", fact_type="decision")
+        result = store.list_facts("owner/repo", fact_type="issue")
+        assert len(result) == 1
+        assert result[0]["fact"] == "an issue"
+
+    def test_filters_by_entity(self, store):
+        store.save_fact("owner/repo", "fact about watcher", entity="RSS watcher")
+        store.save_fact("owner/repo", "fact about db", entity="database")
+        result = store.list_facts("owner/repo", entity="RSS watcher")
+        assert len(result) == 1
+        assert result[0]["fact"] == "fact about watcher"
+
+    def test_filters_by_resolved_false_answers_whats_still_open(self, store):
+        """The core payoff: 'is this tech debt still open?' as a query."""
+        store.save_fact("owner/repo", "open issue", fact_type="issue", resolved=False)
+        store.save_fact("owner/repo", "closed issue", fact_type="issue", resolved=True)
+        result = store.list_facts("owner/repo", fact_type="issue", resolved=False)
+        assert len(result) == 1
+        assert result[0]["fact"] == "open issue"
+
+    def test_respects_limit(self, store):
+        for i in range(5):
+            store.save_fact("owner/repo", f"fact {i}")
+        assert len(store.list_facts("owner/repo", limit=2)) == 2
+
+    def test_scoped_per_repo(self, store):
+        store.save_fact("owner/repo-a", "fact A")
+        store.save_fact("owner/repo-b", "fact B")
+        assert [f["fact"] for f in store.list_facts("owner/repo-a")] == ["fact A"]
+
+
+class TestResolveFact:
+    def test_marks_a_fact_resolved(self, store):
+        row_id = store.save_fact("owner/repo", "an open issue", fact_type="issue", resolved=False)
+        assert store.resolve_fact(row_id) is True
+
+        facts = store.list_facts("owner/repo", fact_type="issue", resolved=False)
+        assert facts == []
+        facts = store.list_facts("owner/repo", fact_type="issue", resolved=True)
+        assert len(facts) == 1
+
+    def test_resets_indexed_flag_so_pgvector_picks_up_the_change(self, store):
+        row_id = store.save_fact("owner/repo", "an open issue", fact_type="issue", resolved=False)
+        store.mark_indexed([row_id])
+        assert store.unindexed() == []
+
+        store.resolve_fact(row_id)
+        assert row_id in {r["id"] for r in store.unindexed()}
+
+    def test_returns_false_for_unknown_id(self, store):
+        assert store.resolve_fact(99999) is False
+
+    def test_only_touches_fact_tier_rows(self, store):
+        """resolve_fact() must not accidentally resolve a static fact or a run row."""
+        static_id = store.save_static("owner/repo", "a standing fact", key="k")
+        assert store.resolve_fact(static_id) is False
+
+
+class TestFactsExcludedFromConsolidation:
+    def test_needs_consolidation_ignores_facts(self, store):
+        for i in range(15):
+            store.save_fact("owner/repo", f"fact {i}")
+        assert store.needs_consolidation("owner/repo") is False
+
+    def test_consolidate_monthly_never_touches_facts(self, store):
+        from unittest.mock import MagicMock as _MM
+
+        store.save_fact("owner/repo", "a standing fact")
+        store.save("owner/repo", "run summary", mode="feature")
+
+        store.consolidate_monthly("owner/repo", _MM(return_value="monthly text"))
+
+        facts = store.list_facts("owner/repo")
+        assert len(facts) == 1
+        assert facts[0]["fact"] == "a standing fact"
 
 
 # ── consolidate_monthly ───────────────────────────────────────────────────────
@@ -326,22 +451,64 @@ class TestRecall:
         result = store.recall("owner/repo")
         assert result.index("Static facts") < result.index("Recent runs")
 
+    def test_recall_includes_unresolved_issue_facts(self, store):
+        """recall() surfaces open issue-type facts under their own section."""
+        store.save_fact("owner/repo", "403 errors from dedup", fact_type="issue",
+                         entity="RSS watcher", resolved=False)
+        result = store.recall("owner/repo")
+        assert "403 errors from dedup" in result
+        assert "Known open issues" in result
+
+    def test_recall_excludes_resolved_issue_facts(self, store):
+        """A resolved issue fact must not appear in the open-issues section."""
+        store.save_fact("owner/repo", "an already-fixed bug", fact_type="issue", resolved=True)
+        result = store.recall("owner/repo")
+        assert "an already-fixed bug" not in result
+
+    def test_recall_excludes_non_issue_facts_from_open_issues_section(self, store):
+        """Decision/status/learning facts don't clutter the open-issues section."""
+        store.save_fact("owner/repo", "a routine status update", fact_type="status")
+        result = store.recall("owner/repo")
+        assert "Known open issues" not in result
+
+    def test_recall_orders_open_issues_before_dynamic_history(self, store):
+        store.save_fact("owner/repo", "an open issue", fact_type="issue", resolved=False)
+        store.save("owner/repo", "shipped the feature", mode="feature")
+
+        result = store.recall("owner/repo")
+        assert result.index("Known open issues") < result.index("Recent runs")
+
 
 # ── recall_issues ─────────────────────────────────────────────────────────────
 
 class TestRecallIssues:
     def test_returns_empty_when_no_tagged_entries(self, store):
-        """recall_issues() returns '' when no entries have 'issue' tag."""
+        """recall_issues() returns '' when no entries have 'issue' tag and no fact rows exist."""
         store.save("owner/repo", "clean run", mode="feature")
         result = store.recall_issues("owner/repo")
         assert result == ""
 
     def test_returns_tagged_issues(self, store):
-        """recall_issues() returns entries that have 'issue' in their tags."""
+        """recall_issues() falls back to the tag-based convention when no fact rows exist."""
         store.save("owner/repo", "flaky auth bug", mode="feature", tags=["issue", "auth"])
         result = store.recall_issues("owner/repo")
         assert "flaky auth bug" in result
         assert "Known issues" in result
+
+    def test_prefers_atomic_issue_facts_over_tag_based_entries(self, store):
+        """When fact-tier issue rows exist, they're used instead of the tag-based fallback."""
+        store.save("owner/repo", "an old tag-based issue mention", mode="feature", tags=["issue"])
+        store.save_fact("owner/repo", "a precise atomic issue", fact_type="issue",
+                         entity="RSS watcher", resolved=False)
+
+        result = store.recall_issues("owner/repo")
+        assert "a precise atomic issue" in result
+        assert "an old tag-based issue mention" not in result
+
+    def test_excludes_resolved_atomic_issues(self, store):
+        store.save_fact("owner/repo", "a fixed issue", fact_type="issue", resolved=True)
+        result = store.recall_issues("owner/repo")
+        assert result == ""
 
 
 # ── search ───────────────────────────────────────────────────────────────────
