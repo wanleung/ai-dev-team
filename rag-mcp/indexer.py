@@ -4,7 +4,8 @@ Usage:
     python indexer.py --source codebase --path /path/to/repo [--ext py,ts,go] [--clean]
     python indexer.py --source docs --path /path/to/docs [--ext md,txt,rst] [--clean]
     python indexer.py --source docs --url https://react.dev/reference/react [--depth 3] [--clean]
-    python indexer.py --source memory --db /path/to/memory.db
+    python indexer.py --source memory --db /path/to/memory.db          # incremental: only indexed=0 rows
+    python indexer.py --source memory --db /path/to/memory.db --full   # backfill: re-index every row
     python indexer.py --source url --url https://docs.example.com [--depth 3] [--clean]
     python indexer.py --source standards --path /path/to/standards [--ext md,txt,adoc] [--clean]
     python indexer.py --source standards --url https://eips.ethereum.org/EIPS/eip-20 [--depth 2]
@@ -297,46 +298,66 @@ def index_url(
             log.error("Failed to delete stale chunks (indexing itself succeeded): %s", exc)
 
 
-def index_memory(db_path: str, embedder: Embedder) -> None:
-    """Index past pipeline runs from the MemoryStore SQLite database.
+def index_memory(db_path: str, embedder: Embedder, incremental: bool = True) -> None:
+    """Index MemoryStore run summaries into pgvector for the search_memory tool.
 
-    Reads the 'runs' table and indexes PRD + design + summary for each run.
+    Reads the 'runs' table and embeds each row's summary. Only the columns
+    MemoryStore.runs actually has are read — see memory_store.py, the single
+    source of truth for that schema.
+
+    Args:
+        db_path: Path to the MemoryStore SQLite file.
+        embedder: Embedder instance to use.
+        incremental: When True (default), only rows with indexed=0 are
+            processed, and successfully embedded rows are marked indexed=1
+            afterward — safe to call repeatedly (e.g. after every pipeline
+            run) without re-embedding the whole history each time. False
+            re-indexes everything, ignoring and then resetting the flag.
     """
     import sqlite3
 
     conn = sqlite3.connect(db_path)
     try:
+        # Defensive migration: this indexer is a separately deployed service
+        # and may run against a memory.db from before the 'indexed' column
+        # existed. MemoryStore._init_schema() does the same migration when
+        # the orchestrator process owns the file; this keeps the indexer
+        # usable standalone too.
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+        if "indexed" not in existing:
+            conn.execute("ALTER TABLE runs ADD COLUMN indexed INTEGER DEFAULT 0")
+            conn.commit()
+
+        where = "WHERE summary IS NOT NULL AND summary != ''"
+        if incremental:
+            where += " AND indexed=0"
         cur = conn.execute(
-            "SELECT id, prd, design, summary, created_at FROM runs WHERE summary IS NOT NULL"
+            f"SELECT id, repo, tier, summary, created_at FROM runs {where} ORDER BY id ASC"
         )
-        for row in cur.fetchall():
-            run_id, prd, design, summary, created_at = row
-            parts = [
-                ("prd", prd or ""),
-                ("design", design or ""),
-                ("summary", summary or ""),
-            ]
+        rows = cur.fetchall()
+        for run_id, repo, tier, summary, created_at in rows:
             chunk_index = 0
-            for part_name, text in parts:
-                if not text.strip():
+            ok = True
+            for chunk in chunk_text(summary):
+                try:
+                    embedding = embedder.embed(chunk)
+                except EmbedderError as exc:
+                    log.warning("Skipping memory run=%s chunk=%d: %s", run_id, chunk_index, exc)
+                    ok = False  # don't mark indexed — retry this run next pass
                     continue
-                for chunk in chunk_text(text):
-                    try:
-                        embedding = embedder.embed(chunk)
-                    except EmbedderError as exc:
-                        log.warning("Skipping memory run=%s part=%s: %s", run_id, part_name, exc)
-                        chunk_index += 1  # advance so subsequent chunks keep correct positions
-                        continue
-                    upsert_chunk(
-                        source_type="memory",
-                        source_id=str(run_id),
-                        chunk_index=chunk_index,
-                        content=chunk,
-                        embedding=embedding,
-                        metadata={"part": part_name, "ts": created_at},
-                    )
-                    log.info("Indexed memory run=%s chunk %d", run_id, chunk_index)
-                    chunk_index += 1
+                upsert_chunk(
+                    source_type="memory",
+                    source_id=str(run_id),
+                    chunk_index=chunk_index,
+                    content=chunk,
+                    embedding=embedding,
+                    metadata={"repo": repo, "tier": tier, "ts": created_at},
+                )
+                chunk_index += 1
+            if ok:
+                conn.execute("UPDATE runs SET indexed=1 WHERE id=?", (run_id,))
+                conn.commit()
+                log.info("Indexed memory run=%s (%d chunks)", run_id, chunk_index)
     finally:
         conn.close()
 
@@ -406,6 +427,9 @@ def main() -> None:
     parser.add_argument("--clean", action="store_true", help="Delete embeddings for removed files")
     parser.add_argument("--url", help="Seed URL to crawl (--source url)")
     parser.add_argument("--depth", type=int, default=3, help="Maximum crawl depth (default: 3)")
+    parser.add_argument("--full", action="store_true",
+                        help="--source memory: re-index every row instead of only indexed=0 ones "
+                             "(one-time backfill for a memory.db predating incremental indexing)")
     args = parser.parse_args()
 
     embedder = Embedder()
@@ -426,7 +450,7 @@ def main() -> None:
     elif args.source == "memory":
         if not args.db:
             parser.error("--db required for --source memory")
-        index_memory(args.db, embedder)
+        index_memory(args.db, embedder, incremental=not args.full)
     elif args.source == "url":
         if not args.url:
             parser.error("--url required for --source url")

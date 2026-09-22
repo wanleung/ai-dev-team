@@ -2,6 +2,7 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "rag-mcp"))
 
+import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -434,3 +435,168 @@ def test_index_standards_default_extensions():
     assert any("guide.adoc" in sid for sid in upserted_ids)
     # .py should NOT be indexed (not in default extensions)
     assert not any("helper.py" in sid for sid in upserted_ids)
+
+
+# ── Memory indexing ───────────────────────────────────────────────────────────
+# Regression coverage for the schema drift where index_memory() selected
+# prd/design columns that memory_store.py's runs table no longer has.
+
+def test_index_memory_reads_current_memory_store_schema(tmp_path):
+    """index_memory() only reads columns MemoryStore.runs actually has.
+
+    Note: MemoryStore() is force-redirected to tmp_path/memory.db by the
+    autouse _isolate_memory_store fixture in conftest.py, regardless of
+    what path is passed to it — so index_memory() must point at that same
+    path, not at a caller-chosen temp dir.
+    """
+    from indexer import index_memory
+    from memory_store import MemoryStore
+
+    db_path = str(tmp_path / "memory.db")
+    store = MemoryStore(db_path)
+    store.save(repo="wanleung/ai-it-press", summary="Fixed RSS dedup false positives", mode="fix")
+    store.close()
+
+    mock_embedder = MagicMock()
+    mock_embedder.embed.return_value = [0.1] * 768
+
+    with patch("indexer.upsert_chunk") as mock_upsert:
+        index_memory(db_path, mock_embedder)
+
+    assert mock_upsert.call_count == 1
+    call_kwargs = mock_upsert.call_args_list[0][1]
+    assert call_kwargs["source_type"] == "memory"
+    assert call_kwargs["source_id"] == "1"
+    assert call_kwargs["metadata"]["repo"] == "wanleung/ai-it-press"
+
+
+def test_index_memory_skips_rows_with_empty_summary(tmp_path):
+    """A run with no summary yet is never chunked/embedded."""
+    from indexer import index_memory
+    from memory_store import MemoryStore
+
+    db_path = str(tmp_path / "memory.db")
+    store = MemoryStore(db_path)
+    store.save(repo="wanleung/q-test", summary="", mode="feature")
+    store.close()
+
+    mock_embedder = MagicMock()
+    mock_embedder.embed.return_value = [0.1] * 768
+
+    with patch("indexer.upsert_chunk") as mock_upsert:
+        index_memory(db_path, mock_embedder)
+
+    assert mock_upsert.call_count == 0
+
+
+def test_index_memory_marks_rows_indexed_and_is_incremental(tmp_path):
+    """A second incremental pass skips rows already marked indexed=1."""
+    from indexer import index_memory
+    from memory_store import MemoryStore
+
+    db_path = str(tmp_path / "memory.db")
+    store = MemoryStore(db_path)
+    store.save(repo="wanleung/ai-it-press", summary="Added ComfyUI image generation", mode="feature")
+    store.close()
+
+    mock_embedder = MagicMock()
+    mock_embedder.embed.return_value = [0.1] * 768
+
+    with patch("indexer.upsert_chunk") as mock_upsert:
+        index_memory(db_path, mock_embedder)
+        assert mock_upsert.call_count == 1
+
+        mock_upsert.reset_mock()
+        index_memory(db_path, mock_embedder)  # incremental=True by default
+        assert mock_upsert.call_count == 0
+
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT indexed FROM runs").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_index_memory_full_reindexes_already_indexed_rows(tmp_path):
+    """incremental=False (the --full CLI flag) re-embeds every row, indexed or not."""
+    from indexer import index_memory
+    from memory_store import MemoryStore
+
+    db_path = str(tmp_path / "memory.db")
+    store = MemoryStore(db_path)
+    store.save(repo="wanleung/ai-it-press", summary="Added ComfyUI image generation", mode="feature")
+    store.close()
+
+    mock_embedder = MagicMock()
+    mock_embedder.embed.return_value = [0.1] * 768
+
+    with patch("indexer.upsert_chunk") as mock_upsert:
+        index_memory(db_path, mock_embedder)
+        mock_upsert.reset_mock()
+        index_memory(db_path, mock_embedder, incremental=False)
+
+    assert mock_upsert.call_count == 1
+
+
+def test_index_memory_does_not_mark_indexed_on_embedder_failure(tmp_path):
+    """A row whose embedding fails stays indexed=0 so it's retried next pass."""
+    from indexer import index_memory
+    from embedder import EmbedderError
+    from memory_store import MemoryStore
+
+    db_path = str(tmp_path / "memory.db")
+    store = MemoryStore(db_path)
+    store.save(repo="wanleung/ai-it-press", summary="Fixed RSS dedup false positives", mode="fix")
+    store.close()
+
+    mock_embedder = MagicMock()
+    mock_embedder.embed.side_effect = EmbedderError("Ollama unreachable")
+
+    with patch("indexer.upsert_chunk") as mock_upsert:
+        index_memory(db_path, mock_embedder)
+
+    assert mock_upsert.call_count == 0
+
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT indexed FROM runs").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_index_memory_migrates_db_missing_indexed_column():
+    """A memory.db from before the 'indexed' column existed is migrated in place."""
+    from indexer import index_memory
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = str(Path(tmpdir) / "memory.db")
+        # Build a pre-migration runs table by hand (no 'indexed' column).
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo TEXT NOT NULL,
+                run_id TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                tags TEXT DEFAULT '[]',
+                mode TEXT DEFAULT 'feature',
+                tier TEXT DEFAULT 'run',
+                period_label TEXT DEFAULT '',
+                consolidated INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute(
+            "INSERT INTO runs (repo, created_at, summary) VALUES (?, ?, ?)",
+            ("wanleung/ai-it-press", "2026-09-22T00:00:00Z", "Legacy run predating the indexed column"),
+        )
+        conn.commit()
+        conn.close()
+
+        mock_embedder = MagicMock()
+        mock_embedder.embed.return_value = [0.1] * 768
+
+        with patch("indexer.upsert_chunk") as mock_upsert:
+            index_memory(db_path, mock_embedder)  # must not raise OperationalError
+
+        assert mock_upsert.call_count == 1

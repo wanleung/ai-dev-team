@@ -6672,6 +6672,12 @@ class Orchestrator(TestFixLoopMixin):
         except Exception as exc:
             console.print(f"  [yellow]⚠️  Memory save failed: {exc}[/yellow]")
 
+        # ── Embed the new run into pgvector for the search_memory MCP tool ─────
+        # Incremental — rag-mcp/indexer.py only processes indexed=0 rows, so this
+        # is cheap even though it runs after every pipeline finish. Best-effort:
+        # a rag-mcp outage (Postgres/Ollama down) must never fail the pipeline.
+        self._index_memory_for_search()
+
         # ── Update memory bank in target repo ─────────────────────────────────
         if self.target_github and getattr(result, "branch", None):
             try:
@@ -6839,6 +6845,31 @@ class Orchestrator(TestFixLoopMixin):
                 console.print("  🧠 [dim]Quarterly snapshot saved[/dim]")
             except Exception as exc:
                 console.print(f"  [yellow]⚠️  Quarterly consolidation failed: {exc}[/yellow]")
+
+    def _index_memory_for_search(self) -> None:
+        """Run rag-mcp/indexer.py --source memory so search_memory (MCP) stays current.
+
+        Mirrors RepoAutoIndexer._run_indexer() in repo_context.py: same
+        subprocess pattern, same "skip silently if rag-mcp isn't set up"
+        behaviour, same non-fatal error handling. Incremental by default —
+        cheap to call after every pipeline run.
+        """
+        script = Path("rag-mcp/indexer.py")
+        if not script.exists():
+            return  # RAG indexer not available — skip silently
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(script), "--source", "memory",
+                 "--db", str(self.workspace_dir / "memory.db")],
+                check=False,
+                timeout=300,
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                log.warning("Memory indexer exited %d: %s", proc.returncode, proc.stderr[:200])
+        except Exception as exc:
+            log.warning("Memory indexer failed to run: %s", exc)
 
     # ──────────────────────────────────────────────────────────────────────────
     # REFACTOR / DREAM MODE

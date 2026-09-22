@@ -45,6 +45,7 @@ class TestDbMigration:
         assert "tier" in cols
         assert "period_label" in cols
         assert "consolidated" in cols
+        assert "indexed" in cols
         ms.close()
 
 
@@ -271,3 +272,54 @@ class TestSearch:
         store.save("owner/repo", "pagination feature added", mode="feature")
         result = store.search("owner/repo", ["authentication"])
         assert result == ""
+
+
+# ── unindexed / mark_indexed ─────────────────────────────────────────────────
+# Feeds rag-mcp/indexer.py's search_memory (pgvector) indexing.
+
+class TestUnindexed:
+    def test_new_rows_are_unindexed_by_default(self, store):
+        """A freshly saved row has indexed=0 and shows up in unindexed()."""
+        store.save("owner/repo", "did a thing", mode="feature")
+        rows = store.unindexed()
+        assert len(rows) == 1
+        assert rows[0]["repo"] == "owner/repo"
+        assert rows[0]["summary"] == "did a thing"
+
+    def test_excludes_rows_with_empty_summary(self, store):
+        """A row with no summary yet is never returned — nothing to embed."""
+        store.save("owner/repo", "", mode="feature")
+        assert store.unindexed() == []
+
+    def test_respects_limit(self, store):
+        """unindexed(limit=N) caps the number of rows returned."""
+        for i in range(5):
+            store.save("owner/repo", f"run {i}", mode="feature")
+        assert len(store.unindexed(limit=2)) == 2
+
+    def test_orders_oldest_first(self, store):
+        """unindexed() returns rows in ascending id order (FIFO for the indexer)."""
+        store.save("owner/repo", "first", mode="feature")
+        store.save("owner/repo", "second", mode="feature")
+        rows = store.unindexed()
+        assert [r["summary"] for r in rows] == ["first", "second"]
+
+
+class TestMarkIndexed:
+    def test_marks_rows_no_longer_unindexed(self, store):
+        """mark_indexed() removes the given ids from future unindexed() results."""
+        store.save("owner/repo", "run 1", mode="feature")
+        store.save("owner/repo", "run 2", mode="feature")
+        rows = store.unindexed()
+
+        store.mark_indexed([rows[0]["id"]])
+
+        remaining = store.unindexed()
+        assert len(remaining) == 1
+        assert remaining[0]["summary"] == "run 2"
+
+    def test_empty_list_is_a_noop(self, store):
+        """mark_indexed([]) does nothing and does not raise."""
+        store.save("owner/repo", "run 1", mode="feature")
+        store.mark_indexed([])
+        assert len(store.unindexed()) == 1

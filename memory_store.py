@@ -71,15 +71,22 @@ class MemoryStore:
                 mode            TEXT DEFAULT 'feature',
                 tier            TEXT DEFAULT 'run',
                 period_label    TEXT DEFAULT '',
-                consolidated    INTEGER DEFAULT 0
+                consolidated    INTEGER DEFAULT 0,
+                indexed         INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_runs_repo  ON runs(repo);
             CREATE INDEX IF NOT EXISTS idx_runs_tier  ON runs(repo, tier);
             CREATE INDEX IF NOT EXISTS idx_runs_cons  ON runs(repo, tier, consolidated);
+            CREATE INDEX IF NOT EXISTS idx_runs_idx   ON runs(indexed);
         """)
         # Migrate existing DB that may lack the new columns
         existing = {row[1] for row in self._conn.execute("PRAGMA table_info(runs)")}
-        for col, dflt, col_type in [("tier", "'run'", "TEXT"), ("period_label", "''", "TEXT"), ("consolidated", "0", "INTEGER")]:
+        for col, dflt, col_type in [
+            ("tier", "'run'", "TEXT"),
+            ("period_label", "''", "TEXT"),
+            ("consolidated", "0", "INTEGER"),
+            ("indexed", "0", "INTEGER"),
+        ]:
             if col not in existing:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type} DEFAULT {dflt}")
         self._conn.commit()
@@ -407,6 +414,42 @@ Output plain text only."""
         for created_at, tier, mode, summary in rows:
             parts.append(f"- [{created_at[:10]}] ({tier}/{mode})\n  {summary[:400]}")
         return "\n".join(parts)
+
+    # ── Vector indexing (rag-mcp) ────────────────────────────────────────────
+    # rag-mcp/indexer.py embeds unindexed rows into pgvector for the
+    # search_memory MCP tool.  These methods are the schema-aware surface
+    # for that — the indexer still talks to the SQLite file directly (it's a
+    # separately deployed service and must stay loosely coupled), but any
+    # in-process caller (orchestrator, tests, diagnostics) should use these
+    # instead of hand-rolling the same SQL against a column the indexer owns.
+
+    def unindexed(self, limit: int = 500) -> list[dict]:
+        """Return up to *limit* rows not yet embedded into pgvector, oldest first.
+
+        Only rows with a non-empty summary are eligible — nothing else is
+        chunked/embedded by the indexer.
+        """
+        rows = self._conn.execute(
+            """SELECT id, repo, tier, summary, created_at FROM runs
+               WHERE indexed=0 AND summary IS NOT NULL AND summary != ''
+               ORDER BY id ASC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [
+            {"id": r[0], "repo": r[1], "tier": r[2], "summary": r[3], "created_at": r[4]}
+            for r in rows
+        ]
+
+    def mark_indexed(self, ids: list[int]) -> None:
+        """Mark the given row ids as embedded. No-op on an empty list."""
+        if not ids:
+            return
+        with self._lock:
+            placeholders = ",".join("?" * len(ids))
+            with self._conn:
+                self._conn.execute(
+                    f"UPDATE runs SET indexed=1 WHERE id IN ({placeholders})", ids,
+                )
 
     def stats(self, repo: str) -> dict:
         """Return memory statistics for a repo."""
