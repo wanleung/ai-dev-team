@@ -988,6 +988,17 @@ class Orchestrator(TestFixLoopMixin):
         self._rag_registry = rag_registry
         self.repo_auto_indexer = RepoAutoIndexer() if rag_registry else None
 
+        # Memory server (write/forget/resolve — pairs with rag's search_memory read
+        # access). Kept separate from rag_registry so repo_auto_indexer's "is rag
+        # configured" check above isn't affected by memory being configured alone.
+        memory_servers = [s for s in (mcp_servers or []) if s.get("name") == "memory"]
+        try:
+            memory_registry = MCPToolRegistry(memory_servers) if memory_servers else None
+        except Exception as exc:
+            log.warning("[orchestrator] Memory MCP init failed: %s — memory write tools disabled", exc)
+            memory_registry = None
+        self._memory_registry = memory_registry
+
         # Source research MCPs (for news_reviewer etc.): search + rendered browser.
         source_tool_names = {"google_search", "playwright", "browser", "browser_render"}
         search_servers = [
@@ -1000,6 +1011,20 @@ class Orchestrator(TestFixLoopMixin):
             log.warning("[orchestrator] source research MCP init failed: %s — web/browser search disabled", exc)
             search_registry = None
         self._search_registry = search_registry
+
+    def _rag_and_memory_registry(self):
+        """Combine the rag (read) and memory (write/forget/resolve) registries.
+
+        Agents that get RAG access also get memory write tools when a
+        "memory" MCP server is configured — an agent that can look something
+        up mid-task should also be able to record what it found. Returns
+        whichever of the two is configured, both combined, or None.
+        """
+        rag = self._rag_registry
+        memory = self._memory_registry
+        if rag and memory:
+            return CombinedToolRegistry(rag, memory)
+        return rag or memory
 
     def _build_social_mcp_registry(self) -> "MCPToolRegistry | None":
         """Build an MCP registry containing only enabled social platform servers."""
@@ -1073,7 +1098,7 @@ class Orchestrator(TestFixLoopMixin):
     ) -> None:
         """Instantiate PM, news, architect, engineer, QA and deployment agents."""
         mk = self._make_agent_kwargs
-        rag = self._rag_registry
+        rag = self._rag_and_memory_registry()
         search = self._search_registry
         tools = self._tool_registry
         self.pm = ProductManagerAgent(**{**agent_kwargs, **mk("product_manager")})
@@ -1103,7 +1128,7 @@ class Orchestrator(TestFixLoopMixin):
     def _init_tier_agents(self, agent_kwargs: dict) -> None:
         """Instantiate junior/senior/tier-reviewer agents."""
         mk = self._make_agent_kwargs
-        rag = self._rag_registry
+        rag = self._rag_and_memory_registry()
         _junior_fallback = (
             None if "junior_engineer" in self.model_overrides
             else (self.junior_model or self.model)

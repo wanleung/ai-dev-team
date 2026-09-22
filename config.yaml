@@ -470,6 +470,18 @@ mcp:
       type: http
       url: "http://localhost:8001/mcp"
 
+    # Memory MCP server — the write side, pairing with rag's search_memory (read).
+    # Runs as a plain stdio subprocess (no Docker, no separate DB) — it imports
+    # MemoryStore directly and writes to the real workspace/memory.db.
+    # Gives agents memory_write_fact, memory_resolve_fact, memory_forget_fact,
+    # memory_write_static, memory_forget_static, memory_recall.
+    # - name: memory
+    #   type: stdio
+    #   command: python
+    #   args: ["memory_mcp_server.py"]
+    #   env:
+    #     MEMORY_DB_PATH: "./workspace/memory.db"
+
 # ── Framework Docs Awareness ───────────────────────────────────────────────────
 framework_docs:
   check_agents_md: true   # walk up project dir looking for AGENTS.md / CLAUDE.md

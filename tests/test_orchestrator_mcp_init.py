@@ -48,6 +48,67 @@ def test_rag_mcp_init_failure_does_not_crash():
     assert orch._rag_registry is None
 
 
+# ── memory MCP registry (write/forget/resolve tools) ────────────────────────
+
+def test_memory_mcp_init_failure_does_not_crash():
+    """Memory MCP init failure should be caught gracefully, same as rag."""
+    from tools import MCPToolRegistry
+    with patch.object(MCPToolRegistry, "__init__", side_effect=ConnectionError("memory server down")):
+        orch = _make_minimal_orchestrator(
+            mcp_servers=[{"name": "memory", "command": "python", "args": ["memory_mcp_server.py"]}]
+        )
+    assert orch._memory_registry is None
+
+
+def test_memory_registry_none_when_not_configured():
+    from tools import MCPToolRegistry
+    with patch.object(MCPToolRegistry, "__init__", return_value=None):
+        orch = _make_minimal_orchestrator(
+            mcp_servers=[{"name": "rag", "type": "http", "url": "http://x"}]
+        )
+    assert orch._memory_registry is None
+
+
+def test_memory_configured_alone_does_not_enable_repo_auto_indexer():
+    """repo_auto_indexer must stay gated on rag specifically, not on memory."""
+    from tools import MCPToolRegistry
+    with patch.object(MCPToolRegistry, "__init__", return_value=None):
+        orch = _make_minimal_orchestrator(
+            mcp_servers=[{"name": "memory", "type": "stdio", "command": "python", "args": []}]
+        )
+    assert orch._rag_registry is None
+    assert orch.repo_auto_indexer is None
+
+
+class TestRagAndMemoryRegistry:
+    def test_returns_none_when_neither_configured(self):
+        orch = _make_minimal_orchestrator()
+        assert orch._rag_and_memory_registry() is None
+
+    def test_returns_rag_alone_when_memory_absent(self):
+        orch = _make_minimal_orchestrator()
+        sentinel = object()
+        orch._rag_registry = sentinel
+        orch._memory_registry = None
+        assert orch._rag_and_memory_registry() is sentinel
+
+    def test_returns_memory_alone_when_rag_absent(self):
+        orch = _make_minimal_orchestrator()
+        sentinel = object()
+        orch._rag_registry = None
+        orch._memory_registry = sentinel
+        assert orch._rag_and_memory_registry() is sentinel
+
+    def test_combines_both_when_present(self):
+        from unittest.mock import MagicMock
+        from tools.registry import CombinedToolRegistry
+        orch = _make_minimal_orchestrator()
+        orch._rag_registry = MagicMock(schemas=[])
+        orch._memory_registry = MagicMock(schemas=[])
+        combined = orch._rag_and_memory_registry()
+        assert isinstance(combined, CombinedToolRegistry)
+
+
 def test_init_core_attrs_sets_model_and_workspace():
     """_init_core_attrs must be callable directly and set scalar config attrs."""
     orch = _make_minimal_orchestrator(model="test-model-xyz")

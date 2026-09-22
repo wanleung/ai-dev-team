@@ -371,14 +371,48 @@ class MemoryStore:
             for r in rows
         ]
 
-    def resolve_fact(self, fact_id: int) -> bool:
-        """Mark an issue-type fact as resolved. Returns True if a row was updated."""
+    def resolve_fact(self, fact_id: int, repo: Optional[str] = None) -> bool:
+        """Mark an issue-type fact as resolved. Returns True if a row was updated.
+
+        Args:
+            fact_id: The fact's row id.
+            repo: Optional scoping check — when given, the update only
+                applies if the fact belongs to this repo. Callers that
+                don't already know the fact belongs to their repo (an MCP
+                tool taking untrusted input, for example) should pass this.
+        """
+        conditions = "id=? AND tier='fact'"
+        params: list = [fact_id]
+        if repo is not None:
+            conditions += " AND repo=?"
+            params.append(repo)
         with self._lock:
             with self._conn:
                 cur = self._conn.execute(
-                    "UPDATE runs SET resolved=1, indexed=0 WHERE id=? AND tier='fact'",
-                    (fact_id,),
+                    f"UPDATE runs SET resolved=1, indexed=0 WHERE {conditions}",
+                    params,
                 )
+            return cur.rowcount > 0
+
+    def forget_fact(self, fact_id: int, repo: Optional[str] = None) -> bool:
+        """Delete a fact outright. Returns True if a row was deleted.
+
+        Distinct from resolve_fact(): resolving means the fact happened and
+        is now closed (an issue got fixed); forgetting means the fact never
+        should have been kept at all (noise, a duplicate, something wrong).
+
+        Args:
+            fact_id: The fact's row id.
+            repo: Optional scoping check — see resolve_fact().
+        """
+        conditions = "id=? AND tier='fact'"
+        params: list = [fact_id]
+        if repo is not None:
+            conditions += " AND repo=?"
+            params.append(repo)
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(f"DELETE FROM runs WHERE {conditions}", params)
             return cur.rowcount > 0
 
     # ── Consolidation ─────────────────────────────────────────────────────────
