@@ -1,33 +1,49 @@
 """
 memory_store.py — Tiered SQLite memory for the AI software house.
 
-Memory is organised in three tiers to keep context windows small and fast
-even as the project grows over months:
+Memory has two orthogonal axes:
 
-  run      — individual pipeline run summaries (full detail, ~400 words each)
-  monthly  — AI-consolidated rollup of all runs in a calendar month (~600 words)
-  quarterly — AI-consolidated rollup of all monthlies in a quarter (~400 words)
+  Scope (does this decay?):
+    dynamic — the normal, time-tiered flow described below (default)
+    static  — a standing fact that never decays and is never consolidated
+              away; always included by recall() in full, regardless of
+              recency or relevance, the same way a "profile" is meant to
+              always be known rather than left to a lucky search match
+              (e.g. "target DB is Postgres 16 + PostGIS", "always use HK
+              Cantonese terminology"). Represented as tier='static'.
+
+  Tier (how much has a dynamic entry been compressed?), run/monthly/quarterly:
+    run      — individual pipeline run summaries (full detail, ~400 words each)
+    monthly  — AI-consolidated rollup of all runs in a calendar month (~600 words)
+    quarterly — AI-consolidated rollup of all monthlies in a quarter (~400 words)
 
 recall() returns:
-  • Latest quarterly snapshot   (big-picture history)
-  • Latest monthly snapshot     (recent theme / issues)
-  • Last N individual runs      (exact recent detail)
+  • All static facts             (always known — the "profile" half of memory)
+  • Latest quarterly snapshot    (big-picture history)
+  • Latest monthly snapshot      (recent theme / issues)
+  • Last N individual runs       (exact recent detail)
 
-This keeps injected context to ~1 500 words regardless of how many runs exist.
+This keeps injected context bounded regardless of how many runs exist —
+static facts are meant to stay few and curated, not to grow with every run.
 
 Auto-consolidation is triggered when the number of unprocessed run-tier entries
 exceeds MONTHLY_THRESHOLD (default 10).  Call consolidate() from the orchestrator
-after saving each run summary.
+after saving each run summary. Static facts are never swept into consolidation —
+they're never tier='run', so needs_consolidation()/consolidate_monthly() never see them.
 
 Usage:
     store = MemoryStore("./workspace/memory.db")
     store.save(repo="owner/repo", summary="...", mode="feature")
 
+    # A standing fact that should always be recalled, not just when relevant
+    store.save_static(repo="owner/repo", fact="Target DB is Postgres 16 + PostGIS",
+                       key="tech-stack")
+
     # Check and consolidate if needed (pass a callable that calls the LLM)
     if store.needs_consolidation(repo):
         store.consolidate_monthly(repo, llm_fn=my_summarise_fn)
 
-    context = store.recall(repo)   # tiered, compact, ready to inject
+    context = store.recall(repo)   # static facts + tiered dynamic, ready to inject
 """
 from __future__ import annotations
 
@@ -122,6 +138,79 @@ class MemoryStore:
                     ),
                 )
             return cur.lastrowid
+
+    def save_static(
+        self,
+        repo: str,
+        fact: str,
+        key: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+    ) -> int:
+        """Persist or update a standing fact — recall() always includes these in full.
+
+        Static facts (tier='static') are the "profile" half of memory: things
+        that should be known regardless of what's being asked, not left to a
+        lucky recency or relevance match. They never decay and are never
+        touched by consolidation (needs_consolidation()/consolidate_monthly()
+        only ever look at tier='run').
+
+        Args:
+            repo: Repo slug this fact applies to.
+            fact: The fact text.
+            key: Optional stable identifier (e.g. "tech-stack",
+                "cantonese-terminology"). When given and a static fact with
+                the same key already exists for this repo, it is updated in
+                place instead of duplicated — reuses the run_id column,
+                which is otherwise unused for static facts. Omit key to
+                always append a new fact.
+            tags: Optional tags.
+
+        Returns:
+            The row ID (existing row's ID if this was an update by key).
+        """
+        if key:
+            with self._lock:
+                existing = self._conn.execute(
+                    "SELECT id FROM runs WHERE repo=? AND tier='static' AND run_id=?",
+                    (repo, key),
+                ).fetchone()
+                if existing:
+                    with self._conn:
+                        self._conn.execute(
+                            # indexed=0 so the updated text gets re-embedded into
+                            # pgvector on the next search_memory indexer pass.
+                            "UPDATE runs SET summary=?, tags=?, created_at=?, indexed=0 WHERE id=?",
+                            (
+                                fact,
+                                json.dumps(tags or []),
+                                datetime.now(timezone.utc).isoformat(),
+                                existing[0],
+                            ),
+                        )
+                    return existing[0]
+        return self.save(repo=repo, summary=fact, run_id=key, tags=tags, mode="static", tier="static")
+
+    def list_static(self, repo: str) -> list[dict]:
+        """Return all static facts for a repo, oldest first."""
+        rows = self._conn.execute(
+            """SELECT id, run_id, summary, tags, created_at FROM runs
+               WHERE repo=? AND tier='static' ORDER BY id ASC""",
+            (repo,),
+        ).fetchall()
+        return [
+            {"id": r[0], "key": r[1], "fact": r[2], "tags": json.loads(r[3] or "[]"), "created_at": r[4]}
+            for r in rows
+        ]
+
+    def forget_static(self, repo: str, key: str) -> bool:
+        """Delete a static fact by key. Returns True if a row was deleted."""
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(
+                    "DELETE FROM runs WHERE repo=? AND tier='static' AND run_id=?",
+                    (repo, key),
+                )
+            return cur.rowcount > 0
 
     # ── Consolidation ─────────────────────────────────────────────────────────
 
@@ -332,16 +421,32 @@ Output plain text only."""
         repo: str,
         recent_runs: int = 3,
     ) -> str:
-        """Return a compact tiered memory context string for prompt injection.
+        """Return a compact memory context string for prompt injection.
 
         Strategy:
-          1. Latest quarterly snapshot  (big-picture, ~400 words)
-          2. Latest monthly snapshot    (recent theme, ~600 words)
-          3. Last `recent_runs` run-tier entries (exact detail)
+          1. All static facts           (always known — the profile half of memory)
+          2. Latest quarterly snapshot   (big-picture, ~400 words)
+          3. Latest monthly snapshot     (recent theme, ~600 words)
+          4. Last `recent_runs` run-tier entries (exact detail)
 
-        Total injected context stays bounded regardless of total run count.
+        Total injected context stays bounded regardless of total run count —
+        static facts are meant to stay few and curated, not to grow with
+        every run the way the tiered dynamic history does.
         """
         parts: list[str] = []
+
+        # Static facts — unconditional, not scored by recency or relevance.
+        # This is the "profile" pattern: some facts (standing conventions,
+        # architecture choices) should always be present, not left to a
+        # lucky match the way search or a recency window would require.
+        static_rows = self._conn.execute(
+            """SELECT summary FROM runs
+               WHERE repo=? AND tier='static' ORDER BY id ASC""",
+            (repo,),
+        ).fetchall()
+        if static_rows:
+            facts = "\n".join(f"- {r[0]}" for r in static_rows)
+            parts.append(f"### 📌 Static facts (always apply)\n{facts}")
 
         # Quarterly
         quarterly = self._conn.execute(

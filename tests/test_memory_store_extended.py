@@ -49,6 +49,86 @@ class TestDbMigration:
         ms.close()
 
 
+# ── save_static / list_static / forget_static ───────────────────────────────
+# The static/dynamic split: static facts (tier='static') are the "profile"
+# half of memory — always recalled in full, never consolidated, never
+# time-decayed. Modeled on supermemory's static profile.
+
+class TestSaveStatic:
+    def test_creates_a_static_fact(self, store):
+        """save_static() persists a fact with tier='static'."""
+        row_id = store.save_static("owner/repo", "Target DB is Postgres 16 + PostGIS", key="tech-stack")
+        facts = store.list_static("owner/repo")
+        assert len(facts) == 1
+        assert facts[0]["id"] == row_id
+        assert facts[0]["fact"] == "Target DB is Postgres 16 + PostGIS"
+        assert facts[0]["key"] == "tech-stack"
+
+    def test_same_key_updates_in_place_instead_of_duplicating(self, store):
+        """A second save_static() with the same key overwrites, does not append."""
+        id1 = store.save_static("owner/repo", "Postgres 16", key="tech-stack")
+        id2 = store.save_static("owner/repo", "Postgres 17 + pgvector", key="tech-stack")
+
+        assert id1 == id2
+        facts = store.list_static("owner/repo")
+        assert len(facts) == 1
+        assert facts[0]["fact"] == "Postgres 17 + pgvector"
+
+    def test_omitting_key_always_appends(self, store):
+        """save_static() without a key never collides — always a new fact."""
+        store.save_static("owner/repo", "fact one")
+        store.save_static("owner/repo", "fact two")
+        assert len(store.list_static("owner/repo")) == 2
+
+    def test_update_by_key_resets_indexed_flag(self, store):
+        """Updating a static fact marks it unindexed so pgvector picks up the change."""
+        store.save_static("owner/repo", "Postgres 16", key="tech-stack")
+        row_id = store.list_static("owner/repo")[0]["id"]
+        store.mark_indexed([row_id])
+        assert store.unindexed() == []
+
+        store.save_static("owner/repo", "Postgres 17", key="tech-stack")
+        unindexed_ids = {r["id"] for r in store.unindexed()}
+        assert row_id in unindexed_ids
+
+    def test_static_facts_excluded_from_needs_consolidation(self, store):
+        """Static facts never count toward the run-tier consolidation threshold."""
+        for i in range(3):
+            store.save_static("owner/repo", f"fact {i}")
+        assert store.needs_consolidation("owner/repo") is False
+
+    def test_static_facts_excluded_from_consolidate_monthly(self, store):
+        """consolidate_monthly() never rolls up static facts."""
+        store.save_static("owner/repo", "a standing fact", key="fact")
+        store.save("owner/repo", "run summary", mode="feature")
+
+        llm = MagicMock(return_value="monthly text")
+        store.consolidate_monthly("owner/repo", llm)
+
+        # The static fact must still be a single, unconsolidated row.
+        facts = store.list_static("owner/repo")
+        assert len(facts) == 1
+        assert facts[0]["fact"] == "a standing fact"
+
+    def test_forget_static_removes_by_key(self, store):
+        """forget_static() deletes the fact and returns True."""
+        store.save_static("owner/repo", "outdated fact", key="old")
+        assert store.forget_static("owner/repo", "old") is True
+        assert store.list_static("owner/repo") == []
+
+    def test_forget_static_returns_false_when_key_not_found(self, store):
+        """forget_static() is a no-op returning False for an unknown key."""
+        assert store.forget_static("owner/repo", "nonexistent") is False
+
+    def test_list_static_scoped_per_repo(self, store):
+        """list_static() never leaks facts across repos."""
+        store.save_static("owner/repo-a", "fact for repo A", key="k")
+        store.save_static("owner/repo-b", "fact for repo B", key="k")
+
+        assert [f["fact"] for f in store.list_static("owner/repo-a")] == ["fact for repo A"]
+        assert [f["fact"] for f in store.list_static("owner/repo-b")] == ["fact for repo B"]
+
+
 # ── consolidate_monthly ───────────────────────────────────────────────────────
 
 class TestConsolidateMonthly:
@@ -230,6 +310,21 @@ class TestRecall:
         assert "run 4" in result
         assert "run 3" in result
         assert "run 0" not in result
+
+    def test_recall_includes_static_facts_unconditionally(self, store):
+        """recall() always includes static facts, with no recency/relevance filter."""
+        store.save_static("owner/repo", "Target DB is Postgres 16 + PostGIS", key="tech-stack")
+        result = store.recall("owner/repo")
+        assert "Target DB is Postgres 16 + PostGIS" in result
+        assert "Static facts" in result
+
+    def test_recall_lists_static_facts_before_dynamic_history(self, store):
+        """Static facts appear before the quarterly/monthly/recent-run sections."""
+        store.save_static("owner/repo", "Always use HK Cantonese terminology", key="tone")
+        store.save("owner/repo", "shipped the feature", mode="feature")
+
+        result = store.recall("owner/repo")
+        assert result.index("Static facts") < result.index("Recent runs")
 
 
 # ── recall_issues ─────────────────────────────────────────────────────────────
