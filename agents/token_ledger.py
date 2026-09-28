@@ -11,6 +11,21 @@ from datetime import datetime, timezone
 # Set by Orchestrator._run_stage() before calling each stage fn.
 current_stage: ContextVar[str] = ContextVar("current_stage", default="unknown")
 
+# ContextVar holding the run_id for the pipeline executing in this thread.
+# Set once by Orchestrator._initialize_run() at the start of a run. Backends
+# read this as their fallback when no explicit run_id was passed down the
+# call chain (BaseAgent.call() -> backend.call() never threads one through
+# today) — see TokenLedger.active_run_id(). Using a ContextVar instead of a
+# "most recently started, not yet finished" scan over TokenLedger._runs is
+# what makes this safe under concurrent pipelines (watcher's parallel_issues
+# runs multiple runs at once in the same process): a plain dict-scan has no
+# thread affinity at all, so under overlap it attributes token usage to
+# whichever run happened to start most recently — and once every concurrent
+# run in the process has finished, returns None, silently dropping the
+# record (record() no-ops when run_id isn't a known key). A ContextVar set
+# once per worker thread is isolated to that thread for its whole lifetime.
+active_run_id_var: ContextVar["str | None"] = ContextVar("active_run_id_var", default=None)
+
 
 class BudgetExceededError(Exception):
     """Raised by TokenLedger.record() when the run's cost exceeds max_cost_usd."""
@@ -118,12 +133,21 @@ class TokenLedger:
                 self._runs[run_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
 
     def active_run_id(self) -> str | None:
-        """Return the most recently started unfinished run_id, or None.
+        """Return the run_id backends should attribute an untagged call to.
 
-        Iterates a snapshot of ``self._runs`` under the lock to avoid
-        ``RuntimeError: dictionary changed size during iteration`` in threaded
-        contexts where other methods may mutate ``_runs`` concurrently.
+        Prefers active_run_id_var — set once per worker thread by
+        Orchestrator._initialize_run(), so it's correct even when multiple
+        pipelines run concurrently in the same process (watcher's
+        parallel_issues). Falls back to the old "most recently started,
+        unfinished" scan over self._runs only when the ContextVar was never
+        set — e.g. a caller using TokenLedger directly outside a pipeline
+        run. That fallback has no thread affinity and is only correct when
+        at most one run is ever active at a time.
         """
+        from_context = active_run_id_var.get()
+        if from_context is not None:
+            return from_context
+
         with self._lock:
             items = list(self._runs.items())
         for run_id, meta in reversed(items):

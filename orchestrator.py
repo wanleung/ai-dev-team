@@ -65,7 +65,9 @@ from memory_store import MemoryStore
 from skills_loader import SkillContext, SkillLoader
 from test_fix_loop import TestFixLoopMixin
 from tools import builtin_tools, CombinedToolRegistry, MCPToolRegistry
-from agents.token_ledger import TokenLedger, BudgetExceededError, current_stage, get_ledger, set_ledger
+from agents.token_ledger import (
+    TokenLedger, BudgetExceededError, current_stage, get_ledger, set_ledger, active_run_id_var,
+)
 from utils import sanitise as _sanitise, deep_merge as _deep_merge
 from core.errors import PipelineError as _PipelineError
 from core.exceptions import ConfigurationError
@@ -3724,6 +3726,18 @@ class Orchestrator(TestFixLoopMixin):
         start_time: float,
     ) -> "PipelineResult":
         """Set up ledger, inject context, load checkpoint, configure tracker; return result."""
+        # Bind run_id to this thread for the rest of the run. Backends fall
+        # back to TokenLedger.active_run_id() when no explicit run_id was
+        # passed down the call chain (the common case — BaseAgent.call()
+        # doesn't thread one through), and that fallback now prefers this
+        # ContextVar over a racy "most recently started" scan, so token
+        # usage attributes correctly even when parallel_issues runs more
+        # than one pipeline at once in this process. Set unconditionally
+        # (not just when cost_tracking is enabled) — record() already
+        # no-ops for a run_id that never called start_run(), so there's no
+        # correctness reason to gate this, only a robustness gain from
+        # never falling through to the old scan at all.
+        active_run_id_var.set(run_id)
         self._resolve_target_repo(trigger_issue_body)
         self._inject_repo_context()
         active_repo = str(self.target_github.repo if self.target_github else
