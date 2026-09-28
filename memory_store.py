@@ -76,7 +76,16 @@ class MemoryStore:
     # ── Schema ────────────────────────────────────────────────────────────────
 
     def _init_schema(self) -> None:
-        self._conn.executescript("""
+        # Table create, then column migration, then indexes — in that order.
+        # CREATE TABLE IF NOT EXISTS is a no-op on a table that already
+        # exists, so on an existing DB the ALTER TABLE loop below is what
+        # actually adds any column this version added since the DB was
+        # created. Indexes referencing those columns (idx_runs_fact) MUST
+        # run after that loop, not in the same executescript() as the
+        # CREATE TABLE — otherwise CREATE INDEX ... ON runs(fact_type, ...)
+        # fails with "no such column: fact_type" on any DB that predates
+        # that column, before the ALTER TABLE that would have added it.
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS runs (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 repo            TEXT NOT NULL,
@@ -94,14 +103,9 @@ class MemoryStore:
                 resolved        INTEGER DEFAULT 0,
                 is_latest       INTEGER DEFAULT 1,
                 supersedes_id   INTEGER DEFAULT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_runs_repo  ON runs(repo);
-            CREATE INDEX IF NOT EXISTS idx_runs_tier  ON runs(repo, tier);
-            CREATE INDEX IF NOT EXISTS idx_runs_cons  ON runs(repo, tier, consolidated);
-            CREATE INDEX IF NOT EXISTS idx_runs_idx   ON runs(indexed);
-            CREATE INDEX IF NOT EXISTS idx_runs_fact  ON runs(repo, tier, fact_type, resolved, is_latest);
+            )
         """)
-        # Migrate existing DB that may lack the new columns
+        # Migrate existing DB that may lack columns added in a later version.
         existing = {row[1] for row in self._conn.execute("PRAGMA table_info(runs)")}
         for col, dflt, col_type in [
             ("tier", "'run'", "TEXT"),
@@ -116,6 +120,15 @@ class MemoryStore:
         ]:
             if col not in existing:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type} DEFAULT {dflt}")
+        # Every column referenced below now exists, whether from a fresh
+        # CREATE TABLE or the migration loop above.
+        self._conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_runs_repo  ON runs(repo);
+            CREATE INDEX IF NOT EXISTS idx_runs_tier  ON runs(repo, tier);
+            CREATE INDEX IF NOT EXISTS idx_runs_cons  ON runs(repo, tier, consolidated);
+            CREATE INDEX IF NOT EXISTS idx_runs_idx   ON runs(indexed);
+            CREATE INDEX IF NOT EXISTS idx_runs_fact  ON runs(repo, tier, fact_type, resolved, is_latest);
+        """)
         self._conn.commit()
 
     # ── Write ─────────────────────────────────────────────────────────────────

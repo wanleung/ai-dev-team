@@ -51,6 +51,53 @@ class TestDbMigration:
         assert "resolved" in cols
         ms.close()
 
+    def test_migration_adds_fact_columns_to_a_db_with_only_the_earlier_columns(self, tmp_path):
+        """Regression test: a DB with tier/period_label/consolidated/indexed but
+        not yet fact_type/entity/resolved/is_latest/supersedes_id must migrate
+        cleanly, not crash.
+
+        This is the exact shape that broke in production: CREATE INDEX
+        idx_runs_fact ON runs(..., fact_type, ...) ran inside the same
+        executescript() as CREATE TABLE IF NOT EXISTS, which is a no-op on an
+        existing table — so the index creation hit "no such column: fact_type"
+        before the ALTER TABLE loop below it ever got a chance to add the
+        column. Every other migration test in this file built its legacy
+        table from complete scratch (missing tier/indexed too), which doesn't
+        exercise this — a table that already has tier/indexed but not the
+        fact columns is what real deployments actually look like: incremental,
+        not built fresh each time a new column gets added.
+        """
+        db = tmp_path / "memory.db"  # exact path _isolate_memory_store leaves alone when passed explicitly
+        conn = sqlite3.connect(db)
+        conn.execute("""CREATE TABLE runs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo            TEXT NOT NULL,
+            run_id          TEXT DEFAULT '',
+            created_at      TEXT NOT NULL,
+            summary         TEXT NOT NULL,
+            tags            TEXT DEFAULT '[]',
+            mode            TEXT DEFAULT 'feature',
+            tier            TEXT DEFAULT 'run',
+            period_label    TEXT DEFAULT '',
+            consolidated    INTEGER DEFAULT 0,
+            indexed         INTEGER DEFAULT 0
+        )""")
+        conn.execute(
+            "INSERT INTO runs (repo, created_at, summary) VALUES (?, ?, ?)",
+            ("owner/repo", "2026-09-01T00:00:00Z", "a run from before fact extraction existed"),
+        )
+        conn.commit()
+        conn.close()
+
+        ms = MemoryStore(db_path=db)  # must not raise
+        cols = {row[1] for row in ms._conn.execute("PRAGMA table_info(runs)")}
+        assert {"fact_type", "entity", "resolved", "is_latest", "supersedes_id"} <= cols
+
+        # The pre-existing row must survive the migration untouched.
+        row = ms._conn.execute("SELECT summary FROM runs WHERE repo='owner/repo'").fetchone()
+        assert row[0] == "a run from before fact extraction existed"
+        ms.close()
+
 
 # ── save_static / list_static / forget_static ───────────────────────────────
 # The static/dynamic split: static facts (tier='static') are the "profile"
