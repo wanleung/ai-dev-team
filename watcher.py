@@ -776,6 +776,20 @@ def load_watcher_config(config_path: Path) -> dict:
     with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
 
+    # Merge config.local.yaml the same way _load_pipeline_config() does —
+    # without this, top-level settings that only exist in config.local.yaml
+    # (pipeline_timeout_s, for one) are silently invisible here even though
+    # Orchestrator.from_config() sees them correctly. That mismatch let the
+    # cross-issue batch timeout below fall back to its 3600s default instead
+    # of the configured value, silently killing (agent-failed, no comment
+    # posted — this path predates that convention) any pipeline still
+    # running past one hour, which discussion-heavy news runs routinely do.
+    local_path = config_path.parent / "config.local.yaml"
+    if local_path.exists():
+        with open(local_path, encoding="utf-8") as lf:
+            local_config = yaml.safe_load(lf) or {}
+        config = _deep_merge(config, local_config)
+
     legacy_watchers: list[dict] = list(config.get("watchers") or [])
     # Apply settings→_settings transformation for legacy watchers too
     for w in legacy_watchers:
@@ -1616,14 +1630,32 @@ def _run_tasks(
                 f.cancel()
             # Clean up labels for futures that were cancelled before they started running.
             # Futures that were already running have their own label lifecycle in run_pipeline().
+            #
+            # A future here was still sitting in the ThreadPoolExecutor's queue,
+            # never picked up by a worker — Future.cancel() only succeeds for a
+            # not-yet-started task. It reached agent-queued (added at dispatch
+            # prep) but never reached run_pipeline()'s body, so the trigger
+            # label (removed there, at the start of actual execution) is still
+            # attached. This is a capacity problem, not a pipeline failure: more
+            # issues were queued than parallel_issues workers could get through
+            # inside pipeline_timeout_s. Say so, and clean up the stale trigger
+            # label — otherwise the issue is left with both agent-failed and its
+            # original trigger label attached, which (with no explanation) looks
+            # exactly like the pipeline itself failed. Left uncleaned, an issue
+            # in that state is also structurally unable to be picked up again
+            # until a human clears agent-failed, even though a re-label was
+            # never actually needed.
+            n_queued = len(futures_to_task)
             for f in futures_to_task:
                 if f.cancelled():
                     t = futures_to_task[f]
                     issue_number = t["issue"]["number"]
                     tracker_repo = t["tracker_repo"]
+                    trigger_label = t.get("trigger_label", "")
                     _log.warning(
-                        "Issue #%d timed out before starting — marking as failed",
-                        issue_number,
+                        "Issue #%d never got a worker slot within %ds (parallel_issues "
+                        "capacity exceeded by %d queued issues) — marking as failed",
+                        issue_number, pipeline_timeout_s, n_queued,
                     )
                     try:
                         remove_label(tracker_repo, issue_number, LABEL_QUEUED)
@@ -1632,12 +1664,35 @@ def _run_tasks(
                             "Could not remove %s for timed-out issue #%d",
                             LABEL_QUEUED, issue_number, exc_info=True,
                         )
+                    if trigger_label:
+                        try:
+                            remove_label(tracker_repo, issue_number, trigger_label)
+                        except Exception:  # noqa: BLE001
+                            _log.debug(
+                                "Could not remove trigger label %r from #%d",
+                                trigger_label, issue_number,
+                            )
                     try:
                         add_label(tracker_repo, issue_number, LABEL_FAILED)
                     except Exception:  # noqa: BLE001
                         _log.warning(
                             "Could not add %s for timed-out issue #%d",
                             LABEL_FAILED, issue_number, exc_info=True,
+                        )
+                    try:
+                        post_comment(
+                            tracker_repo,
+                            issue_number,
+                            "## ⏱️ Agent Pipeline Never Started\n\n"
+                            f"This issue was queued but never got a worker slot within the "
+                            f"{pipeline_timeout_s}s batch window — {n_queued} issue(s) were "
+                            f"competing for this repo's `parallel_issues` concurrency limit. "
+                            f"The pipeline itself did not run and did not fail.\n\n"
+                            f"Remove the `{LABEL_FAILED}` label and re-label the issue to retry.",
+                        )
+                    except Exception:  # noqa: BLE001
+                        _log.debug(
+                            "Could not post timeout comment for #%d", issue_number, exc_info=True,
                         )
     finally:
         for ex in repo_executors:

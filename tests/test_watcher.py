@@ -877,6 +877,7 @@ def test_watch_timeout_cleans_up_labels_for_cancelled_futures(monkeypatch, tmp_p
         def shutdown(self, wait=True, cancel_futures=False): pass
 
     label_calls = []
+    comments = []
 
     monkeypatch.setattr("watcher._load_pipeline_config", lambda: {})
     monkeypatch.setattr("watcher._watch_prs", lambda *a, **kw: None)
@@ -891,6 +892,8 @@ def test_watch_timeout_cleans_up_labels_for_cancelled_futures(monkeypatch, tmp_p
                         lambda repo, num, lbl: label_calls.append(("add", num, lbl)))
     monkeypatch.setattr("watcher.remove_label",
                         lambda repo, num, lbl: label_calls.append(("remove", num, lbl)))
+    monkeypatch.setattr("watcher.post_comment",
+                        lambda repo, num, body: comments.append((num, body)))
     monkeypatch.setattr("watcher.ThreadPoolExecutor", lambda **kw: FakeExecutor())
     monkeypatch.setattr("watcher.as_completed",
                         lambda fs, timeout=None: (_ for _ in ()).throw(
@@ -902,6 +905,9 @@ def test_watch_timeout_cleans_up_labels_for_cancelled_futures(monkeypatch, tmp_p
     # Only the cancelled future (issue #1) should get label cleanup
     assert ("remove", 1, "agent-queued") in label_calls, \
         "Expected agent-queued removed for cancelled future"
+    assert ("remove", 1, "ai-feature") in label_calls, \
+        "Expected the trigger label removed for a future that never reached run_pipeline() " \
+        "(which is where it's normally removed, at the start of actual execution)"
     assert ("add", 1, "agent-failed") in label_calls, \
         "Expected agent-failed added for cancelled future"
     # Running future (issue #2) should NOT get label cleanup here (run_pipeline handles it)
@@ -909,8 +915,17 @@ def test_watch_timeout_cleans_up_labels_for_cancelled_futures(monkeypatch, tmp_p
         "Should not clean up labels for still-running future"
     assert ("add", 2, "agent-failed") not in label_calls, \
         "Should not add agent-failed for still-running future"
-    assert any("timed out before starting" in r.message for r in caplog.records), \
+    assert not any(num == 2 for num, _ in comments), \
+        "Should not post a comment for still-running future"
+    assert any("never got a worker slot" in r.message for r in caplog.records), \
         "Expected per-issue timeout warning in logs"
+    # Must explain this was a capacity issue, not a pipeline failure — otherwise
+    # it's indistinguishable from a real error and gets endlessly re-triggered.
+    assert len(comments) == 1
+    posted_num, posted_body = comments[0]
+    assert posted_num == 1
+    assert "never" in posted_body.lower() or "did not run" in posted_body.lower()
+    assert "agent-failed" in posted_body
 
 
 # ── T1: DLQ integration ───────────────────────────────────────────────────────

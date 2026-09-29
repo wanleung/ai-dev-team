@@ -718,3 +718,86 @@ def test_watch_task_dict_llm_is_global_when_no_repo_llm(tmp_path, monkeypatch):
     watcher.watch(cfg_path, once=True, dry_run=False)
 
     assert tasks[0]["llm"]["model"] == "openai/gpt-4.1"
+
+
+# ── load_watcher_config: config.local.yaml merge ────────────────────────────
+# Regression coverage for a real production incident: load_watcher_config()
+# only ever read the single file it was given, never merging a sibling
+# config.local.yaml the way _load_pipeline_config() and Orchestrator.from_config()
+# both correctly do. config.yaml (the checked-in base) has no top-level
+# settings: block at all — pipeline_timeout_s only ever existed in
+# config.local.yaml — so global_settings.get("pipeline_timeout_s") was
+# always None, silently falling back to watch()'s hardcoded 3600s default
+# instead of the intended 7200s. Every issue still queued (not yet started —
+# only parallel_issues run concurrently) when that 1-hour window closed got
+# force-cancelled and marked agent-failed, having never actually run.
+
+def test_load_watcher_config_merges_sibling_local_file(tmp_path):
+    """A setting that exists ONLY in config.local.yaml must still surface —
+    this is the exact shape of the pipeline_timeout_s incident: config.yaml
+    has no settings: block at all, config.local.yaml has the real value."""
+    cfg = tmp_path / "config.yaml"
+    _write(cfg, """
+        watchers:
+          - tracker_repo: owner/alpha
+            enabled: true
+    """)
+    _write(tmp_path / "config.local.yaml", """
+        settings:
+          pipeline_timeout_s: 7200
+    """)
+
+    result = load_watcher_config(cfg)
+    assert result["settings"]["pipeline_timeout_s"] == 7200
+
+
+def test_load_watcher_config_local_override_does_not_discard_sibling_keys(tmp_path):
+    """Deep-merge, not replace: a settings: key only in the base file must
+    survive a config.local.yaml that sets a different settings: key."""
+    cfg = tmp_path / "config.yaml"
+    _write(cfg, """
+        watchers:
+          - tracker_repo: owner/alpha
+            enabled: true
+        settings:
+          log_dir: logs/watcher
+    """)
+    _write(tmp_path / "config.local.yaml", """
+        settings:
+          pipeline_timeout_s: 7200
+    """)
+
+    result = load_watcher_config(cfg)
+    assert result["settings"]["pipeline_timeout_s"] == 7200
+    assert result["settings"]["log_dir"] == "logs/watcher"
+
+
+def test_load_watcher_config_local_value_wins_on_conflict(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    _write(cfg, """
+        watchers: []
+        settings:
+          pipeline_timeout_s: 3600
+    """)
+    _write(tmp_path / "config.local.yaml", """
+        settings:
+          pipeline_timeout_s: 7200
+    """)
+
+    result = load_watcher_config(cfg)
+    assert result["settings"]["pipeline_timeout_s"] == 7200
+
+
+def test_load_watcher_config_works_with_no_local_file(tmp_path):
+    """Absence of config.local.yaml must not raise — most deployments won't have one."""
+    cfg = tmp_path / "config.yaml"
+    _write(cfg, """
+        watchers:
+          - tracker_repo: owner/alpha
+            enabled: true
+        settings:
+          pipeline_timeout_s: 7200
+    """)
+
+    result = load_watcher_config(cfg)
+    assert result["settings"]["pipeline_timeout_s"] == 7200
