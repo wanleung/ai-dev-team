@@ -21,6 +21,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -83,27 +84,48 @@ def _headers() -> dict:
     }
 
 
-def _get(path: str, params: dict | None = None) -> list | dict:
+# Transient GitHub API failures worth retrying — rate-limit + upstream 5xx
+# (mirrors github_client.py's GitHubClient._request retry policy).
+_RETRYABLE = {429, 500, 502, 503, 504}
+_MAX_RETRIES = 4
+_RETRY_BASE = 5.0  # seconds; doubles each attempt
+
+
+def _request(method: str, path: str, **kwargs) -> requests.Response:
     url = f"{API_BASE}{path}"
-    resp = requests.get(url, headers=_headers(), params=params, timeout=15)
+    for attempt in range(_MAX_RETRIES):
+        resp = requests.request(method, url, headers=_headers(), timeout=15, **kwargs)
+        if resp.status_code not in _RETRYABLE or attempt == _MAX_RETRIES - 1:
+            return resp
+        wait = _RETRY_BASE * (2 ** attempt)
+        log.warning(
+            "GitHub API %s %s returned %s (attempt %d/%d) — retrying in %.0fs",
+            method, url, resp.status_code, attempt + 1, _MAX_RETRIES, wait,
+        )
+        time.sleep(wait)
+    return resp  # unreachable, satisfies type-checkers
+
+
+def _get(path: str, params: dict | None = None) -> list | dict:
+    resp = _request("GET", path, params=params)
     resp.raise_for_status()
     return resp.json()
 
 
 def _post(path: str, json: dict) -> dict:
-    resp = requests.post(f"{API_BASE}{path}", headers=_headers(), json=json, timeout=15)
+    resp = _request("POST", path, json=json)
     resp.raise_for_status()
     return resp.json()
 
 
 def _put(path: str, json: dict) -> dict:
-    resp = requests.put(f"{API_BASE}{path}", headers=_headers(), json=json, timeout=15)
+    resp = _request("PUT", path, json=json)
     resp.raise_for_status()
     return resp.json() if resp.text else {}
 
 
 def _delete(path: str) -> None:
-    resp = requests.delete(f"{API_BASE}{path}", headers=_headers(), timeout=15)
+    resp = _request("DELETE", path)
     if resp.status_code == 404:
         return  # already absent
     resp.raise_for_status()

@@ -15,9 +15,10 @@ re-adding the trigger label, forever, once per hour.
 """
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
@@ -26,6 +27,59 @@ import press_maintenance as pm  # noqa: E402
 
 def _progress_comment(body: str) -> dict:
     return {"body": body}
+
+
+def _resp(status_code: int, json_body: object = None, text: str = "{}") -> MagicMock:
+    r = MagicMock()
+    r.status_code = status_code
+    r.text = text
+    r.json.return_value = json_body if json_body is not None else {}
+    if status_code >= 400:
+        r.raise_for_status.side_effect = requests.HTTPError(f"{status_code} error", response=r)
+    return r
+
+
+class TestRequestRetry:
+    """Regression coverage for a real production incident: a single 502 from
+    GitHub mid-way through auto-merge's PR loop (issue #6538 on ai-it-press)
+    killed the whole job with an unhandled HTTPError, leaving every PR after
+    it in the list unchecked for that run. _get/_post/_put/_delete had no
+    retry at all, unlike github_client.py's GitHubClient._request.
+    """
+
+    def setup_method(self):
+        pm.GITHUB_TOKEN = "test-token"
+
+    def test_get_retries_on_502_then_succeeds(self):
+        responses = [_resp(502, text="Bad Gateway"), _resp(200, {"ok": True})]
+        with patch.object(pm.requests, "request", side_effect=responses) as mock_req, \
+             patch.object(pm.time, "sleep") as mock_sleep:
+            result = pm._get("/repos/owner/repo/pulls/1")
+        assert result == {"ok": True}
+        assert mock_req.call_count == 2
+        mock_sleep.assert_called_once()
+
+    def test_get_raises_after_exhausting_retries(self):
+        responses = [_resp(502, text="Bad Gateway")] * pm._MAX_RETRIES
+        with patch.object(pm.requests, "request", side_effect=responses), \
+             patch.object(pm.time, "sleep"):
+            with pytest.raises(requests.HTTPError):
+                pm._get("/repos/owner/repo/pulls/1")
+
+    def test_get_does_not_retry_on_404(self):
+        with patch.object(pm.requests, "request", return_value=_resp(404, text="Not Found")) as mock_req, \
+             patch.object(pm.time, "sleep") as mock_sleep:
+            with pytest.raises(requests.HTTPError):
+                pm._get("/repos/owner/repo/pulls/1")
+        assert mock_req.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_delete_retries_on_503_then_treats_404_as_success(self):
+        responses = [_resp(503, text="Service Unavailable"), _resp(404, text="Not Found")]
+        with patch.object(pm.requests, "request", side_effect=responses), \
+             patch.object(pm.time, "sleep") as mock_sleep:
+            pm._delete("/repos/owner/repo/issues/1/labels/press")  # must not raise
+        mock_sleep.assert_called_once()
 
 
 SUCCESS_BODY = """## 🤖 Pipeline Progress
