@@ -108,6 +108,108 @@ def test_stage_news_article_pr_sets_all_files():
     assert "test-article" in path or "2026" in path
 
 
+class TestCleanupStaleArticleFiles:
+    """Regression coverage for a real production incident: issue #6344 on
+    ai-it-press ended up with 5 different article files bundled into one PR
+    (#6553), which also broke the publish workflow's bash `for` loop.
+
+    Root cause: GitHubClient.create_branch() deliberately reuses an existing
+    branch across retries (by design, for the generic feature/doc pipelines).
+    But _stage_news_article_pr's branch name is deterministic per-issue
+    (article/{n}-issue-{n}), and every retry regenerates the article from
+    scratch, so its filename (derived from the freshly-written title) usually
+    differs from the previous attempt's. Since commit_file only ever adds or
+    updates files, never removes them, every failed/retried attempt left its
+    draft behind and the PR silently accumulated one file per attempt.
+    """
+
+    def _orch(self):
+        from orchestrator import Orchestrator
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.github = MagicMock()
+        orch.target_github = None
+        return orch
+
+    def test_removes_stale_files_for_same_issue_not_in_keep_set(self):
+        orch = self._orch()
+        orch.github.list_files.return_value = [
+            {"name": "20260928-6344-old-title.md", "type": "file", "path": "articles/20260928-6344-old-title.md"},
+            {"name": "20260928-6344-old-title.zh-hk.md", "type": "file", "path": "articles/20260928-6344-old-title.zh-hk.md"},
+            {"name": "20260928-9999-unrelated.md", "type": "file", "path": "articles/20260928-9999-unrelated.md"},
+        ]
+        result = PipelineResult(requirement="test")
+        result.issue_number = 6344
+
+        orch._cleanup_stale_article_files(result, keep={"articles/20260928-6344-new-title.md"})
+
+        deleted_paths = {c.kwargs["path"] for c in orch.github.delete_file.call_args_list}
+        assert deleted_paths == {
+            "articles/20260928-6344-old-title.md",
+            "articles/20260928-6344-old-title.zh-hk.md",
+        }
+
+    def test_does_not_delete_files_in_the_keep_set(self):
+        orch = self._orch()
+        orch.github.list_files.return_value = [
+            {"name": "20260928-6344-new-title.md", "type": "file", "path": "articles/20260928-6344-new-title.md"},
+        ]
+        result = PipelineResult(requirement="test")
+        result.issue_number = 6344
+
+        orch._cleanup_stale_article_files(result, keep={"articles/20260928-6344-new-title.md"})
+
+        orch.github.delete_file.assert_not_called()
+
+    def test_noop_when_branch_does_not_exist_yet(self):
+        """First-ever attempt for an issue: nothing to clean up, and no
+        articles/ listing should even be attempted."""
+        orch = self._orch()
+        orch.github.get_branch_sha.side_effect = RuntimeError("404 not found")
+
+        result = PipelineResult(requirement="test")
+        result.issue_number = 6344
+
+        orch._cleanup_stale_article_files(result, keep={"articles/x.md"})
+
+        orch.github.list_files.assert_not_called()
+        orch.github.delete_file.assert_not_called()
+
+    def test_noop_when_no_issue_number(self):
+        orch = self._orch()
+        result = PipelineResult(requirement="test")
+        result.issue_number = None
+
+        orch._cleanup_stale_article_files(result, keep=set())
+
+        orch.github.get_branch_sha.assert_not_called()
+
+    def test_stage_news_article_pr_invokes_cleanup_before_committing(self):
+        """Integration check: the real stage must call cleanup with the
+        filenames it's about to write, using the same branch commit_and_open_pr
+        will create."""
+        orch = self._orch()
+        orch.target_github = orch.github
+        orch.github.get_branch_sha.return_value = "sha123"
+        orch.github.list_files.return_value = [
+            {"name": "old.md", "type": "file", "path": "articles/20260928-6344-old.md"},
+        ]
+
+        result = PipelineResult(requirement="test")
+        result.issue_number = 6344
+        result.article = (
+            "---\ntitle: New Title\ndate: 2026-09-28T00:00:00\n---\n\nBody."
+        )
+
+        with patch.object(orch, "_commit_and_open_pr") as mock_commit:
+            orch._stage_news_article_pr(result)
+
+        mock_commit.assert_called_once()
+        written_path = list(result.all_files.keys())[0]
+        deleted_paths = {c.kwargs["path"] for c in orch.github.delete_file.call_args_list}
+        assert deleted_paths == {"articles/20260928-6344-old.md"}
+        assert written_path not in deleted_paths
+
+
 def test_pipeline_result_has_article_zh_hk():
     r = PipelineResult(requirement="test")
     assert hasattr(r, "article_zh_hk")

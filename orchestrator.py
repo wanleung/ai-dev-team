@@ -1985,11 +1985,7 @@ class Orchestrator(TestFixLoopMixin):
         except Exception:
             base_branch = "main"
 
-        import re as _re
-        slug_source = result.project_name or f"issue-{result.issue_number or 'auto'}"
-        slug = _re.sub(r"[^a-z0-9-]", "-", slug_source.lower())[:40].strip("-") or "auto"
-        issue_part = f"{result.issue_number}-" if result.issue_number else ""
-        branch = f"{branch_prefix}/{issue_part}{slug}"
+        branch = self._compute_branch_name(result, branch_prefix)
 
         try:
             gh.create_branch(branch)
@@ -2026,6 +2022,58 @@ class Orchestrator(TestFixLoopMixin):
             result.pr_url = pr.get("html_url")
         except Exception as exc:
             result.add_error(f"PR creation failed: {exc}")
+
+    def _compute_branch_name(self, result: "PipelineResult", branch_prefix: str) -> str:
+        """Derive the deterministic branch name _commit_and_open_pr will use.
+
+        Shared with cleanup helpers that need to know the branch *before*
+        committing, so the name can never drift out of sync with the one
+        actually created.
+        """
+        import re as _re
+        slug_source = result.project_name or f"issue-{result.issue_number or 'auto'}"
+        slug = _re.sub(r"[^a-z0-9-]", "-", slug_source.lower())[:40].strip("-") or "auto"
+        issue_part = f"{result.issue_number}-" if result.issue_number else ""
+        return f"{branch_prefix}/{issue_part}{slug}"
+
+    def _cleanup_stale_article_files(self, result: "PipelineResult", keep: set[str]) -> None:
+        """Remove leftover article files from a prior retry on a reused branch.
+
+        _commit_and_open_pr's branch is deterministic per issue (article/{n}-issue-{n})
+        and GitHubClient.create_branch reuses it if it already exists. Each retry
+        regenerates the article from scratch, so its filename (derived from the
+        freshly-written title) usually differs from the previous attempt's — without
+        this cleanup, commit_file only ever adds files, so every failed retry leaves
+        its draft behind and a single PR accumulates one file per attempt.
+        """
+        if not result.issue_number:
+            return
+        gh = getattr(self, "target_github", None) or getattr(self, "github", None)
+        if gh is None:
+            return
+        branch = self._compute_branch_name(result, "article")
+        try:
+            gh.get_branch_sha(branch)
+        except Exception:
+            return  # branch doesn't exist yet — nothing to clean up
+        try:
+            entries = gh.list_files("articles", ref=branch)
+        except Exception as exc:
+            _log.warning("_cleanup_stale_article_files: could not list articles/ on %s: %s", branch, exc)
+            return
+        stale_marker = f"-{result.issue_number}-"
+        for entry in entries:
+            path = entry.get("path", "")
+            if entry.get("type") != "file" or path in keep or stale_marker not in path:
+                continue
+            try:
+                gh.delete_file(
+                    path=path,
+                    message=f"chore: remove stale article draft for issue #{result.issue_number} (superseded by retry)",
+                    branch=branch,
+                )
+            except Exception as exc:
+                _log.warning("_cleanup_stale_article_files: failed to remove %s: %s", path, exc)
 
     def _get_repo_patterns_dir(self) -> Path:
         """Return the path to repo-patterns/ directory. Patchable in tests."""
@@ -6290,6 +6338,8 @@ class Orchestrator(TestFixLoopMixin):
         result.all_files = {filename: article, **extra_files}
         # Allow image_generate to run inline after this stage without re-fetching from remote.
         result.image_article_path = filename
+
+        self._cleanup_stale_article_files(result, keep={*result.all_files})
 
         self._commit_and_open_pr(
             result,

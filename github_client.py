@@ -291,6 +291,34 @@ class GitHubClient:
                 )
             raise
 
+    def delete_file(
+        self,
+        path: str,
+        message: str,
+        branch: str,
+        max_retries: int | None = None,
+    ) -> Optional[dict]:
+        """Delete a file from the repo on the given branch.
+
+        Returns None if the file does not exist on that branch (nothing to
+        delete), else the GitHub API response.
+        """
+        try:
+            existing = self._request(
+                "GET",
+                f"/repos/{self.repo}/contents/{path}",
+                params={"ref": branch},
+                max_retries=max_retries,
+            )
+        except RuntimeError:
+            return None
+        return self._request(
+            "DELETE",
+            f"/repos/{self.repo}/contents/{path}",
+            json={"message": message, "sha": existing["sha"], "branch": branch},
+            max_retries=max_retries,
+        )
+
     def commit_file_bytes(
         self,
         path: str,

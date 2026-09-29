@@ -51,6 +51,38 @@ def test_merge_base_into_branch_unexpected_error(gc):
         assert "GitHub merges API failed [500]" in str(exc_info.value)
 
 
+def test_delete_file_existing_file_sends_sha_and_returns_response(gc):
+    """delete_file GETs the current sha then DELETEs with it."""
+    def fake_request(method, path, json=None, params=None, max_retries=None):
+        if method == "GET":
+            assert params == {"ref": "article/1-issue-1"}
+            return {"sha": "abc123"}
+        assert method == "DELETE"
+        assert json == {
+            "message": "chore: remove stale",
+            "sha": "abc123",
+            "branch": "article/1-issue-1",
+        }
+        return {"commit": {"sha": "def456"}}
+    gc._request = fake_request
+    result = gc.delete_file(
+        path="articles/old.md", message="chore: remove stale", branch="article/1-issue-1"
+    )
+    assert result == {"commit": {"sha": "def456"}}
+
+
+def test_delete_file_missing_file_returns_none_without_deleting(gc):
+    """delete_file is a no-op (returns None) when the file isn't on that branch."""
+    calls = []
+    def fake_request(method, path, **kwargs):
+        calls.append(method)
+        raise RuntimeError("404 not found")
+    gc._request = fake_request
+    result = gc.delete_file(path="articles/missing.md", message="x", branch="b")
+    assert result is None
+    assert calls == ["GET"]  # never attempted the DELETE
+
+
 def test_token_attribute_stored():
     gc = GitHubClient("owner/repo", github_token="fake-token-abc")
     assert gc.token == "fake-token-abc"
