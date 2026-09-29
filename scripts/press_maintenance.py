@@ -285,9 +285,24 @@ def job_recover_stuck_running(dry_run: bool = False) -> None:
 def _pipeline_comment_status(issue_number: int) -> str:
     """Scan the issue's comments and return 'failed', 'success', or 'unknown'.
 
-    The orchestrator posts a single '## 🤖 Pipeline Progress' comment that it
-    updates in-place.  Each stage line uses ✅ (done), ❌ (failed), or ⬜ (skipped).
-    We look at that comment to determine outcome:
+    A pipeline run only updates its OWN progress comment in-place while
+    resuming from a checkpoint. A fresh dispatch — including one this same
+    script re-triggered by removing agent-complete and re-adding the
+    trigger label — starts with no checkpoint, so ProgressTracker creates a
+    brand-new comment rather than editing an old one. An issue that was
+    ever retried therefore accumulates multiple '## 🤖 Pipeline Progress'
+    comments over its history, oldest first (GitHub's default comment
+    order). Only the LATEST one reflects the current state — checking the
+    first match found (an earlier version of this function did exactly
+    that) means a single failed attempt anywhere in an issue's history
+    marks it "failed" forever, even after a later run succeeds and
+    correctly reaches agent-complete. That bug caused real repeated
+    re-triggering: this job would see the stale old failure, strip
+    agent-complete, re-add the trigger label, and the next watcher tick
+    would run the whole pipeline again — indefinitely, once per hour,
+    for any issue with one historical failure anywhere in its comments.
+
+    Outcome, from the MOST RECENT progress comment only:
       - success : contains '✅ 📨 News Article PR' (last required stage)
       - failed  : contains a ❌ stage line but not the success marker
       - unknown : no pipeline progress comment found (issue may not be a press article)
@@ -298,11 +313,11 @@ def _pipeline_comment_status(issue_number: int) -> str:
         log.warning("  Could not fetch comments for #%d: %s", issue_number, exc)
         return "unknown"
 
-    for comment in comments:
+    for comment in reversed(comments):  # most recent first
         body: str = comment.get("body", "")
         if PROGRESS_HEADER not in body:
             continue
-        # Found the pipeline progress comment
+        # Found the latest pipeline progress comment
         if SUCCESS_STAGE in body:
             return "success"
         if STAGE_FAIL_MARKER in body:
